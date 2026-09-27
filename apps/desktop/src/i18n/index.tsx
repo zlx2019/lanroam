@@ -17,6 +17,11 @@ export function resolveLang(setting: string | undefined): Lang {
   return navigator.language.toLowerCase().startsWith("zh") ? "zh" : "en";
 }
 
+/** The key the hotkeys use with Ctrl on `platform` */
+export function altKey(platform: string): string {
+  return platform === "macos" ? "Option" : "Alt";
+}
+
 /** Fill {name} placeholders */
 function fill(text: string, vars?: Record<string, string | number>): string {
   if (!vars) return text;

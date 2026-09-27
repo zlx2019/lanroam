@@ -13,10 +13,10 @@ use tauri_plugin_opener::OpenerExt as _;
 
 use crate::bridge::{self, events};
 use crate::dto::{
-    CommandError, InputDto, JoinAnswerDto, JoinPromptDto, JoinStartDto, JoiningEndedDto, NearbyDto,
-    PermissionsDto, Snapshot,
+    CommandError, ControlMode, InputDto, JoinAnswerDto, JoinPromptDto, JoinStartDto,
+    JoiningEndedDto, NearbyDto, PermissionsDto, Snapshot,
 };
-use crate::overlay::{self, OverlayDto};
+use crate::overlay::{self, SceneDto};
 use crate::settings::Settings;
 use crate::state::{AppState, lock};
 use crate::tray;
@@ -161,10 +161,11 @@ pub fn identify(state: State<'_, AppState>) -> Reply<()> {
     Ok(state.engine.identify()?)
 }
 
-/// What the overlays show right now (for an overlay page that just loaded)
+/// What the calling overlay window shows right now (for its page that just
+/// loaded)
 #[tauri::command]
-pub fn get_overlay(app: AppHandle) -> Option<OverlayDto> {
-    overlay::current(&app)
+pub fn get_overlay(app: AppHandle, window: tauri::WebviewWindow) -> SceneDto {
+    overlay::scene_of(&app, window.label())
 }
 
 /// Rename this device
@@ -269,6 +270,12 @@ pub struct SettingsDto {
     pub theme: String,
     /// Start at login
     pub autostart: bool,
+    /// Light up the edge the pointer comes in by
+    pub edge_glow: bool,
+    /// Say pauses, locks, jumps and lost devices mid-screen
+    pub hints: bool,
+    /// Dim this device's screens while it controls another
+    pub dim: bool,
 }
 
 /// The app's preferences
@@ -279,6 +286,9 @@ pub fn get_settings(app: AppHandle, state: State<'_, AppState>) -> SettingsDto {
         language: settings.language,
         theme: settings.theme,
         autostart: app.autolaunch().is_enabled().unwrap_or(false),
+        edge_glow: settings.edge_glow,
+        hints: settings.hints,
+        dim: settings.dim,
     }
 }
 
@@ -301,9 +311,16 @@ pub async fn save_settings(
     let saved = Settings {
         language: settings.language,
         theme: settings.theme,
+        edge_glow: settings.edge_glow,
+        hints: settings.hints,
+        dim: settings.dim,
+        ..lock(&state.settings).clone()
     };
     saved.save(&state.data_dir)?;
     *lock(&state.settings) = saved;
+    // Dimming follows at once when this device controls another
+    let controlling = lock(&state.control).mode == ControlMode::Controlling;
+    overlay::dim(&app, settings.dim && controlling);
     // The tray speaks the language just chosen
     bridge::refresh(&app).await;
     Ok(())

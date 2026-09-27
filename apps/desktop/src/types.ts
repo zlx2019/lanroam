@@ -75,7 +75,9 @@ export type ControlMode = "idle" | "controlling" | "controlled";
 /** Who controls what */
 export interface ControlDto {
   mode: ControlMode;
+  /** The other device concerned: its name */
   peer: string | null;
+  peerFingerprint: string | null;
   paused: boolean;
   locked: boolean;
 }
@@ -137,10 +139,33 @@ export interface SettingsDto {
   language: "system" | "zh" | "en";
   theme: "system" | "dark" | "light";
   autostart: boolean;
+  /** Light up the edge the pointer comes in by */
+  edgeGlow: boolean;
+  /** Say pauses, locks, jumps and lost devices mid-screen */
+  hints: boolean;
+  /** Dim this device's screens while it controls another */
+  dim: boolean;
 }
 
-/** What the on-screen overlays show */
-export type OverlayDto = { kind: "identify"; number: number | null; name: string };
+/** What an on-screen hint says (overlay.rs) */
+export type Hint =
+  | { kind: "paused"; on: boolean; platform: string }
+  | { kind: "locked"; on: boolean; name: string; platform: string }
+  | { kind: "jump"; number: number | null; name: string }
+  | { kind: "unresponsive"; name: string }
+  | { kind: "letGo"; name: string; reason: string }
+  | { kind: "stillRunning"; platform: string };
+
+/** A side of a display */
+export type Edge = "left" | "right" | "top" | "bottom";
+
+/** What one display's overlay shows; `id` changes each time a part is shown again */
+export interface SceneDto {
+  identify: { id: number; number: number | null; name: string } | null;
+  hint: { id: number; hint: Hint } | null;
+  glow: { id: number; edge: Edge } | null;
+  dim: boolean;
+}
 
 /** What the window asks the keyboard and mouse to do */
 export type Action =

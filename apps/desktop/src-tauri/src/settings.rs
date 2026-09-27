@@ -1,5 +1,5 @@
-//! The app's own preferences (language, theme), in `app.json` next to the
-//! engine's files. Starting at login is not stored here: the OS login item
+//! The app's own preferences (language, theme, on-screen indicators), in
+//! `app.json` next to the engine's files. Starting at login is not stored here: the OS login item
 //! is the source of truth.
 
 use std::fs;
@@ -18,6 +18,15 @@ pub struct Settings {
     pub language: String,
     /// `system`, `dark` or `light`
     pub theme: String,
+    /// Light up the edge the pointer comes in by
+    pub edge_glow: bool,
+    /// Say pauses, locks, jumps and lost devices mid-screen
+    pub hints: bool,
+    /// Dim this device's screens while it controls another
+    pub dim: bool,
+    /// The first close of the window already said that Lanroam keeps
+    /// running
+    pub close_hinted: bool,
 }
 
 impl Default for Settings {
@@ -25,6 +34,10 @@ impl Default for Settings {
         Self {
             language: "system".into(),
             theme: "system".into(),
+            edge_glow: true,
+            hints: true,
+            dim: false,
+            close_hinted: false,
         }
     }
 }

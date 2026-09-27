@@ -1,5 +1,5 @@
 //! Engine bridge: starts the engine and turns its events into frontend
-//! events, tray updates and the join window.
+//! events, tray updates, on-screen indicators and the join window.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -13,10 +13,9 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::mpsc;
 
 use crate::dto::{GroupDto, InputDto, JoinEndedDto, JoinPromptDto, SelfDto, Snapshot};
-use crate::overlay::{self, OverlayDto};
 use crate::settings::Settings;
 use crate::state::{AppState, lock};
-use crate::tray;
+use crate::{indicators, tray};
 
 /// Frontend event names (**mirrored in `src/events.ts`**)
 pub mod events {
@@ -72,7 +71,7 @@ pub async fn start(
         joining: tokio::sync::Mutex::new(None),
         join_seq: std::sync::atomic::AtomicU64::new(0),
         prompt: std::sync::Mutex::new(None),
-        overlay: std::sync::Mutex::new(None),
+        overlays: std::sync::Mutex::default(),
     };
     Ok((state, events))
 }
@@ -93,19 +92,7 @@ async fn on_event(app: &AppHandle, event: EngineEvent) {
         EngineEvent::Online(_) | EngineEvent::Offline { .. } | EngineEvent::Group(_) => {}
         EngineEvent::Kicked => emit(app, events::KICKED, ()),
         EngineEvent::Identify => {
-            let info = state.engine.info();
-            let number = state.engine.group().and_then(|doc| {
-                let numbered = lanroam_core::layout::numbered(&doc);
-                numbered
-                    .iter()
-                    .position(|fp| *fp == info.fingerprint)
-                    .map(|i| i + 1)
-            });
-            let what = OverlayDto::Identify {
-                number,
-                name: info.name,
-            };
-            overlay::show(app, what, overlay::IDENTIFY_TIME);
+            indicators::identify(app);
             return;
         }
         EngineEvent::JoinPin {
@@ -143,7 +130,13 @@ async fn on_event(app: &AppHandle, event: EngineEvent) {
             );
         }
         EngineEvent::Control(event) => {
-            let changed = lock(&state.control).apply(&event);
+            let (was, changed) = {
+                let mut control = lock(&state.control);
+                let was = control.clone();
+                let changed = control.apply(&event);
+                (was, changed)
+            };
+            indicators::control_event(app, &event, &was);
             let unavailable = matches!(
                 event,
                 lanroam_core::engine::ControlEvent::Unavailable { .. }

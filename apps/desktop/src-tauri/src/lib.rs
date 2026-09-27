@@ -11,6 +11,7 @@
 mod bridge;
 mod commands;
 mod dto;
+mod indicators;
 mod locale;
 mod overlay;
 mod settings;
@@ -25,6 +26,9 @@ use crate::state::AppState;
 
 /// Launch argument of the login item
 const HIDDEN_ARG: &str = "--hidden";
+
+/// Label of the main window
+const MAIN_WINDOW: &str = "main";
 
 /// Run the app until it quits
 pub fn run() {
@@ -54,6 +58,11 @@ pub fn run() {
                     && let Some(state) = window.try_state::<AppState>()
                 {
                     state.engine.reject_join();
+                }
+                // Off the main thread: the hint may create its overlay window
+                if window.label() == MAIN_WINDOW {
+                    let app = window.app_handle().clone();
+                    tauri::async_runtime::spawn(async move { indicators::window_closed(&app) });
                 }
             }
         })

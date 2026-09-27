@@ -2,10 +2,13 @@
 // tried and tested in a plain browser (served by `pnpm dev` at /mock.html,
 // never part of the build). A Mac and a Windows PC side by side, one
 // device nearby; placing moves devices and pushes a new snapshot.
+//
+// `/mock.html?window=overlay-0` is an on-screen overlay instead: push it
+// scenes with `window.__emit("overlay-scene", scene)`.
 
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
-import type { DeviceDto, NearbyDto, SettingsDto, Snapshot } from "../types";
+import type { DeviceDto, NearbyDto, SceneDto, SettingsDto, Snapshot } from "../types";
 
 /** A device with one display of `w`×`h` (device units) at `scale` percent */
 function device(
@@ -46,7 +49,7 @@ const state: Snapshot = {
       device("pc".padEnd(64, "0"), "DESKTOP-LBKSIT1", "windows", 1920, 1080, 125, 2560),
     ],
   },
-  control: { mode: "idle", peer: null, paused: false, locked: false },
+  control: { mode: "idle", peer: null, peerFingerprint: null, paused: false, locked: false },
   input: { capture: null, injection: null },
 };
 
@@ -54,7 +57,17 @@ const nearby: NearbyDto[] = [
   { fingerprint: "office".padEnd(64, "0"), name: "OFFICE-PC", platform: "windows", address: "192.168.1.57", group: null },
 ];
 
-let settings: SettingsDto = { language: "zh", theme: "dark", autostart: true };
+let settings: SettingsDto = {
+  language: "zh",
+  theme: "dark",
+  autostart: true,
+  edgeGlow: true,
+  hints: true,
+  dim: false,
+};
+
+/** What an overlay window shows at first */
+const scene: SceneDto = { identify: null, hint: null, glow: null, dim: false };
 
 /** Numbers in reading order, as the engine assigns them */
 function renumber() {
@@ -70,6 +83,7 @@ const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
   list_nearby: () => nearby,
   get_permissions: () => ({ required: true, accessibility: true, inputMonitoring: true }),
   get_settings: () => settings,
+  get_overlay: () => scene,
   save_settings: (args) => {
     settings = args.settings as SettingsDto;
   },
@@ -86,7 +100,7 @@ const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
   },
 };
 
-mockWindows("main");
+mockWindows(new URLSearchParams(location.search).get("window") ?? "main");
 mockIPC(
   (cmd, payload) => {
     (window as unknown as { __calls: unknown[] }).__calls.push({ cmd, payload });
@@ -95,5 +109,6 @@ mockIPC(
   { shouldMockEvents: true },
 );
 (window as unknown as { __calls: unknown[] }).__calls = [];
+(window as unknown as { __emit: typeof emit }).__emit = emit;
 
 await import("../main");

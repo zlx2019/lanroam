@@ -109,7 +109,7 @@ function MemberRow({
 }) {
   const { t } = useI18n();
   const { control } = snapshot;
-  const concerned = !device.local && control.peer === device.name;
+  const concerned = !device.local && control.peerFingerprint === device.fingerprint;
   let status = device.online ? (
     <span className="tag">{t("tag.online")}</span>
   ) : (

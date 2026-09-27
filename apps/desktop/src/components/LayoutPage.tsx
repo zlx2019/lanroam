@@ -5,7 +5,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEven
 import { api } from "../api";
 import { fit, neighbours, overlaps, snap, touches, type Box, type Touch, type View } from "../geometry";
 import { useArmed } from "../hooks/useLanroam";
-import { formatError, useI18n } from "../i18n";
+import { altKey, formatError, useI18n } from "../i18n";
 import type { DeviceDto, NearbyDto, Snapshot } from "../types";
 import {
   CursorIcon,
@@ -35,11 +35,6 @@ const BOUNCE_MS = 300;
 
 /** How long a placed device waits for the group to confirm its spot */
 const PENDING_MS = 3000;
-
-/** The key the number hotkeys use with Ctrl on this platform */
-export function altKey(platform: string): string {
-  return platform === "macos" ? "Option" : "Alt";
-}
 
 /** The layout page */
 export function LayoutPage({
@@ -299,7 +294,7 @@ function Canvas({
         if (!box) return null;
         const w = box.w * view.k;
         const h = box.h * view.k;
-        const target = !d.local && control.peer === d.name;
+        const target = !d.local && control.peerFingerprint === d.fingerprint;
         const badge =
           target && control.mode === "controlling" ? (
             <span className="badge">

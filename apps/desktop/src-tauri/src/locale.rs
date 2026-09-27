@@ -43,6 +43,8 @@ pub struct Texts {
     pub controlled: &'static str,
     /// Tray: crossing is paused
     pub paused: &'static str,
+    /// Tray: the pointer is locked to `{name}`
+    pub locked_on: &'static str,
     /// Tray: pause sharing
     pub pause: &'static str,
     /// Tray: resume sharing
@@ -87,6 +89,7 @@ static ZH: Texts = Texts {
     controlling: "正在控制 {name}",
     controlled: "{name} 正在控制本机",
     paused: "已暂停共享",
+    locked_on: "光标锁定在 {name}",
     pause: "暂停共享",
     resume: "恢复共享",
     lock: "锁定光标",
@@ -106,6 +109,7 @@ static EN: Texts = Texts {
     controlling: "Controlling {name}",
     controlled: "{name} is controlling this device",
     paused: "Sharing paused",
+    locked_on: "Pointer locked to {name}",
     pause: "Pause Sharing",
     resume: "Resume Sharing",
     lock: "Lock the Pointer",

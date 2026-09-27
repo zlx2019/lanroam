@@ -7,7 +7,7 @@ import { formatError, useI18n } from "../i18n";
 import type { SettingsDto, Snapshot } from "../types";
 
 /** Sections of the settings page */
-type Section = "general" | "about";
+type Section = "general" | "look" | "about";
 
 /** The settings page */
 export function SettingsPage({
@@ -26,7 +26,7 @@ export function SettingsPage({
   return (
     <div className="settings">
       <nav className="snav">
-        {(["general", "about"] as const).map((id) => (
+        {(["general", "look", "about"] as const).map((id) => (
           <button key={id} className={section === id ? "on" : ""} onClick={() => setSection(id)}>
             {t(`settings.${id}`)}
           </button>
@@ -36,6 +36,8 @@ export function SettingsPage({
         <div className="pane-inner" style={{ maxWidth: 640 }}>
           {section === "general" ? (
             <General snapshot={snapshot} settings={settings} onSettings={onSettings} onToast={onToast} />
+          ) : section === "look" ? (
+            <Look settings={settings} onSettings={onSettings} onToast={onToast} />
           ) : (
             <About snapshot={snapshot} />
           )}
@@ -139,10 +141,10 @@ function General({
           />
         </Row>
         <Row title={t("settings.autostart")} hint={t("settings.autostartHint")}>
-          <button
-            className={`tg${settings.autostart ? " on" : ""}`}
-            onClick={() => change({ autostart: !settings.autostart })}
-            aria-label={t("settings.autostart")}
+          <Toggle
+            on={settings.autostart}
+            label={t("settings.autostart")}
+            onChange={(autostart) => change({ autostart })}
           />
         </Row>
       </div>
@@ -171,6 +173,42 @@ function General({
         </Row>
       </div>
     </>
+  );
+}
+
+/** An on/off switch */
+function Toggle({ on, label, onChange }: { on: boolean; label: string; onChange: (on: boolean) => void }) {
+  return <button className={`tg${on ? " on" : ""}`} onClick={() => onChange(!on)} aria-label={label} />;
+}
+
+/** The on-screen indicators */
+function Look({
+  settings,
+  onSettings,
+  onToast,
+}: {
+  settings: SettingsDto;
+  onSettings: (next: SettingsDto) => Promise<void>;
+  onToast: (message: string) => void;
+}) {
+  const { t } = useI18n();
+
+  /** Apply one changed preference */
+  const change = (patch: Partial<SettingsDto>) =>
+    onSettings({ ...settings, ...patch }).catch((e) => onToast(formatError(t, e)));
+
+  return (
+    <div className="group">
+      <Row title={t("settings.edgeGlow")} hint={t("settings.edgeGlowHint")}>
+        <Toggle on={settings.edgeGlow} label={t("settings.edgeGlow")} onChange={(edgeGlow) => change({ edgeGlow })} />
+      </Row>
+      <Row title={t("settings.hints")} hint={t("settings.hintsHint")}>
+        <Toggle on={settings.hints} label={t("settings.hints")} onChange={(hints) => change({ hints })} />
+      </Row>
+      <Row title={t("settings.dim")} hint={t("settings.dimHint")}>
+        <Toggle on={settings.dim} label={t("settings.dim")} onChange={(dim) => change({ dim })} />
+      </Row>
+    </div>
   );
 }
 

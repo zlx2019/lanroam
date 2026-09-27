@@ -42,5 +42,14 @@ tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 sys-locale = "0.3"
 
+# The on-screen overlays' window level (above full-screen apps); the same
+# version Tauri uses
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "NSResponder",
+    "NSWindow",
+] }
+
 [lints]
 workspace = true

@@ -8,7 +8,7 @@ import type {
   JoinPromptDto,
   JoinStartDto,
   NearbyDto,
-  OverlayDto,
+  SceneDto,
   PermissionsDto,
   SettingsDto,
   Snapshot,
@@ -38,8 +38,8 @@ export const api = {
     invoke<void>("place", { fingerprint, x, y }),
   /** Every online member shows its number on its screens */
   identify: () => invoke<void>("identify"),
-  /** What the overlays show right now */
-  getOverlay: () => invoke<OverlayDto | null>("get_overlay"),
+  /** What this overlay window shows right now */
+  getOverlay: () => invoke<SceneDto>("get_overlay"),
   /** Rename this device */
   rename: (name: string) => invoke<void>("rename", { name }),
   /** Swap Command and Control for input into this device */

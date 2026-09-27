@@ -1173,10 +1173,13 @@ footer code,
 [data-overlay] body {
   background: transparent;
 }
+/* The number is centered by the grid; every other part is placed on its own */
 .overlay {
+  position: relative;
   height: 100%;
   display: grid;
   place-items: center;
+  overflow: hidden;
   pointer-events: none;
 }
 .identify {
@@ -1201,4 +1204,102 @@ footer code,
 .identify-name {
   font-size: 22px;
   font-weight: 600;
+}
+.ov-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 70px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 18px;
+  border-radius: 14px;
+  color: #fff;
+  font-size: 14px;
+  white-space: nowrap;
+  background: rgba(16, 20, 34, 0.78);
+  backdrop-filter: blur(20px);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+  opacity: 0;
+  animation: ov-hint 2.2s ease-out forwards;
+}
+.ov-hint svg {
+  width: 18px;
+  height: 18px;
+  color: #3ccfbe;
+}
+.ov-hint.warn svg {
+  color: #f2b84b;
+}
+.ov-hint small {
+  color: #aab1cc;
+  font-size: 12px;
+}
+@keyframes ov-hint {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 8px);
+  }
+  10%,
+  75% {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, 0);
+  }
+}
+.ov-glow {
+  position: absolute;
+  opacity: 0;
+  box-shadow: 0 0 30px #3ccfbe;
+  animation: ov-glow 0.9s ease-out;
+}
+.ov-glow.left,
+.ov-glow.right {
+  top: 0;
+  bottom: 0;
+  width: 10px;
+}
+.ov-glow.top,
+.ov-glow.bottom {
+  left: 0;
+  right: 0;
+  height: 10px;
+}
+.ov-glow.left {
+  left: 0;
+  background: linear-gradient(90deg, #3ccfbe, transparent);
+}
+.ov-glow.right {
+  right: 0;
+  background: linear-gradient(270deg, #3ccfbe, transparent);
+}
+.ov-glow.top {
+  top: 0;
+  background: linear-gradient(180deg, #3ccfbe, transparent);
+}
+.ov-glow.bottom {
+  bottom: 0;
+  background: linear-gradient(0deg, #3ccfbe, transparent);
+}
+@keyframes ov-glow {
+  0% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+.ov-dim {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  animation: ov-fade 0.3s ease-out;
+}
+@keyframes ov-fade {
+  from {
+    opacity: 0;
+  }
 }
