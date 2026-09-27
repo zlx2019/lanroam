@@ -10,7 +10,7 @@ Move the pointer past the edge of one screen and it lands on the next computer, 
 
 ## Status
 
-**Early development, not usable yet.** Peer discovery, device identity and a QUIC transport pinned to certificate fingerprints are done. The keyboard and mouse prototype works from the command line between a Mac and a Windows PC, in both directions. Desk groups (joining with a PIN, kicking, leaving) and a shared screen layout work from the command line; switching between any devices of a group and the desktop app come next.
+**Early development, not usable yet.** Peer discovery, device identity and a QUIC transport pinned to certificate fingerprints are done. From the command line, devices form desk groups (joining with a PIN), share a screen layout, and control each other: the pointer moves across the edges they share, between Macs and Windows PCs, in any direction. Hotkeys and the desktop app come next.
 
 | Milestone | Scope | |
 |---|---|---|
@@ -37,17 +37,15 @@ Rust is pinned by `rust-toolchain.toml`; see [CONTRIBUTING.md](./CONTRIBUTING.md
 ```bash
 cargo nextest run --workspace          # tests
 cargo run -p lanroam-cli -- run        # run this device in its desk group (console: join, layout, place, ...)
-cargo run -p lanroam-cli -- listen     # run a node for the input prototype
 cargo run -p lanroam-cli -- scan       # list nodes on the LAN
 cargo run -p lanroam-cli -- ping <name | fingerprint prefix | ip:port>
-cargo run -p lanroam-cli -- share <target> --edge right   # control <target> from here
 ```
 
 In `run`, `join <device>` asks a nearby device to let this one into its group (founding a group when neither has one); that device shows a 6-digit PIN to type here. The PIN is checked with a password-authenticated key exchange bound to both TLS certificates, so a device impersonating the one you picked learns nothing it could use. `layout` shows where every member's screens sit on a shared canvas (in logical pixels, so a 150% Windows display lines up with a Mac's) and which edges they share; `place <member> right-of <member> [offset]` (or `left-of`, `above`, `below`) rearranges them, for the whole group.
 
-Two instances on one machine need their own identities: pass a different `--data-dir` to each and `--port 0`; `listen --dry-run` prints the input it receives instead of injecting it.
+While `run` is running, push the pointer off an edge this device shares with another member to control it; it carries on across further devices and back. **Ctrl+Alt+Esc** (Ctrl+Option+Esc on a Mac) takes control back at once, and using a controlled device's own mouse or keyboard takes it back there. Between a Mac and a PC, Command and Control swap places so shortcuts stay under the same fingers (`swap off` turns that off for input into this device). On macOS, the app running the command (your terminal) needs Accessibility and Input Monitoring under System Settings > Privacy & Security.
 
-`share` captures the local keyboard and mouse: push the pointer through the chosen edge to control the target, move it back to return. **Ctrl+Alt+Esc** (Ctrl+Option+Esc on a Mac) takes control back at once. On macOS, the app running the command (your terminal) needs Accessibility (both to control and to be controlled) and Input Monitoring (to control) under System Settings > Privacy & Security.
+Two instances on one machine need their own identities: pass a different `--data-dir` to each and `--port 0`; `run --dry-run` captures nothing and prints the input it receives instead of injecting it.
 
 The Windows code can be linted from any machine: `cargo clippy -p lanroam-input --target x86_64-pc-windows-msvc`.
 

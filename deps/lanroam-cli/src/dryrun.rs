@@ -1,11 +1,38 @@
-//! `listen --dry-run`: an injector that prints what it would inject, to try
-//! a source against a second instance on the same machine.
+//! `run --dry-run`: input that prints what it would inject and captures
+//! nothing, to try a second instance on the same machine as a device to
+//! control.
 
+use std::any::Any;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use lanroam_core::engine::{InputBackend, PlatformInput};
 use lanroam_core::lanroam_input::inject::Injector;
-use lanroam_core::lanroam_input::keymap;
-use lanroam_core::lanroam_input::{InputError, MouseButton, Point};
+use lanroam_core::lanroam_input::platform::EmitSink;
+use lanroam_core::lanroam_input::switch::Switch;
+use lanroam_core::lanroam_input::{InputError, MouseButton, Point, Rect, keymap};
+
+/// The real displays; no capture; printing instead of injecting
+pub(crate) struct DryRunInput;
+
+impl InputBackend for DryRunInput {
+    fn screens(&self) -> Result<(Vec<Rect>, u32), InputError> {
+        PlatformInput.screens()
+    }
+
+    fn capture(
+        &self,
+        _switch: Arc<Mutex<Switch>>,
+        _sink: EmitSink,
+    ) -> Result<Box<dyn Any + Send>, InputError> {
+        // The other instance on this machine captures the real input
+        Err(InputError::Unsupported("capture in a dry run"))
+    }
+
+    fn injector(&self) -> Result<Box<dyn Injector>, InputError> {
+        Ok(Box::new(PrintInjector::new()))
+    }
+}
 
 /// Pointer positions are printed at most this often
 const MOTION_EVERY: Duration = Duration::from_millis(250);

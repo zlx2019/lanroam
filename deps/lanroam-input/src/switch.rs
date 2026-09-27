@@ -1,38 +1,48 @@
 //! Source side: event by event, decides whether local input stays on this
-//! machine or goes to the target, and moves the virtual cursor across the
-//! target's desktop.
+//! machine or goes to another device of the layout, and moves the virtual
+//! cursor across the devices.
 //!
-//! Every key and button remembers where its press went, and its release
-//! follows it there. That single rule keeps keys from getting stuck when
-//! control changes hands in the middle of a press.
+//! The cursor is always on one device, in that device's own coordinates:
+//! inside a device it moves across the displays like the real one would,
+//! and pushed against an outer edge it goes wherever the [`World`] says the
+//! canvas continues (another device, back home, or nowhere: a wall).
+//!
+//! Every key and button remembers which device its press went to, and its
+//! release follows it there. That single rule keeps keys from getting stuck
+//! when control changes hands in the middle of a press.
 //!
 //! The switch runs inside the capture callback, synchronously: it must
 //! decide before the OS delivers the event, and never blocks.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::event::{InputEvent, MouseButton};
-use crate::geometry::{Desktop, Edge, Point, Rect, Step};
-use crate::keymap::usage;
+use crate::geometry::{Edge, Point, Rect, Step};
+use crate::keymap::{self, usage};
+use crate::world::World;
 
 /// How far inside the edge the pointer lands after a crossing, so a
 /// one-pixel jitter does not bounce it straight back
 const LANDING_INSET: i32 = 1;
+
+/// Local pointer travel (device units) that counts as someone using this
+/// machine while another device controls it; smaller twitches are ignored
+const TAKEOVER_TRAVEL: f64 = 4.0;
 
 /// What the capture backend does with the event it just reported
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
     /// Deliver it locally as usual
     Pass,
-    /// Drop it; it was forwarded to the target, or belongs to nobody
+    /// Drop it; it was forwarded to another device, or belongs to nobody
     Swallow,
 }
 
 /// Change of the local cursor the capture backend must apply
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CursorAction {
-    /// Control moved to the target: freeze the local cursor where it is
+    /// Control moved to another device: freeze the local cursor where it is
     Park,
     /// Control came back: unfreeze the local cursor and put it here
     Release(Point),
@@ -47,135 +57,213 @@ pub struct Decision {
     pub cursor: Option<CursorAction>,
 }
 
-/// Message for the target, produced by [`Switch::handle`]
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Message for another device (or the engine), produced by
+/// [`Switch::handle`]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Emit {
-    /// Control moved to the target; its cursor goes here
-    Enter(Point),
-    /// Control came back; the target releases whatever is still held
-    Leave,
-    /// The virtual cursor moved here (target coordinates)
-    Motion(Point),
+    /// Control moves to `device`; its cursor goes to `at`
+    Enter {
+        /// The device
+        device: String,
+        /// Cursor position (the device's coordinates)
+        at: Point,
+    },
+    /// Control leaves `device`, which releases whatever is still held
+    Leave {
+        /// The device
+        device: String,
+    },
+    /// The virtual cursor moved to `at` on `device`
+    Motion {
+        /// The device
+        device: String,
+        /// Cursor position (the device's coordinates)
+        at: Point,
+    },
     /// A key press, autorepeat or release
     Key {
-        /// USB HID usage
+        /// The device
+        device: String,
+        /// USB HID usage, as the device should see it (Cmd / Ctrl swapped
+        /// if configured)
         usage: u16,
         /// Pressed (true) or released
         down: bool,
     },
     /// A mouse button, with the cursor position it happened at
     Button {
+        /// The device
+        device: String,
         /// Which button
         button: MouseButton,
         /// Pressed (true) or released
         down: bool,
-        /// Virtual cursor position (target coordinates)
+        /// Virtual cursor position (the device's coordinates)
         at: Point,
     },
     /// Scrolling (see [`InputEvent::Wheel`])
     Wheel {
+        /// The device
+        device: String,
         /// Horizontal amount
         dx: i32,
         /// Vertical amount
         dy: i32,
     },
+    /// Someone used this machine's own mouse or keyboard while another
+    /// device controlled it: that device must let go
+    Takeover,
 }
 
 /// Where the local cursor reappears when control comes back
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Landing {
-    /// Just inside the shared edge, facing where the virtual cursor left:
-    /// the pointer simply carries on
-    Edge,
-    /// In the middle of that display: after the hotkey or a lost target the
-    /// user wants to stay here, and a pointer left at the edge would slip
-    /// straight back at the slightest motion
+    /// Where the canvas continues from the device the cursor leaves: the
+    /// pointer simply carries on
+    At(Point),
+    /// In the middle of the display the cursor left from: after a hotkey or
+    /// a lost device the user wants to stay here, and a pointer left at the
+    /// edge would slip straight back at the slightest motion
     Centre,
 }
 
 /// Where a key or button press went
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Owner {
     /// Delivered locally
     Local,
-    /// Forwarded to the target
-    Remote,
+    /// Forwarded to this device
+    Remote(String),
     /// Consumed by Lanroam itself (a hotkey)
     Dropped,
+}
+
+/// The virtual cursor on another device
+#[derive(Debug, Clone, PartialEq)]
+struct Remote {
+    /// The device
+    device: String,
+    /// Horizontal position (the device's coordinates)
+    x: f64,
+    /// Vertical position
+    y: f64,
+}
+
+impl Remote {
+    /// The pixel the cursor is on
+    fn pixel(&self) -> Point {
+        Point::floor(self.x, self.y)
+    }
 }
 
 /// The source-side state machine
 #[derive(Debug)]
 pub struct Switch {
-    /// This machine's displays
-    local: Desktop,
-    /// The target's displays (empty until it reports them)
-    target: Desktop,
-    /// Side of the local desktop the target sits on
-    edge: Edge,
-    /// Virtual cursor on the target while controlling it
-    remote: Option<(f64, f64)>,
-    /// Keys currently pressed, and where each press went
-    keys: HashMap<u16, Owner>,
+    /// Every device on the canvas, this one included
+    world: World,
+    /// This device's key in the world
+    local: String,
+    /// The virtual cursor while another device is controlled
+    remote: Option<Remote>,
+    /// Where the local cursor left this machine, for coming back to it
+    departed: Point,
+    /// Keys currently pressed (by physical usage): where each press went,
+    /// and the usage it was sent as
+    keys: HashMap<u16, (Owner, u16)>,
     /// Buttons currently pressed, and where each press went
     buttons: [Option<Owner>; MouseButton::COUNT],
     /// Hand control back at the next event (set from outside the capture)
     release_requested: bool,
+    /// Devices that get Command and Control swapped
+    swapped: HashSet<String>,
+    /// Another device controls this machine right now
+    controlled: bool,
+    /// Local pointer travel since control was taken
+    local_travel: f64,
 }
 
 impl Switch {
-    /// A switch with the target on `edge` of the local desktop
-    pub fn new(local: Desktop, target: Desktop, edge: Edge) -> Self {
+    /// A switch for the device `local`, with nothing to switch to until
+    /// [`Self::set_world`]
+    pub fn new(local: impl Into<String>) -> Self {
         Self {
-            local,
-            target,
-            edge,
+            world: World::default(),
+            local: local.into(),
             remote: None,
+            departed: Point::default(),
             keys: HashMap::new(),
-            buttons: [None; MouseButton::COUNT],
+            buttons: std::array::from_fn(|_| None),
             release_requested: false,
+            swapped: HashSet::new(),
+            controlled: false,
+            local_travel: 0.0,
         }
     }
 
-    /// Whether input currently goes to the target
+    /// The layout the switch works with
+    pub fn world(&self) -> &World {
+        &self.world
+    }
+
+    /// The device being controlled, if any
+    pub fn target(&self) -> Option<&str> {
+        self.remote.as_ref().map(|r| r.device.as_str())
+    }
+
+    /// Whether input currently goes to another device
     pub fn is_remote(&self) -> bool {
         self.remote.is_some()
     }
 
-    /// Update the target's displays; control comes back if it has none left
-    pub fn set_target(&mut self, target: Desktop) {
-        if let Some((x, y)) = self.remote {
-            if target.is_empty() {
-                self.release_requested = true;
-            } else {
-                let p = target.clamp(Point::floor(x, y));
-                self.remote = Some((f64::from(p.x), f64::from(p.y)));
+    /// Update the layout, and the devices that get Command and Control
+    /// swapped; control comes back if the device being controlled left it
+    pub fn set_world(&mut self, world: World, swapped: HashSet<String>) {
+        if let Some(remote) = &mut self.remote {
+            match world.device(&remote.device) {
+                Some(device) => {
+                    let p = device.desktop.clamp(remote.pixel());
+                    (remote.x, remote.y) = (f64::from(p.x), f64::from(p.y));
+                }
+                None => self.release_requested = true,
             }
         }
-        self.target = target;
+        self.world = world;
+        self.swapped = swapped;
     }
 
-    /// Hand control back to this machine at the next event (the target
-    /// stopped answering, the link dropped, ...)
+    /// Hand control back to this machine at the next event, if `device`
+    /// (any device for `None`) is being controlled: it stopped answering,
+    /// its link dropped, someone else took it over
     ///
     /// Deferred to the next event because only the capture callback may
     /// move the local cursor; the user touching the mouse or keyboard is
     /// exactly when it matters.
-    pub fn request_release(&mut self) {
-        if self.remote.is_some() {
+    pub fn request_release(&mut self, device: Option<&str>) {
+        if let Some(remote) = &self.remote
+            && device.is_none_or(|d| d == remote.device)
+        {
             self.release_requested = true;
         }
     }
 
-    /// Decide what happens to one captured event; messages for the target
-    /// are appended to `out`
+    /// Whether another device controls this machine; while it does, local
+    /// input emits [`Emit::Takeover`] once
+    pub fn set_controlled(&mut self, controlled: bool) {
+        self.controlled = controlled;
+        self.local_travel = 0.0;
+    }
+
+    /// Decide what happens to one captured event; messages for other
+    /// devices are appended to `out`
     pub fn handle(&mut self, event: InputEvent, out: &mut Vec<Emit>) -> Decision {
         let mut cursor = None;
-        if std::mem::take(&mut self.release_requested)
-            && let Some(at) = self.remote
-        {
+        if std::mem::take(&mut self.release_requested) && self.remote.is_some() {
             tracing::debug!("control comes back on request");
-            cursor = Some(self.leave(at, Landing::Centre, out));
+            cursor = Some(self.come_home(Landing::Centre, out));
+        }
+        if self.controlled && self.remote.is_none() && self.used_locally(&event) {
+            self.controlled = false;
+            out.push(Emit::Takeover);
         }
         let verdict = match event {
             InputEvent::Motion { at, dx, dy } => self.motion(at, dx, dy, out, &mut cursor),
@@ -186,7 +274,18 @@ impl Switch {
         Decision { verdict, cursor }
     }
 
-    /// Pointer motion: cross into the target, move the virtual cursor, or
+    /// Whether `event` shows someone using this machine's own devices
+    fn used_locally(&mut self, event: &InputEvent) -> bool {
+        match *event {
+            InputEvent::Motion { dx, dy, .. } => {
+                self.local_travel += dx.abs() + dy.abs();
+                self.local_travel > TAKEOVER_TRAVEL
+            }
+            _ => true,
+        }
+    }
+
+    /// Pointer motion: cross to another device, move the virtual cursor, or
     /// come back
     fn motion(
         &mut self,
@@ -196,66 +295,110 @@ impl Switch {
         out: &mut Vec<Emit>,
         cursor: &mut Option<CursorAction>,
     ) -> Verdict {
-        let Some(from) = self.remote else {
+        let Some(remote) = self.remote.clone() else {
             // No crossing right after a forced release, or a motion that
             // arrives with it would take control straight back
             if cursor.is_none()
-                && let Some(entry) = self.crossing(at, dx, dy)
+                && let Some((device, entry, departed)) = self.crossing(at, dx, dy)
             {
-                self.remote = Some((f64::from(entry.x), f64::from(entry.y)));
-                out.push(Emit::Enter(entry));
+                self.departed = departed;
+                self.enter(device, entry, out);
                 *cursor = Some(CursorAction::Park);
                 return Verdict::Swallow;
             }
             return Verdict::Pass;
         };
-        match self.target.step(from, dx, dy, self.edge.opposite()) {
-            Step::Inside(x, y) => {
-                self.remote = Some((x, y));
-                let now = Point::floor(x, y);
-                if now != Point::floor(from.0, from.1) {
-                    out.push(Emit::Motion(now));
+        let Some(target) = self.world.device(&remote.device) else {
+            // Gone from the layout; the release is already requested
+            return Verdict::Swallow;
+        };
+        // Same physical travel on every device: source units to logical
+        // pixels to the target's units
+        let local_scale = self.world.device(&self.local).map_or(1.0, |d| d.scale);
+        let k = target.scale / local_scale;
+        let (x, y) = match target.desktop.step((remote.x, remote.y), dx * k, dy * k) {
+            Step::Inside(x, y) => (x, y),
+            // A held button keeps the pointer on the device: dragging across
+            // devices is not supported yet
+            Step::Blocked { x, y, .. } if self.holds_remote_button() => (x, y),
+            Step::Blocked { x, y, stop, edges } => {
+                let next = edges.into_iter().find_map(|edge| {
+                    self.world
+                        .cross(&remote.device, stop, edge, LANDING_INSET)
+                        .map(|(device, entry)| (device.key.clone(), entry))
+                });
+                match next {
+                    Some((device, entry)) if device == self.local => {
+                        *cursor = Some(self.come_home(Landing::At(entry), out));
+                        return Verdict::Swallow;
+                    }
+                    Some((device, entry)) => {
+                        out.push(Emit::Leave {
+                            device: remote.device,
+                        });
+                        self.enter(device, entry, out);
+                        return Verdict::Swallow;
+                    }
+                    // A wall: slide along it
+                    None => (x, y),
                 }
             }
-            // A held button keeps the pointer on the target: dragging across
-            // devices is not supported yet
-            Step::Exit(stop) if self.holds_button(Owner::Remote) => {
-                self.remote = Some((f64::from(stop.x), f64::from(stop.y)));
-            }
-            Step::Exit(_) => *cursor = Some(self.leave(from, Landing::Edge, out)),
+        };
+        let before = remote.pixel();
+        let moved = Remote { x, y, ..remote };
+        if moved.pixel() != before {
+            out.push(Emit::Motion {
+                device: moved.device.clone(),
+                at: moved.pixel(),
+            });
         }
+        self.remote = Some(moved);
         Verdict::Swallow
     }
 
-    /// Where the pointer enters the target, if this motion pushes it out
-    /// through the shared edge
-    fn crossing(&self, at: Point, dx: f64, dy: f64) -> Option<Point> {
-        if self.target.is_empty() || !self.edge.pushed_by(dx, dy) || self.holds_button(Owner::Local)
-        {
+    /// Where this motion takes the local pointer when it pushes out of this
+    /// machine: (device, entry point, departure point)
+    fn crossing(&self, at: Point, dx: f64, dy: f64) -> Option<(String, Point, Point)> {
+        if self.buttons.contains(&Some(Owner::Local)) {
             return None;
         }
-        let at = self.local.clamp(at);
-        if !self.local.on_edge(at, self.edge) {
-            return None;
-        }
-        self.local
-            .map_across(at, self.edge, &self.target, LANDING_INSET)
+        let local = self.world.device(&self.local)?;
+        let at = local.desktop.clamp(at);
+        Edge::ALL
+            .into_iter()
+            .filter(|edge| edge.pushed_by(dx, dy) && local.desktop.on_edge(at, *edge))
+            .find_map(|edge| self.world.cross(&self.local, at, edge, LANDING_INSET))
+            .map(|(device, entry)| (device.key.clone(), entry, at))
     }
 
-    /// Give control back: tell the target, and work out where the local
-    /// cursor reappears (on the display facing the virtual cursor's last
-    /// position)
-    fn leave(&mut self, from: (f64, f64), landing: Landing, out: &mut Vec<Emit>) -> CursorAction {
-        self.remote = None;
-        out.push(Emit::Leave);
-        let last = Point::floor(from.0, from.1);
-        let back = self
-            .target
-            .map_across(last, self.edge.opposite(), &self.local, LANDING_INSET)
-            .unwrap_or_else(|| self.local.clamp(last));
+    /// Take control of `device` with its cursor at `at`
+    fn enter(&mut self, device: String, at: Point, out: &mut Vec<Emit>) {
+        tracing::debug!(%device, "control moves to another device");
+        out.push(Emit::Enter {
+            device: device.clone(),
+            at,
+        });
+        self.remote = Some(Remote {
+            device,
+            x: f64::from(at.x),
+            y: f64::from(at.y),
+        });
+    }
+
+    /// Give control back to this machine: tell the device, and work out
+    /// where the local cursor reappears
+    fn come_home(&mut self, landing: Landing, out: &mut Vec<Emit>) -> CursorAction {
+        if let Some(remote) = self.remote.take() {
+            out.push(Emit::Leave {
+                device: remote.device,
+            });
+        }
+        let local = self.world.device(&self.local).map(|d| &d.desktop);
         let back = match landing {
-            Landing::Edge => back,
-            Landing::Centre => self.local.display_at(back).map_or(back, Rect::centre),
+            Landing::At(entry) => entry,
+            Landing::Centre => local
+                .and_then(|desktop| desktop.display_at(self.departed))
+                .map_or(self.departed, Rect::centre),
         };
         CursorAction::Release(back)
     }
@@ -265,23 +408,33 @@ impl Switch {
         let side = self.side();
         let slot = &mut self.buttons[button.index()];
         let owner = if down {
-            *slot = Some(side);
-            *slot
+            *slot = Some(side.clone());
+            Some(side)
         } else {
             slot.take()
         };
         let at = self
             .remote
-            .map_or_else(Point::default, |(x, y)| Point::floor(x, y));
-        self.route(owner, Emit::Button { button, down, at }, out)
+            .as_ref()
+            .map_or_else(Point::default, Remote::pixel);
+        self.route(owner, out, |device| Emit::Button {
+            device,
+            button,
+            down,
+            at,
+        })
     }
 
     /// Scrolling follows the current side
     fn wheel(&mut self, dx: i32, dy: i32, out: &mut Vec<Emit>) -> Verdict {
-        if self.remote.is_none() {
+        let Some(remote) = &self.remote else {
             return Verdict::Pass;
-        }
-        out.push(Emit::Wheel { dx, dy });
+        };
+        out.push(Emit::Wheel {
+            device: remote.device.clone(),
+            dx,
+            dy,
+        });
         Verdict::Swallow
     }
 
@@ -289,25 +442,38 @@ impl Switch {
     /// follow the press
     fn key(
         &mut self,
-        usage: u16,
+        key: u16,
         down: bool,
         out: &mut Vec<Emit>,
         cursor: &mut Option<CursorAction>,
     ) -> Verdict {
-        tracing::trace!(usage, down, remote = self.remote.is_some(), "key");
+        tracing::trace!(key, down, remote = self.remote.is_some(), "key");
         if !down {
-            let owner = self.keys.remove(&usage);
-            return self.route(owner, Emit::Key { usage, down }, out);
+            let (owner, sent) = match self.keys.remove(&key) {
+                Some((owner, sent)) => (Some(owner), sent),
+                None => (None, key),
+            };
+            return self.route(owner, out, |device| Emit::Key {
+                device,
+                usage: sent,
+                down,
+            });
         }
-        let owner = match self.keys.get(&usage) {
-            Some(&held) => held,
-            None if usage == usage::ESCAPE && self.hotkey_modifiers_held() => {
+        let (owner, sent) = match self.keys.get(&key) {
+            Some(held) => held.clone(),
+            None if key == usage::ESCAPE && self.hotkey_modifiers_held() => {
                 return self.hotkey(out, cursor);
             }
             None => {
                 let side = self.side();
-                self.keys.insert(usage, side);
-                side
+                let sent = match &side {
+                    Owner::Remote(device) if self.swapped.contains(device) => {
+                        keymap::swap_cmd_ctrl(key)
+                    }
+                    _ => key,
+                };
+                self.keys.insert(key, (side.clone(), sent));
+                (side, sent)
             }
         };
         // Autorepeat of a key held down since before the crossing: the local
@@ -315,22 +481,28 @@ impl Switch {
         if owner == Owner::Local && self.remote.is_some() {
             return Verdict::Swallow;
         }
-        self.route(Some(owner), Emit::Key { usage, down }, out)
+        self.route(Some(owner), out, |device| Emit::Key {
+            device,
+            usage: sent,
+            down,
+        })
     }
 
     /// Ctrl+Alt+Esc (Ctrl+Option+Esc on macOS): take control back at once
     ///
     /// Handled here, before anything else, so it works whatever state the
-    /// target or the network is in.
+    /// other device or the network is in.
     fn hotkey(&mut self, out: &mut Vec<Emit>, cursor: &mut Option<CursorAction>) -> Verdict {
-        let Some(at) = self.remote else {
+        if self.remote.is_none() {
             // Nothing to take back: an ordinary key press
-            self.keys.insert(usage::ESCAPE, Owner::Local);
+            self.keys
+                .insert(usage::ESCAPE, (Owner::Local, usage::ESCAPE));
             return Verdict::Pass;
-        };
+        }
         tracing::debug!("escape hotkey: taking control back");
-        self.keys.insert(usage::ESCAPE, Owner::Dropped);
-        *cursor = Some(self.leave(at, Landing::Centre, out));
+        self.keys
+            .insert(usage::ESCAPE, (Owner::Dropped, usage::ESCAPE));
+        *cursor = Some(self.come_home(Landing::Centre, out));
         Verdict::Swallow
     }
 
@@ -342,32 +514,38 @@ impl Switch {
 
     /// Where new presses go right now
     fn side(&self) -> Owner {
-        if self.remote.is_some() {
-            Owner::Remote
-        } else {
-            Owner::Local
+        match &self.remote {
+            Some(remote) => Owner::Remote(remote.device.clone()),
+            None => Owner::Local,
         }
     }
 
-    /// Whether any mouse button pressed on `owner`'s side is still held
-    fn holds_button(&self, owner: Owner) -> bool {
-        self.buttons.contains(&Some(owner))
+    /// Whether a mouse button pressed on some other device is still held
+    fn holds_remote_button(&self) -> bool {
+        self.buttons
+            .iter()
+            .any(|b| matches!(b, Some(Owner::Remote(_))))
     }
 
-    /// Deliver a press or release according to where its press went;
-    /// remote ones reach the target only while it is being controlled
-    /// (after a hand-back it has released everything already)
-    fn route(&self, owner: Option<Owner>, emit: Emit, out: &mut Vec<Emit>) -> Verdict {
-        match owner {
-            Some(Owner::Local) => Verdict::Pass,
-            Some(Owner::Remote) if self.remote.is_some() => {
-                out.push(emit);
+    /// Deliver a press or release according to where its press went.
+    /// Remote ones reach their device only while it is the one being
+    /// controlled: once control left it, it released everything already
+    fn route(
+        &self,
+        owner: Option<Owner>,
+        out: &mut Vec<Emit>,
+        emit: impl FnOnce(String) -> Emit,
+    ) -> Verdict {
+        match (owner, &self.remote) {
+            (Some(Owner::Local), _) => Verdict::Pass,
+            (Some(Owner::Remote(device)), Some(remote)) if remote.device == device => {
+                out.push(emit(device));
                 Verdict::Swallow
             }
-            Some(Owner::Remote | Owner::Dropped) => Verdict::Swallow,
+            (Some(Owner::Remote(_) | Owner::Dropped), _) => Verdict::Swallow,
             // Pressed before the capture started
-            None if self.remote.is_some() => Verdict::Swallow,
-            None => Verdict::Pass,
+            (None, Some(_)) => Verdict::Swallow,
+            (None, None) => Verdict::Pass,
         }
     }
 }
@@ -383,15 +561,30 @@ pub fn lock(switch: &Mutex<Switch>) -> MutexGuard<'_, Switch> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::Rect;
+    use crate::geometry::Desktop;
+    use crate::world::Device;
 
-    /// A 1512x982 Mac with a 1920x1080 PC on its right
-    fn switch() -> Switch {
-        Switch::new(
-            Desktop::new([Rect::new(0, 0, 1512, 982)]),
-            Desktop::new([Rect::new(0, 0, 1920, 1080)]),
-            Edge::Right,
+    /// A device with one display of `w`x`h` at canvas `x`
+    fn device(key: &str, x: i32, w: i32, h: i32, scale: f64) -> Device {
+        Device::new(
+            key,
+            Desktop::new([Rect::new(0, 0, w, h)]),
+            Point::new(x, 0),
+            scale,
         )
+    }
+
+    /// `mac` (1512x982) | `pc` (1920x1080) | `tv` (1920x1080), side by side,
+    /// seen from the Mac
+    fn switch() -> Switch {
+        let mut sw = Switch::new("mac");
+        let world = World::new([
+            device("mac", 0, 1512, 982, 1.0),
+            device("pc", 1512, 1920, 1080, 1.0),
+            device("tv", 3432, 1920, 1080, 1.0),
+        ]);
+        sw.set_world(world, HashSet::new());
+        sw
     }
 
     /// Feed one event and collect what it produced
@@ -415,215 +608,298 @@ mod tests {
         InputEvent::Key { usage, down }
     }
 
-    /// Push through the right edge at mid-height
-    fn cross(sw: &mut Switch) {
-        let (decision, out) = feed(sw, motion(1511, 491, 3.0, 0.0));
-        assert_eq!(decision.cursor, Some(CursorAction::Park));
-        assert_eq!(out, [Emit::Enter(Point::new(1, 540))]);
+    /// Push through the Mac's right edge at height `y`
+    fn cross_to_pc(sw: &mut Switch, y: i32) -> (Decision, Vec<Emit>) {
+        feed(sw, motion(1511, y, 5.0, 0.0))
     }
 
-    /// Ordinary motion stays local; pushing through the shared edge crosses
+    /// Crossing parks the local cursor and enters the PC at the same height
     #[test]
-    fn crosses_at_the_shared_edge_only() {
+    fn crosses_into_the_neighbour() {
         let mut sw = switch();
-        let (decision, out) = feed(&mut sw, motion(700, 400, 5.0, 0.0));
-        assert_eq!(decision.verdict, Verdict::Pass);
-        assert!(out.is_empty());
-        // At the edge but moving away from it
-        let (decision, _) = feed(&mut sw, motion(1511, 400, -2.0, 0.0));
-        assert_eq!(decision.verdict, Verdict::Pass);
-        // The left edge is not shared
-        let (decision, _) = feed(&mut sw, motion(0, 400, -5.0, 0.0));
-        assert_eq!(decision.verdict, Verdict::Pass);
-        assert!(!sw.is_remote());
-
-        cross(&mut sw);
-        assert!(sw.is_remote());
-    }
-
-    /// The virtual cursor moves on the target and comes back through the
-    /// facing edge, the local cursor reappearing opposite
-    #[test]
-    fn moves_remotely_and_comes_back() {
-        let mut sw = switch();
-        cross(&mut sw);
-        let (decision, out) = feed(&mut sw, motion(1511, 491, 10.0, 20.0));
-        assert_eq!(decision.verdict, Verdict::Swallow);
-        assert_eq!(out, [Emit::Motion(Point::new(11, 560))]);
-        // Sub-pixel motion accumulates without emitting
-        let (_, out) = feed(&mut sw, motion(1511, 491, 0.4, 0.0));
-        assert!(out.is_empty());
-        let (decision, out) = feed(&mut sw, motion(1511, 491, -50.0, 0.0));
-        assert_eq!(out, [Emit::Leave]);
-        // 560 of 1080 maps to 509 of 982, one pixel inside the right edge
+        let (d, out) = feed(&mut sw, motion(1500, 400, 5.0, 0.0));
+        assert_eq!((d.verdict, out.len()), (Verdict::Pass, 0));
+        let (d, out) = cross_to_pc(&mut sw, 400);
+        assert_eq!(d.cursor, Some(CursorAction::Park));
         assert_eq!(
-            decision.cursor,
-            Some(CursorAction::Release(Point::new(1510, 509)))
+            out,
+            [Emit::Enter {
+                device: "pc".into(),
+                at: Point::new(1, 400)
+            }]
         );
+        assert_eq!(sw.target(), Some("pc"));
+    }
+
+    /// Through the PC into the TV, and all the way back home
+    #[test]
+    fn hops_across_devices_and_back() {
+        let mut sw = switch();
+        cross_to_pc(&mut sw, 400);
+        let (_, out) = feed(&mut sw, motion(0, 0, 1918.0, 0.0));
+        assert_eq!(
+            out,
+            [Emit::Motion {
+                device: "pc".into(),
+                at: Point::new(1919, 400)
+            }]
+        );
+        let (d, out) = feed(&mut sw, motion(0, 0, 3.0, 0.0));
+        assert_eq!(d.cursor, None);
+        assert_eq!(
+            out,
+            [
+                Emit::Leave {
+                    device: "pc".into()
+                },
+                Emit::Enter {
+                    device: "tv".into(),
+                    at: Point::new(1, 400)
+                }
+            ]
+        );
+        // Back left: TV → PC → Mac
+        feed(&mut sw, motion(0, 0, -5.0, 0.0));
+        assert_eq!(sw.target(), Some("pc"));
+        feed(&mut sw, motion(0, 0, -1918.0, 0.0));
+        let (d, out) = feed(&mut sw, motion(0, 0, -5.0, 0.0));
+        assert_eq!(
+            out,
+            [Emit::Leave {
+                device: "pc".into()
+            }]
+        );
+        assert_eq!(d.cursor, Some(CursorAction::Release(Point::new(1510, 400))));
         assert!(!sw.is_remote());
     }
 
-    /// A held button blocks crossing in both directions
+    /// Walls stop the cursor, which slides along them
+    #[test]
+    fn walls_hold_the_cursor() {
+        let mut sw = switch();
+        cross_to_pc(&mut sw, 400);
+        // Down past the PC's bottom: nothing below, it slides
+        let (_, out) = feed(&mut sw, motion(0, 0, 10.0, 5000.0));
+        assert_eq!(
+            out,
+            [Emit::Motion {
+                device: "pc".into(),
+                at: Point::new(11, 1079)
+            }]
+        );
+        // Left at a height the Mac (982 high) does not reach: wall
+        feed(&mut sw, motion(0, 0, -10.0, -79.0));
+        let (d, out) = feed(&mut sw, motion(0, 0, -5.0, 0.0));
+        assert_eq!(d.cursor, None);
+        assert_eq!(
+            out,
+            [Emit::Motion {
+                device: "pc".into(),
+                at: Point::new(0, 1000)
+            }]
+        );
+        assert_eq!(sw.target(), Some("pc"));
+    }
+
+    /// Pointer travel is the same on a device with another scale
+    #[test]
+    fn motion_is_scaled() {
+        let mut sw = Switch::new("mac");
+        let world = World::new([
+            device("mac", 0, 1512, 982, 1.0),
+            device("pc", 1512, 2880, 1620, 1.5),
+        ]);
+        sw.set_world(world, HashSet::new());
+        cross_to_pc(&mut sw, 400);
+        let (_, out) = feed(&mut sw, motion(0, 0, 10.0, 0.0));
+        assert_eq!(
+            out,
+            [Emit::Motion {
+                device: "pc".into(),
+                at: Point::new(16, 600)
+            }]
+        );
+    }
+
+    /// Held buttons keep the pointer on its side, both ways
     #[test]
     fn held_buttons_block_crossing() {
         let mut sw = switch();
-        let left = |down| InputEvent::Button {
+        let press = InputEvent::Button {
             button: MouseButton::Left,
-            down,
+            down: true,
         };
-        feed(&mut sw, left(true));
-        let (decision, _) = feed(&mut sw, motion(1511, 491, 3.0, 0.0));
-        assert_eq!(decision.verdict, Verdict::Pass);
-        assert!(!sw.is_remote());
-        let (decision, _) = feed(&mut sw, left(false));
-        assert_eq!(decision.verdict, Verdict::Pass);
+        let release = InputEvent::Button {
+            button: MouseButton::Left,
+            down: false,
+        };
+        feed(&mut sw, press);
+        assert_eq!(cross_to_pc(&mut sw, 400).1, []);
+        feed(&mut sw, release);
+        cross_to_pc(&mut sw, 400);
+        let (_, out) = feed(&mut sw, press);
+        assert!(matches!(&out[..], [Emit::Button { device, down: true, .. }] if device == "pc"));
+        let (d, _) = feed(&mut sw, motion(0, 0, -50.0, 0.0));
+        assert_eq!(d.cursor, None);
+        assert_eq!(sw.target(), Some("pc"));
+    }
 
-        cross(&mut sw);
-        let (_, out) = feed(&mut sw, left(true));
-        assert!(matches!(out[..], [Emit::Button { down: true, .. }]));
-        let (decision, out) = feed(&mut sw, motion(1511, 491, -50.0, 0.0));
-        assert!(decision.cursor.is_none() && out.is_empty() && sw.is_remote());
-        let (_, out) = feed(&mut sw, left(false));
+    /// A key pressed on one device is released there, never on the next
+    #[test]
+    fn keys_follow_their_press() {
+        let mut sw = switch();
+        // Held locally, then autorepeating while remote: swallowed
+        feed(&mut sw, key(0x04, true));
+        cross_to_pc(&mut sw, 400);
+        let (d, out) = feed(&mut sw, key(0x04, true));
+        assert_eq!((d.verdict, out.len()), (Verdict::Swallow, 0));
+        let (d, _) = feed(&mut sw, key(0x04, false));
+        assert_eq!(d.verdict, Verdict::Pass);
+
+        // Pressed on the PC, released after hopping to the TV: the PC let
+        // go of it on Leave, and the TV never saw the press
+        let (_, out) = feed(&mut sw, key(0x05, true));
         assert_eq!(
             out,
-            [Emit::Button {
-                button: MouseButton::Left,
-                down: false,
-                at: Point::new(0, 540)
-            }]
-        );
-    }
-
-    /// A key held while crossing is released locally, not on the target
-    #[test]
-    fn local_key_releases_locally() {
-        let mut sw = switch();
-        let shift = usage::LEFT_SHIFT;
-        assert_eq!(feed(&mut sw, key(shift, true)).0.verdict, Verdict::Pass);
-        cross(&mut sw);
-        // Its autorepeat must not type on the hidden local screen
-        let (decision, out) = feed(&mut sw, key(shift, true));
-        assert_eq!(decision.verdict, Verdict::Swallow);
-        assert!(out.is_empty());
-        let (decision, out) = feed(&mut sw, key(shift, false));
-        assert_eq!(decision.verdict, Verdict::Pass);
-        assert!(out.is_empty());
-    }
-
-    /// Keys pressed remotely are forwarded with their autorepeat; after a
-    /// hand-back their release is swallowed (the target already let go)
-    #[test]
-    fn remote_key_follows_its_press() {
-        let mut sw = switch();
-        cross(&mut sw);
-        let a = 0x04;
-        assert_eq!(
-            feed(&mut sw, key(a, true)).1,
             [Emit::Key {
-                usage: a,
+                device: "pc".into(),
+                usage: 0x05,
                 down: true
             }]
         );
+        feed(&mut sw, motion(0, 0, 3000.0, 0.0));
+        assert_eq!(sw.target(), Some("tv"));
+        let (d, out) = feed(&mut sw, key(0x05, false));
+        assert_eq!((d.verdict, out.len()), (Verdict::Swallow, 0));
+    }
+
+    /// Command and Control swap for configured devices, and a release is
+    /// sent as the key its press was sent as
+    #[test]
+    fn cmd_ctrl_swap() {
+        let mut sw = switch();
+        let world = sw.world.clone();
+        sw.set_world(world.clone(), HashSet::from(["pc".to_string()]));
+        cross_to_pc(&mut sw, 400);
+        let (_, out) = feed(&mut sw, key(usage::LEFT_CTRL, true));
         assert_eq!(
-            feed(&mut sw, key(a, true)).1,
+            out,
             [Emit::Key {
-                usage: a,
+                device: "pc".into(),
+                usage: usage::LEFT_META,
                 down: true
             }]
         );
-        feed(&mut sw, motion(1511, 491, -50.0, 0.0));
-        assert!(!sw.is_remote());
-        // Still held: its autorepeat must not start typing locally
-        let (decision, out) = feed(&mut sw, key(a, true));
-        assert_eq!(decision.verdict, Verdict::Swallow);
-        assert!(out.is_empty());
-        let (decision, out) = feed(&mut sw, key(a, false));
-        assert_eq!(decision.verdict, Verdict::Swallow);
-        assert!(out.is_empty());
+        // The setting changes mid-press: the release still matches
+        sw.set_world(world, HashSet::new());
+        let (_, out) = feed(&mut sw, key(usage::LEFT_CTRL, false));
+        assert_eq!(
+            out,
+            [Emit::Key {
+                device: "pc".into(),
+                usage: usage::LEFT_META,
+                down: false
+            }]
+        );
     }
 
-    /// Ctrl+Alt+Esc takes control back; locally it is an ordinary key
+    /// Ctrl+Alt+Esc brings control back to the middle of the display the
+    /// cursor left from; locally it is an ordinary key
     #[test]
     fn escape_hotkey() {
         let mut sw = switch();
-        cross(&mut sw);
-        feed(&mut sw, key(usage::LEFT_CTRL, true));
-        feed(&mut sw, key(usage::RIGHT_ALT, true));
-        let (decision, out) = feed(&mut sw, key(usage::ESCAPE, true));
-        assert_eq!(decision.verdict, Verdict::Swallow);
-        // Well away from the edge, so the hand on the mouse cannot slip back
-        assert_eq!(
-            decision.cursor,
-            Some(CursorAction::Release(Point::new(756, 491)))
-        );
-        assert_eq!(out, [Emit::Leave]);
-        // Its autorepeat and release, and the modifiers', stay swallowed
-        for event in [
-            key(usage::ESCAPE, true),
-            key(usage::ESCAPE, false),
-            key(usage::LEFT_CTRL, false),
-            key(usage::RIGHT_ALT, false),
-        ] {
-            let (decision, out) = feed(&mut sw, event);
-            assert_eq!(decision.verdict, Verdict::Swallow);
-            assert!(out.is_empty());
-        }
-
-        // Locally the combination passes through untouched
         feed(&mut sw, key(usage::LEFT_CTRL, true));
         feed(&mut sw, key(usage::LEFT_ALT, true));
-        let (decision, out) = feed(&mut sw, key(usage::ESCAPE, true));
-        assert_eq!(decision.verdict, Verdict::Pass);
-        assert!(decision.cursor.is_none() && out.is_empty());
+        let (d, _) = feed(&mut sw, key(usage::ESCAPE, true));
+        assert_eq!(d.verdict, Verdict::Pass);
+        feed(&mut sw, key(usage::ESCAPE, false));
+        cross_to_pc(&mut sw, 400);
+        let (d, out) = feed(&mut sw, key(usage::ESCAPE, true));
+        assert_eq!(d.verdict, Verdict::Swallow);
+        assert_eq!(d.cursor, Some(CursorAction::Release(Point::new(756, 491))));
+        assert_eq!(
+            out,
+            [Emit::Leave {
+                device: "pc".into()
+            }]
+        );
+        let (d, _) = feed(&mut sw, key(usage::ESCAPE, false));
+        assert_eq!(d.verdict, Verdict::Swallow);
     }
 
-    /// A requested release happens at the next event, which is then
-    /// handled locally without crossing straight back
+    /// Requested releases apply to the device named (or any), at the next
+    /// event; a device leaving the layout is released too
     #[test]
     fn requested_release() {
         let mut sw = switch();
-        sw.request_release();
-        assert_eq!(feed(&mut sw, motion(5, 5, 1.0, 0.0)).0.cursor, None);
-
-        cross(&mut sw);
-        sw.request_release();
-        let (decision, out) = feed(&mut sw, motion(1511, 491, 3.0, 0.0));
-        assert_eq!(out, [Emit::Leave]);
+        cross_to_pc(&mut sw, 400);
+        sw.request_release(Some("tv"));
+        let (d, _) = feed(&mut sw, motion(0, 0, 1.0, 0.0));
+        assert_eq!(d.cursor, None);
+        sw.request_release(Some("pc"));
+        let (d, out) = feed(&mut sw, motion(0, 0, 1.0, 0.0));
+        assert_eq!(d.cursor, Some(CursorAction::Release(Point::new(756, 491))));
         assert_eq!(
-            decision.cursor,
-            Some(CursorAction::Release(Point::new(756, 491)))
+            out,
+            [Emit::Leave {
+                device: "pc".into()
+            }]
         );
-        assert_eq!(decision.verdict, Verdict::Pass);
+        // The same motion does not cross back at once
         assert!(!sw.is_remote());
+
+        cross_to_pc(&mut sw, 400);
+        let world = World::new([device("mac", 0, 1512, 982, 1.0)]);
+        sw.set_world(world, HashSet::new());
+        let (d, _) = feed(&mut sw, key(0x04, true));
+        assert!(matches!(d.cursor, Some(CursorAction::Release(_))));
+        assert_eq!(d.verdict, Verdict::Pass);
     }
 
-    /// Scrolling follows the side; nothing crosses before the target
-    /// reported its displays
+    /// Local input while controlled tells the controller to let go, once;
+    /// small twitches do not count
     #[test]
-    fn wheel_and_unknown_target() {
+    fn takeover() {
         let mut sw = switch();
-        let wheel = InputEvent::Wheel { dx: 0, dy: 120 };
-        assert_eq!(feed(&mut sw, wheel).0.verdict, Verdict::Pass);
-        cross(&mut sw);
-        assert_eq!(feed(&mut sw, wheel).1, [Emit::Wheel { dx: 0, dy: 120 }]);
+        sw.set_controlled(true);
+        let (d, out) = feed(&mut sw, motion(10, 10, 1.0, 1.0));
+        assert_eq!((d.verdict, out.len()), (Verdict::Pass, 0));
+        let (_, out) = feed(&mut sw, motion(10, 10, 2.0, 1.0));
+        assert_eq!(out, [Emit::Takeover]);
+        let (_, out) = feed(&mut sw, key(0x04, true));
+        assert!(out.is_empty());
+        sw.set_controlled(true);
+        let (_, out) = feed(&mut sw, key(0x04, false));
+        assert_eq!(out, [Emit::Takeover]);
+    }
 
-        let mut blind = Switch::new(
-            Desktop::new([Rect::new(0, 0, 1512, 982)]),
-            Desktop::default(),
-            Edge::Right,
+    /// Without the local device in the layout nothing crosses
+    #[test]
+    fn unplaced_device_stays_local() {
+        let mut sw = Switch::new("mac");
+        let (d, out) = cross_to_pc(&mut sw, 400);
+        assert_eq!((d.verdict, out.len()), (Verdict::Pass, 0));
+        let world = World::new([device("pc", 1512, 1920, 1080, 1.0)]);
+        sw.set_world(world, HashSet::new());
+        let (d, _) = cross_to_pc(&mut sw, 400);
+        assert_eq!(d.verdict, Verdict::Pass);
+    }
+
+    /// Scrolling goes where the cursor is
+    #[test]
+    fn wheel() {
+        let mut sw = switch();
+        let scroll = InputEvent::Wheel { dx: 0, dy: -120 };
+        assert_eq!(feed(&mut sw, scroll).0.verdict, Verdict::Pass);
+        cross_to_pc(&mut sw, 400);
+        let (_, out) = feed(&mut sw, scroll);
+        assert_eq!(
+            out,
+            [Emit::Wheel {
+                device: "pc".into(),
+                dx: 0,
+                dy: -120
+            }]
         );
-        let (decision, _) = feed(&mut blind, motion(1511, 491, 3.0, 0.0));
-        assert_eq!(decision.verdict, Verdict::Pass);
-    }
-
-    /// Losing every target display hands control back
-    #[test]
-    fn target_without_displays_releases() {
-        let mut sw = switch();
-        cross(&mut sw);
-        sw.set_target(Desktop::default());
-        let (decision, out) = feed(&mut sw, motion(1511, 491, 1.0, 0.0));
-        assert_eq!(out, [Emit::Leave]);
-        assert!(decision.cursor.is_some());
     }
 }

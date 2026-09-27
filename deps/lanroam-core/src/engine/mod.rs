@@ -8,15 +8,19 @@
 //!
 //! Incoming connections are sorted by the purpose they declare: member links
 //! go to the mesh, joins run a sponsor task that shows a PIN, diagnostics
-//! answer pings.
+//! answer pings. Keyboard and mouse, in both directions, are the input
+//! actor's.
 
+mod input;
 mod mesh;
+
+pub use input::{ControlEvent, InputBackend, PlatformInput};
 
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use lan_kit::{Peer, PeerEvent, PeerInfo};
-use lanroam_input::{Edge, Point, platform};
+use lanroam_input::{Edge, Point};
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
@@ -28,6 +32,7 @@ use crate::layout::LayoutError;
 use crate::node::{Node, NodeConfig, NodeError};
 use crate::protocol::{Purpose, join_denied, reason_code};
 use crate::transport::{Incoming, Link, Transport, TransportError};
+use input::{Input, InputMsg};
 use mesh::{Mesh, Msg, Wiring};
 
 /// How often this device's displays are read, to notice a display being
@@ -89,6 +94,8 @@ pub enum EngineEvent {
         /// The PIN to show
         pin: String,
     },
+    /// Who controls what changed
+    Control(ControlEvent),
     /// That join is over (hide the PIN)
     JoinEnded {
         /// Who asked
@@ -141,6 +148,8 @@ struct Inner {
     info: PeerInfo,
     /// The mesh's inbox
     inbox: mpsc::UnboundedSender<Msg>,
+    /// The input actor's inbox
+    input: mpsc::UnboundedSender<InputMsg>,
     /// Latest group document
     doc: watch::Receiver<Option<Arc<GroupDoc>>>,
     /// Background tasks, stopped on shutdown
@@ -148,30 +157,30 @@ struct Inner {
 }
 
 impl Engine {
-    /// Start a node and run it in its desk group (if any), with the stream
-    /// of events for the user
+    /// Start a node and run it in its desk group (if any), sharing the
+    /// keyboard and mouse of `input`, with the stream of events for the
+    /// user
     pub async fn start(
         config: NodeConfig,
+        input: Arc<dyn InputBackend>,
     ) -> Result<(Self, mpsc::UnboundedReceiver<EngineEvent>), EngineError> {
         let store = GroupStore::new(&config.data_dir);
         let (node, peer_events) = Node::start(config).await?;
         let node = Arc::new(node);
         let transport = Arc::clone(node.transport());
         let info = node.info().clone();
-        let (engine, events) = Self::launch(store, transport, info, Some(node), Some(peer_events))?;
-        let poller = tokio::spawn(poll_screens(engine.inner.inbox.clone()));
-        engine.lock_tasks().push(poller);
-        Ok((engine, events))
+        Self::launch(store, transport, info, Some(node), Some(peer_events), input)
     }
 
-    /// Wire the mesh, the accept loop and the discovery feed around a bound
-    /// transport
+    /// Wire the mesh, the input actor, the accept loop, the display poller
+    /// and the discovery feed around a bound transport
     fn launch(
         store: GroupStore,
         transport: Arc<Transport>,
         info: PeerInfo,
         node: Option<Arc<Node>>,
         peer_events: Option<mpsc::Receiver<PeerEvent>>,
+        backend: Arc<dyn InputBackend>,
     ) -> Result<(Self, mpsc::UnboundedReceiver<EngineEvent>), EngineError> {
         let doc = store.load()?;
         let (events_tx, events) = mpsc::unbounded_channel();
@@ -191,14 +200,29 @@ impl Engine {
                 }
             }
         };
+        let (input_tx, input_inbox) = mpsc::unbounded_channel();
+        let (links_tx, links_rx) = watch::channel(Arc::default());
+        let input = Input::new(
+            &info.fingerprint,
+            backend.as_ref(),
+            links_rx,
+            events_tx.clone(),
+            input_tx.clone(),
+        );
         let wiring = Wiring {
             published: doc_tx,
             events: events_tx.clone(),
             inbox: inbox_tx.clone(),
             advertise: Box::new(advertise),
+            input: input_tx.clone(),
+            links: links_tx,
         };
         let mesh = Mesh::new(info.clone(), Arc::clone(&transport), store, doc, wiring);
-        let mut tasks = vec![tokio::spawn(mesh.run(inbox))];
+        let mut tasks = vec![
+            tokio::spawn(mesh.run(inbox)),
+            tokio::spawn(input.run(input_inbox)),
+            tokio::spawn(poll_screens(backend, inbox_tx.clone())),
+        ];
         tasks.push(tokio::spawn(accept_loop(
             Arc::clone(&transport),
             info.clone(),
@@ -222,6 +246,7 @@ impl Engine {
                 transport,
                 info,
                 inbox: inbox_tx,
+                input: input_tx,
                 doc: doc_rx,
                 tasks: Mutex::new(tasks),
             }),
@@ -291,6 +316,12 @@ impl Engine {
         .await?
     }
 
+    /// Turn on or off swapping Command and Control on input into this
+    /// device from a device of the other platform
+    pub async fn set_swap(&self, on: bool) -> Result<(), EngineError> {
+        self.ask(|reply| Msg::SetSwap { on, reply }).await?
+    }
+
     /// Remove a member from the group
     pub async fn kick(&self, fingerprint: &str) -> Result<(), EngineError> {
         let fingerprint = fingerprint.to_string();
@@ -302,8 +333,13 @@ impl Engine {
         self.ask(|reply| Msg::Leave { reply }).await?
     }
 
-    /// Stop the engine: close every link, say goodbye on the LAN
+    /// Stop the engine: give the keyboard and mouse back, close every
+    /// link, say goodbye on the LAN
     pub async fn shutdown(&self) {
+        let (reply, done) = oneshot::channel();
+        if self.inner.input.send(InputMsg::Shutdown(reply)).is_ok() {
+            let _ = done.await;
+        }
         let (reply, done) = oneshot::channel();
         if self.inner.inbox.send(Msg::Shutdown { reply }).is_ok() {
             let _ = done.await;
@@ -315,8 +351,11 @@ impl Engine {
         match &self.inner.node {
             Some(node) => node.shutdown().await,
             None => {
+                // Tests only: draining may take seconds and nobody waits
+                // for the goodbye to arrive
                 self.inner.transport.close();
-                self.inner.transport.wait_idle().await;
+                let idle = self.inner.transport.wait_idle();
+                let _ = tokio::time::timeout(Duration::from_millis(200), idle).await;
             }
         }
     }
@@ -382,11 +421,12 @@ impl Joining {
 
 /// Read this device's displays every [`SCREEN_POLL`] and report changes to
 /// the mesh
-async fn poll_screens(inbox: mpsc::UnboundedSender<Msg>) {
+async fn poll_screens(backend: Arc<dyn InputBackend>, inbox: mpsc::UnboundedSender<Msg>) {
     let mut last = None;
     let mut warned = false;
     loop {
-        let read = tokio::task::spawn_blocking(|| Ok((platform::displays()?, platform::scale()?)))
+        let backend = Arc::clone(&backend);
+        let read = tokio::task::spawn_blocking(move || backend.screens())
             .await
             .unwrap_or_else(|e| Err(lanroam_input::InputError::Os(e.to_string())));
         match read {

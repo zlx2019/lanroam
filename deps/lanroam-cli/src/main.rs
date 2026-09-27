@@ -13,7 +13,6 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use lanroam_core::lanroam_input::Edge;
 use lanroam_core::{DEFAULT_DISCOVERY_PORT, DEFAULT_PORT};
 
 /// Version shown by `--version`. CI dev builds set `LANROAM_BUILD` to the
@@ -58,8 +57,8 @@ enum Command {
         #[arg(long = "wait", value_name = "SECONDS", default_value_t = 6)]
         wait_secs: u64,
     },
-    /// Run this device in its desk group, with a console to join, kick
-    /// and leave
+    /// Run this device in its desk group, sharing its keyboard and mouse,
+    /// with a console to join, arrange and leave
     Run {
         /// QUIC port (UDP; 0 picks a free one)
         #[arg(long, value_name = "PORT", default_value_t = DEFAULT_PORT)]
@@ -67,35 +66,10 @@ enum Command {
         /// Display name for this run only
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
-    },
-    /// Run a node: advertise, accept connections, replay the input of
-    /// nodes sharing their keyboard and mouse, answer pings
-    Listen {
-        /// QUIC port (UDP; 0 picks a free one)
-        #[arg(long, value_name = "PORT", default_value_t = DEFAULT_PORT)]
-        port: u16,
-        /// Display name for this run only
-        #[arg(long, value_name = "NAME")]
-        name: Option<String>,
-        /// Print the input received instead of injecting it
+        /// Capture nothing and print the input received instead of
+        /// injecting it (a second instance on the same machine)
         #[arg(long)]
         dry_run: bool,
-    },
-    /// Share this machine's keyboard and mouse with a node running `listen`
-    Share {
-        /// Node to control (accepted formats are listed below)
-        target: String,
-        /// Side of this machine's screens the target sits on (left, right,
-        /// top, bottom)
-        #[arg(long, value_name = "SIDE", default_value = "right")]
-        edge: Edge,
-        /// Seconds to wait for the target to show up in discovery
-        #[arg(long = "wait", value_name = "SECONDS", default_value_t = 10)]
-        wait_secs: u64,
-        /// Stop sharing after this many seconds (a safety net for first
-        /// tries)
-        #[arg(long = "duration", value_name = "SECONDS")]
-        duration_secs: Option<u64>,
     },
     /// Connect to a node and measure round trips on the control stream and
     /// over datagrams
@@ -134,18 +108,11 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Id => commands::cmd_id(&common),
         Command::Scan { wait_secs } => commands::cmd_scan(&common, wait_secs).await,
-        Command::Run { port, name } => run::cmd_run(&common, port, name).await,
-        Command::Listen {
+        Command::Run {
             port,
             name,
             dry_run,
-        } => commands::cmd_listen(&common, port, name, dry_run).await,
-        Command::Share {
-            target,
-            edge,
-            wait_secs,
-            duration_secs,
-        } => commands::cmd_share(&common, &target, edge, wait_secs, duration_secs).await,
+        } => run::cmd_run(&common, port, name, dry_run).await,
         Command::Ping {
             target,
             count,

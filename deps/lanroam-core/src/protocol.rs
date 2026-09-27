@@ -15,10 +15,11 @@
 //! diagnostics. Members exchange their group documents with
 //! [`Control::Group`] right after the gate.
 //!
-//! An input session (M1): the acceptor reports its displays with
-//! [`Control::Screens`] right after the Hello gate; the dialer then takes
-//! and gives back control with [`Control::Enter`] / [`Control::Leave`], and
-//! streams input in the acceptor's coordinates.
+//! Input between members: the controlling side takes and gives back
+//! control with [`Control::Enter`] / [`Control::Leave`] and streams input in
+//! the controlled device's coordinates (pointer motion as
+//! [`Datagram::Motion`]). The controlled side may end it with
+//! [`Control::Released`]. Displays travel in the group document.
 //!
 //! The protocol version is `major.minor`; a different major refuses the
 //! connection, a newer minor only adds messages an older peer may ignore.
@@ -26,7 +27,7 @@
 use bytes::{BufMut, Bytes, BytesMut};
 use lan_kit::PeerInfo;
 use lan_kit::frame::Framing;
-use lanroam_input::{MouseButton, Rect};
+use lanroam_input::MouseButton;
 use serde::{Deserialize, Serialize};
 
 use crate::group::GroupDoc;
@@ -61,6 +62,16 @@ pub mod reason_code {
     pub const NOT_A_MEMBER: &str = "not_a_member";
     /// The dialer was removed from the acceptor's desk group
     pub const REMOVED: &str = "removed";
+}
+
+/// Why a controlled device let go ([`Control::Released`])
+pub mod released {
+    /// Another device took control of it
+    pub const PREEMPTED: &str = "preempted";
+    /// Someone used its own keyboard or mouse
+    pub const LOCAL_INPUT: &str = "local_input";
+    /// It cannot inject input (no permission, unsupported platform)
+    pub const UNAVAILABLE: &str = "unavailable";
 }
 
 /// Why a join was turned down ([`Control::JoinDenied`])
@@ -128,21 +139,15 @@ pub enum Control {
         /// Echoed sender clock
         sent_us: u64,
     },
-    /// The sender's displays, in its desktop coordinates (the acceptor,
-    /// right after the Hello gate)
-    Screens {
-        /// Display rectangles
-        displays: Vec<Rect>,
-    },
-    /// The dialer takes control; the cursor goes to (`x`, `y`)
+    /// The sender takes control; the cursor goes to (`x`, `y`)
     Enter {
         /// Horizontal position (receiver's coordinates)
         x: i32,
         /// Vertical position
         y: i32,
     },
-    /// The dialer gives control back; the receiver releases every key and
-    /// button the dialer still holds
+    /// The sender gives control back; the receiver releases every key and
+    /// button the sender still holds
     Leave,
     /// Key press, autorepeat or release
     Key {
@@ -169,6 +174,12 @@ pub enum Control {
         dx: i32,
         /// Vertical amount; positive scrolls up
         dy: i32,
+    },
+    /// The sender no longer takes input from the receiver, which stops
+    /// controlling it (see [`released`] for the reasons)
+    Released {
+        /// Why
+        reason_code: String,
     },
     /// The sender's copy of the group document (members, after the gate and
     /// on every change)
@@ -218,12 +229,12 @@ impl Control {
             Self::Rejected { .. } => "rejected",
             Self::Ping { .. } => "ping",
             Self::Pong { .. } => "pong",
-            Self::Screens { .. } => "screens",
             Self::Enter { .. } => "enter",
             Self::Leave => "leave",
             Self::Key { .. } => "key",
             Self::Button { .. } => "button",
             Self::Wheel { .. } => "wheel",
+            Self::Released { .. } => "released",
             Self::Group { .. } => "group",
             Self::JoinChallenge { .. } => "join_challenge",
             Self::JoinAnswer { .. } => "join_answer",
@@ -399,9 +410,6 @@ mod tests {
                 seq: 7,
                 sent_us: 123_456,
             },
-            Control::Screens {
-                displays: vec![Rect::new(0, 0, 1920, 1080), Rect::new(-1280, 0, 1280, 1024)],
-            },
             Control::Enter { x: 1, y: 540 },
             Control::Leave,
             Control::Key {
@@ -415,6 +423,9 @@ mod tests {
                 y: 7,
             },
             Control::Wheel { dx: 0, dy: -120 },
+            Control::Released {
+                reason_code: released::PREEMPTED.into(),
+            },
             Control::Group {
                 doc: GroupDoc::new(&info()),
             },

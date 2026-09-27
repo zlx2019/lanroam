@@ -70,8 +70,10 @@ impl RemoteInput {
         &self.stats
     }
 
-    /// The source took control; its cursor starts at `at`
+    /// A source took control; its cursor starts at `at`. Its motion
+    /// numbering starts afresh
     pub fn enter(&mut self, at: Point) {
+        self.last_motion = None;
         let result = self.injector.move_to(at);
         self.check(result);
     }
@@ -238,6 +240,23 @@ mod tests {
                 Op::Button(MouseButton::Right, true),
                 Op::Key(0x04, false),
                 Op::Button(MouseButton::Right, false),
+            ]
+        );
+    }
+
+    /// A new source's motions are not stale against an earlier source's
+    #[test]
+    fn enter_restarts_numbering() {
+        let (mut input, ops) = recorded();
+        input.motion(500, Point::new(1, 1));
+        input.enter(Point::new(2, 2));
+        input.motion(1, Point::new(3, 3));
+        assert_eq!(
+            *ops.lock().unwrap(),
+            [
+                Op::Move(Point::new(1, 1)),
+                Op::Move(Point::new(2, 2)),
+                Op::Move(Point::new(3, 3))
             ]
         );
     }

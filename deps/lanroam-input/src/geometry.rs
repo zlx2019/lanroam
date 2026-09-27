@@ -1,5 +1,6 @@
-//! Screen geometry: display rectangles, desktop edges, and where the pointer
-//! lands when it crosses from one desktop to another.
+//! Screen geometry of one device: display rectangles, desktop edges, and a
+//! virtual cursor moving across the displays. Crossing between devices is
+//! [`crate::world`]'s business.
 //!
 //! Coordinates are each desktop's native ones (macOS: points, Windows:
 //! physical pixels), with the origin at the primary display's top-left
@@ -111,6 +112,9 @@ pub enum Edge {
 }
 
 impl Edge {
+    /// Every side
+    pub const ALL: [Self; 4] = [Self::Left, Self::Right, Self::Top, Self::Bottom];
+
     /// The facing side on the neighbouring desktop
     pub const fn opposite(self) -> Self {
         match self {
@@ -170,12 +174,22 @@ impl FromStr for Edge {
 }
 
 /// Outcome of moving a virtual cursor with [`Desktop::step`]
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Step {
-    /// Still on the desktop, at this position
+    /// On the desktop, at this position
     Inside(f64, f64),
-    /// Pushed off the desktop through the exit edge, last seen here
-    Exit(Point),
+    /// Pushed against the desktop's outer boundary: held at (`x`, `y`), on
+    /// pixel `stop`, pushing out through `edges`
+    Blocked {
+        /// Horizontal position, kept on the desktop
+        x: f64,
+        /// Vertical position, kept on the desktop
+        y: f64,
+        /// The pixel the cursor is held on
+        stop: Point,
+        /// Outer sides it pushes against (two in a corner)
+        edges: Vec<Edge>,
+    },
 }
 
 /// The displays of one machine
@@ -248,37 +262,13 @@ impl Desktop {
         at_side && self.display_at(Point::new(p.x + ox, p.y + oy)).is_none()
     }
 
-    /// Where a pointer leaving this desktop at `p` through `edge` enters
-    /// `other`: at the same relative position along the edge, `inset`
-    /// pixels inside `other`'s facing side
-    pub fn map_across(&self, p: Point, edge: Edge, other: &Desktop, inset: i32) -> Option<Point> {
-        let (from, to) = (self.bounds()?, other.bounds()?);
-        let entry = match edge {
-            Edge::Right => Point::new(
-                to.x + inset,
-                along(p.y, from.y, from.height, to.y, to.height),
-            ),
-            Edge::Left => Point::new(
-                to.right() - 1 - inset,
-                along(p.y, from.y, from.height, to.y, to.height),
-            ),
-            Edge::Bottom => {
-                Point::new(along(p.x, from.x, from.width, to.x, to.width), to.y + inset)
-            }
-            Edge::Top => Point::new(
-                along(p.x, from.x, from.width, to.x, to.width),
-                to.bottom() - 1 - inset,
-            ),
-        };
-        Some(other.clamp(entry))
-    }
-
     /// Move a virtual cursor at `from` by (`dx`, `dy`)
     ///
-    /// Moving between displays is free; where no display continues, the
-    /// cursor slides along the display it is on, unless it was pushed out
-    /// through `exit` on the desktop's outer boundary.
-    pub fn step(&self, from: (f64, f64), dx: f64, dy: f64, exit: Edge) -> Step {
+    /// Moving between displays is free. Where no display continues, the
+    /// cursor slides along the display it is on; on the desktop's outer
+    /// boundary that is [`Step::Blocked`], and the caller decides whether it
+    /// leaves the device there.
+    pub fn step(&self, from: (f64, f64), dx: f64, dy: f64) -> Step {
         let to = (from.0 + dx, from.1 + dy);
         if self.display_at(Point::floor(to.0, to.1)).is_some() {
             return Step::Inside(to.0, to.1);
@@ -288,25 +278,23 @@ impl Desktop {
         };
         let x = to.0.min(f64::from(d.right() - 1)).max(f64::from(d.x));
         let y = to.1.min(f64::from(d.bottom() - 1)).max(f64::from(d.y));
-        let pushed = match exit {
-            Edge::Left => to.0 < f64::from(d.x),
-            Edge::Right => to.0 >= f64::from(d.right()),
-            Edge::Top => to.1 < f64::from(d.y),
-            Edge::Bottom => to.1 >= f64::from(d.bottom()),
-        };
         let stop = Point::floor(x, y);
-        if pushed && self.on_edge(stop, exit) {
-            Step::Exit(stop)
-        } else {
+        let edges: Vec<Edge> = Edge::ALL
+            .into_iter()
+            .filter(|edge| match edge {
+                Edge::Left => to.0 < f64::from(d.x),
+                Edge::Right => to.0 >= f64::from(d.right()),
+                Edge::Top => to.1 < f64::from(d.y),
+                Edge::Bottom => to.1 >= f64::from(d.bottom()),
+            })
+            .filter(|edge| self.on_edge(stop, *edge))
+            .collect();
+        if edges.is_empty() {
             Step::Inside(x, y)
+        } else {
+            Step::Blocked { x, y, stop, edges }
         }
     }
-}
-
-/// Scale a coordinate along one axis from one span to another
-fn along(pos: i32, from_start: i32, from_len: i32, to_start: i32, to_len: i32) -> i32 {
-    let offset = i64::from(pos - from_start) * i64::from(to_len) / i64::from(from_len.max(1));
-    to_start.saturating_add(i32::try_from(offset).unwrap_or(i32::MAX))
 }
 
 #[cfg(test)]
@@ -347,66 +335,45 @@ mod tests {
         assert!(!desk.on_edge(Point::new(3200, 500), Edge::Right));
     }
 
-    /// Crossing keeps the relative position along the edge and lands inset
+    /// The cursor moves freely between displays and is held back, still
+    /// sliding, by the outer sides
     #[test]
-    fn map_across_is_proportional() {
-        let mac = Desktop::new([Rect::new(0, 0, 1512, 982)]);
-        let pc = Desktop::new([Rect::new(0, 0, 1920, 1080)]);
-        assert_eq!(
-            mac.map_across(Point::new(1511, 491), Edge::Right, &pc, 1),
-            Some(Point::new(1, 540))
-        );
-        assert_eq!(
-            pc.map_across(Point::new(0, 1079), Edge::Left, &mac, 1),
-            Some(Point::new(1510, 981))
-        );
-        assert_eq!(
-            mac.map_across(Point::new(756, 0), Edge::Top, &pc, 0),
-            Some(Point::new(960, 1079))
-        );
-        assert_eq!(
-            mac.map_across(Point::new(0, 0), Edge::Right, &Desktop::default(), 1),
-            None
-        );
-    }
-
-    /// The landing point is clamped onto a display of an irregular desktop
-    #[test]
-    fn map_across_clamps_into_a_display() {
-        let mac = Desktop::new([Rect::new(0, 0, 1000, 1000)]);
-        // The left display starts halfway down, so the top of the facing
-        // side has no display
-        let pcs = Desktop::new([Rect::new(0, 500, 1000, 500), Rect::new(1000, 0, 1000, 1000)]);
-        assert_eq!(
-            mac.map_across(Point::new(999, 0), Edge::Right, &pcs, 0),
-            Some(Point::new(0, 500))
-        );
-    }
-
-    /// The cursor moves freely between displays, slides along blocked sides
-    /// and only exits through the exit edge
-    #[test]
-    fn step_moves_slides_and_exits() {
+    fn step_moves_slides_and_blocks() {
         let desk = two_displays();
         // Across the shared side
         assert_eq!(
-            desk.step((1919.0, 500.0), 5.0, 0.0, Edge::Left),
+            desk.step((1919.0, 500.0), 5.0, 0.0),
             Step::Inside(1924.0, 500.0)
         );
-        // Blocked at the top: slide
+        // Against the top: held on the edge, still moving along it
         assert_eq!(
-            desk.step((100.0, 0.0), 3.0, -4.0, Edge::Left),
-            Step::Inside(103.0, 0.0)
+            desk.step((100.0, 0.0), 3.0, -4.0),
+            Step::Blocked {
+                x: 103.0,
+                y: 0.0,
+                stop: Point::new(103, 0),
+                edges: vec![Edge::Top]
+            }
         );
-        // Out through the exit edge
+        // Out through the left side
         assert_eq!(
-            desk.step((0.5, 300.0), -2.0, 0.0, Edge::Left),
-            Step::Exit(Point::new(0, 300))
+            desk.step((0.5, 300.0), -2.0, 0.0),
+            Step::Blocked {
+                x: 0.0,
+                y: 300.0,
+                stop: Point::new(0, 300),
+                edges: vec![Edge::Left]
+            }
         );
-        // Past the right edge, which is not the exit
+        // Into the top-right corner: both sides
         assert_eq!(
-            desk.step((3199.0, 300.0), 10.0, 1.0, Edge::Left),
-            Step::Inside(3199.0, 301.0)
+            desk.step((3199.0, 100.0), 10.0, -5.0),
+            Step::Blocked {
+                x: 3199.0,
+                y: 100.0,
+                stop: Point::new(3199, 100),
+                edges: vec![Edge::Right, Edge::Top]
+            }
         );
     }
 

@@ -1,29 +1,20 @@
 //! Subcommand implementations.
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use lanroam_core::group::GroupStore;
 use lanroam_core::lan_kit::discovery::DiscoveryOptions;
-use lanroam_core::lan_kit::{DeviceIdentity, DiscoveryService, Peer, PeerEvent, PeerInfo};
-use lanroam_core::lanroam_input::inject::Injector;
-use lanroam_core::lanroam_input::switch::Switch;
-use lanroam_core::lanroam_input::{Desktop, Edge, platform};
+use lanroam_core::lan_kit::{DeviceIdentity, DiscoveryService, Peer, PeerEvent};
 use lanroam_core::node::{Node, NodeConfig};
 use lanroam_core::protocol::Purpose;
-use lanroam_core::session::{self, SourceNotice, TargetNotice};
-use lanroam_core::transport::{Link, Transport};
+use lanroam_core::transport::Link;
 use lanroam_core::{PROFILE, diag};
 use tokio::sync::mpsc;
 
 use crate::CommonArgs;
-use crate::dryrun::PrintInjector;
-use crate::output::{
-    describe, describe_peer, describe_screens, print_inject_stats, print_source_report, print_stats,
-};
+use crate::output::{describe, describe_peer, print_stats};
 
 /// How long to wait for the last datagram answers
 const DATAGRAM_GRACE: Duration = Duration::from_secs(2);
@@ -80,133 +71,6 @@ pub(crate) async fn cmd_scan(common: &CommonArgs, wait_secs: u64) -> Result<()> 
     Ok(())
 }
 
-/// What `listen` does with a link
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Replay {
-    /// Inject the source's input into this session
-    Inject,
-    /// Print the source's input instead of injecting it
-    DryRun,
-    /// No injection on this platform: only answer pings
-    PingOnly,
-}
-
-/// `listen`: run a node until Ctrl-C, replaying input sessions and
-/// answering pings on every link
-pub(crate) async fn cmd_listen(
-    common: &CommonArgs,
-    port: u16,
-    name: Option<String>,
-    dry_run: bool,
-) -> Result<()> {
-    let replay = if dry_run {
-        Replay::DryRun
-    } else {
-        match platform::injector() {
-            Ok(_) => Replay::Inject,
-            Err(e) => {
-                println!("{e}: links will only answer pings (try --dry-run)");
-                Replay::PingOnly
-            }
-        }
-    };
-    let mut config = NodeConfig::new(common.data_dir.clone());
-    config.port = port;
-    config.discovery_port = common.discovery_port;
-    config.display_name = name;
-    let (node, mut events) = Node::start(config)
-        .await
-        .context("failed to start the node")?;
-    println!(
-        "listening as {} on udp/{}  (lanroam-cli {}, Ctrl-C to quit)",
-        describe(node.info()),
-        node.transport().local_port(),
-        crate::VERSION
-    );
-
-    let accept = tokio::spawn(accept_loop(
-        Arc::clone(node.transport()),
-        node.info().clone(),
-        replay,
-    ));
-    // Down events only carry a fingerprint; remember names to print them
-    let mut names: HashMap<String, String> = HashMap::new();
-    loop {
-        tokio::select! {
-            event = events.recv() => match event {
-                Some(PeerEvent::Up(peer)) => {
-                    let verb = if names.insert(peer.info.fingerprint.clone(), peer.info.name.clone()).is_some() {
-                        "updated"
-                    } else {
-                        "online "
-                    };
-                    println!("{verb}  {}", describe_peer(&peer));
-                }
-                Some(PeerEvent::Down(fingerprint)) => {
-                    let name = names.remove(&fingerprint).unwrap_or_else(|| fingerprint.clone());
-                    println!("offline  {name}");
-                }
-                None => break,
-            },
-            _ = tokio::signal::ctrl_c() => break,
-        }
-    }
-    accept.abort();
-    node.shutdown().await;
-    Ok(())
-}
-
-/// Accept connections forever, each handshake and session in its own task
-async fn accept_loop(transport: Arc<Transport>, local: PeerInfo, replay: Replay) {
-    while let Some(incoming) = transport.accept().await {
-        let local = local.clone();
-        tokio::spawn(async move {
-            let from = incoming.remote_address();
-            // The M1 prototype has no desk group: anyone may connect
-            match incoming.handshake(&local, |_, _| Ok(())).await {
-                Ok(link) => {
-                    let who = describe(link.remote());
-                    println!("linked   {who} from {from}");
-                    serve_link(link, replay).await;
-                    println!("unlinked {who}");
-                }
-                // Other nodes probing our identity for discovery
-                Err(e) if e.is_probe() => {}
-                Err(e) => println!("refused  {from}: {e}"),
-            }
-        });
-    }
-}
-
-/// Serve one link: an input session (which answers pings too), or pings
-/// only where input cannot be replayed
-async fn serve_link(link: Link, replay: Replay) {
-    let name = link.remote().name.clone();
-    let setup = match replay {
-        Replay::PingOnly => None,
-        Replay::DryRun => Some(
-            platform::displays().map(|d| (d, Box::new(PrintInjector::new()) as Box<dyn Injector>)),
-        ),
-        Replay::Inject => Some(platform::displays().and_then(|d| Ok((d, platform::injector()?)))),
-    };
-    let (displays, injector) = match setup {
-        None => return diag::respond(link).await,
-        Some(Ok(setup)) => setup,
-        Some(Err(e)) => {
-            println!("cannot replay input from {name} ({e}); answering pings only");
-            return diag::respond(link).await;
-        }
-    };
-    let notice = |notice| match notice {
-        TargetNotice::Entered => println!("control  {name} took over"),
-        TargetNotice::Left => println!("release  {name} gave control back"),
-    };
-    match session::run_target(link, displays, injector, notice).await {
-        Ok(stats) => print_inject_stats(&stats),
-        Err(e) => println!("session failed: {e}"),
-    }
-}
-
 /// `ping`: connect to a node and measure both paths
 pub(crate) async fn cmd_ping(
     common: &CommonArgs,
@@ -243,77 +107,6 @@ pub(crate) async fn cmd_ping(
     print_stats("datagrams     ", &datagrams);
 
     link.close();
-    node.shutdown().await;
-    Ok(())
-}
-
-/// `share`: capture this machine's keyboard and mouse and control `target`,
-/// which sits on `edge` of the local desktop, until Ctrl-C or `duration`
-pub(crate) async fn cmd_share(
-    common: &CommonArgs,
-    target: &str,
-    edge: Edge,
-    wait_secs: u64,
-    duration: Option<u64>,
-) -> Result<()> {
-    let local = Desktop::new(platform::displays().context("cannot read the local displays")?);
-    let mut config = NodeConfig::new(common.data_dir.clone());
-    config.port = 0;
-    config.discovery_port = common.discovery_port;
-    config.passive = true;
-    let (node, mut events) = Node::start(config)
-        .await
-        .context("failed to start the node")?;
-    let mut link = connect_target(
-        &node,
-        &mut events,
-        target,
-        Duration::from_secs(wait_secs),
-        Purpose::Member,
-    )
-    .await?;
-    let screens = session::recv_screens(&mut link).await?;
-    let name = link.remote().name.clone();
-    println!("local    {}", describe_screens(&local));
-    println!("target   {}", describe_screens(&screens));
-
-    let switch = Arc::new(Mutex::new(Switch::new(local, screens, edge)));
-    let (emit_tx, emit_rx) = mpsc::unbounded_channel();
-    let sink = Box::new(move |emit| {
-        // Only fails once the session is over, when nothing listens anymore
-        let _ = emit_tx.send(emit);
-    });
-    let capture =
-        platform::start_capture(Arc::clone(&switch), sink).context("cannot capture input")?;
-    println!(
-        "sharing: push the pointer through the {edge} edge to control {name}\n  \
-         Ctrl+Alt+Esc (Ctrl+Option+Esc on a Mac) takes control back at once, Ctrl-C quits"
-    );
-
-    let notice = |notice| match notice {
-        SourceNotice::Entered => println!("control  now controlling {name}"),
-        SourceNotice::Left => println!("release  back on this machine"),
-        SourceNotice::Unresponsive => {
-            println!("warning  {name} stopped answering; control comes back at the next input")
-        }
-    };
-    let shutdown = async {
-        match duration {
-            Some(secs) => {
-                tokio::select! {
-                    _ = tokio::signal::ctrl_c() => {}
-                    () = tokio::time::sleep(Duration::from_secs(secs)) => println!("time is up"),
-                }
-            }
-            None => {
-                let _ = tokio::signal::ctrl_c().await;
-            }
-        }
-    };
-    let report = session::run_source(link, switch, emit_rx, notice, shutdown).await;
-    // Stops the capture and frees the local cursor
-    drop(capture);
-    print_source_report(&report);
     node.shutdown().await;
     Ok(())
 }
@@ -457,6 +250,8 @@ pub(crate) fn pick<'a, T>(
 mod tests {
     use std::collections::BTreeMap;
     use std::net::{IpAddr, Ipv4Addr};
+
+    use lanroam_core::lan_kit::PeerInfo;
 
     use super::*;
 

@@ -357,7 +357,7 @@ impl Tap {
             // the user with an invisible cursor, and take control back
             if self.parked {
                 self.unpark();
-                crate::switch::lock(&self.switch).request_release();
+                crate::switch::lock(&self.switch).request_release(None);
             }
             return Verdict::Pass;
         }

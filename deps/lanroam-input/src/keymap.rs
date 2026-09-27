@@ -239,6 +239,22 @@ pub fn name(usage: u16) -> Option<&'static str> {
     by_usage(usage).map(|key| key.name)
 }
 
+/// The key in the Command / Control position on the other platform: Control
+/// and Meta swap places, left and right kept, every other key unchanged
+///
+/// Applied when one platform's keyboard drives the other, so the shortcut
+/// keys stay under the same fingers (Cmd+C on a Mac keyboard copies on
+/// Windows, Ctrl+C on a PC keyboard copies on a Mac).
+pub fn swap_cmd_ctrl(key: u16) -> u16 {
+    match key {
+        usage::LEFT_CTRL => usage::LEFT_META,
+        usage::LEFT_META => usage::LEFT_CTRL,
+        usage::RIGHT_CTRL => usage::RIGHT_META,
+        usage::RIGHT_META => usage::RIGHT_CTRL,
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -287,5 +303,17 @@ mod tests {
         assert_eq!(mac_from_usage(usage::PAUSE), None);
         assert_eq!(usage_from_mac(NO), None);
         assert_eq!(usage_from_win(NO), None);
+    }
+
+    /// Control and Meta trade places, nothing else moves
+    #[test]
+    fn cmd_ctrl_swap() {
+        assert_eq!(swap_cmd_ctrl(usage::LEFT_CTRL), usage::LEFT_META);
+        assert_eq!(swap_cmd_ctrl(usage::RIGHT_META), usage::RIGHT_CTRL);
+        assert_eq!(swap_cmd_ctrl(usage::LEFT_ALT), usage::LEFT_ALT);
+        assert_eq!(swap_cmd_ctrl(0x06), 0x06);
+        for key in 0..=u16::from(u8::MAX) {
+            assert_eq!(swap_cmd_ctrl(swap_cmd_ctrl(key)), key);
+        }
     }
 }

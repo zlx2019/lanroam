@@ -76,4 +76,4 @@ foreach ($net in $public) {
         "Set-NetConnectionProfile -InterfaceIndex $($net.InterfaceIndex) -NetworkCategory Private")
 }
 
-Write-Host "Run it with: & '$Exe' listen"
+Write-Host "Run it with: & '$Exe' run"

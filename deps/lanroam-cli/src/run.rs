@@ -1,5 +1,5 @@
-//! `run`: this device in its desk group, with a console for the group
-//! commands.
+//! `run`: this device in its desk group, sharing its keyboard and mouse,
+//! with a console for the group commands.
 //!
 //! Group changes happen inside the running node rather than in separate
 //! invocations, which would fight it over the port and the group document.
@@ -7,19 +7,22 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail};
-use lanroam_core::engine::{Engine, EngineEvent, Spot, Status};
+use lanroam_core::engine::{
+    ControlEvent, Engine, EngineEvent, InputBackend, PlatformInput, Spot, Status,
+};
 use lanroam_core::group::GroupDoc;
 use lanroam_core::group::join::normalize_pin;
 use lanroam_core::lan_kit::{Peer, PeerInfo};
 use lanroam_core::lanroam_input::Edge;
 use lanroam_core::layout;
 use lanroam_core::node::NodeConfig;
-use lanroam_core::protocol::PROP_GROUP;
+use lanroam_core::protocol::{PROP_GROUP, released};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use crate::CommonArgs;
 use crate::commands::{match_target, pick};
+use crate::dryrun::DryRunInput;
 use crate::output::{describe, describe_peer, short_fp};
 
 /// Console commands
@@ -29,6 +32,8 @@ const HELP: &str = "commands:
   join <device>    join the group of a nearby device (it shows a PIN)
   kick <member>    remove a member from the group
   leave            leave the group
+  swap on|off      swap Command and Control on input into this device from
+                   a device of the other platform (on by default)
   layout           where the members' screens sit, and the edges they share
   place <member> <left-of|right-of|above|below> <member> [offset]
                    move a member beside another, shifted `offset` logical
@@ -50,12 +55,22 @@ enum Flow {
 }
 
 /// `run`: run this device in its desk group until Ctrl-C or `quit`
-pub(crate) async fn cmd_run(common: &CommonArgs, port: u16, name: Option<String>) -> Result<()> {
+pub(crate) async fn cmd_run(
+    common: &CommonArgs,
+    port: u16,
+    name: Option<String>,
+    dry_run: bool,
+) -> Result<()> {
     let mut config = NodeConfig::new(common.data_dir.clone());
     config.port = port;
     config.discovery_port = common.discovery_port;
     config.display_name = name;
-    let (engine, mut events) = Engine::start(config)
+    let input: Arc<dyn InputBackend> = if dry_run {
+        Arc::new(DryRunInput)
+    } else {
+        Arc::new(PlatformInput)
+    };
+    let (engine, mut events) = Engine::start(config, input)
         .await
         .context("failed to start the node")?;
     println!(
@@ -65,7 +80,10 @@ pub(crate) async fn cmd_run(common: &CommonArgs, port: u16, name: Option<String>
         crate::VERSION
     );
     print_group(&engine.status().await?, engine.info());
-    println!("type `help` for commands");
+    println!(
+        "type `help` for commands. Push the pointer off an edge shared with another member \
+         to control it; Ctrl+Alt+Esc (Ctrl+Option+Esc on a Mac) takes control back at once"
+    );
 
     let mut lines = stdin_lines();
     let (asks_tx, mut asks) = mpsc::unbounded_channel::<PinRequest>();
@@ -151,6 +169,7 @@ async fn handle(
             Ok(())
         }
         ("place", false) => place(engine, &arg).await,
+        ("swap", _) => swap(engine, &arg).await,
         ("leave", _) => engine
             .leave()
             .await
@@ -253,6 +272,19 @@ async fn kick(engine: &Engine, target: &str) -> Result<()> {
     }
     engine.kick(&fp).await?;
     println!("group    removed {name}");
+    Ok(())
+}
+
+/// `swap on|off`
+async fn swap(engine: &Engine, arg: &str) -> Result<()> {
+    let on = match arg {
+        "on" => true,
+        "off" => false,
+        _ => bail!("usage: swap on|off"),
+    };
+    engine.set_swap(on).await?;
+    let state = if on { "swapped" } else { "left as they are" };
+    println!("keys     Command and Control from the other platform are {state} now");
     Ok(())
 }
 
@@ -438,6 +470,7 @@ fn print_event(event: &EngineEvent, seen: &mut Option<Arc<GroupDoc>>) {
             *seen = None;
             println!("group    this device is in no group now");
         }
+        EngineEvent::Control(event) => print_control(event),
         EngineEvent::Kicked => {
             println!("group    another member removed this device from the group")
         }
@@ -451,6 +484,34 @@ fn print_event(event: &EngineEvent, seen: &mut Option<Arc<GroupDoc>>) {
         EngineEvent::JoinEnded { joiner, admitted } => {
             let outcome = if *admitted { "joined" } else { "did not join" };
             println!("join     {} {outcome}", joiner.name);
+        }
+    }
+}
+
+/// Print a change of who controls what
+fn print_control(event: &ControlEvent) {
+    match event {
+        ControlEvent::Controlling { name } => println!("control  now controlling {name}"),
+        ControlEvent::Home => println!("control  back on this device"),
+        ControlEvent::ControlledBy { name } => println!("control  {name} controls this device"),
+        ControlEvent::Freed { name } => println!("control  {name} gave this device back"),
+        ControlEvent::TookBack { name } => {
+            println!("control  took this device back from {name} (local input)");
+        }
+        ControlEvent::LetGo { name, reason } => {
+            let why = match reason.as_str() {
+                released::PREEMPTED => "another device took it over",
+                released::LOCAL_INPUT => "someone used it",
+                released::UNAVAILABLE => "it cannot inject input",
+                other => other,
+            };
+            println!("control  {name} let go ({why}); back here at the next input");
+        }
+        ControlEvent::Unresponsive { name } => {
+            println!("warning  {name} stopped answering; back here at the next input");
+        }
+        ControlEvent::Unavailable { what, reason } => {
+            println!("warning  {what} is unavailable: {reason}");
         }
     }
 }

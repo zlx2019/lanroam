@@ -13,21 +13,26 @@
 //! - **Sync**: each link starts with both sides sending their document; a
 //!   merge that changes ours is saved and sent on to every link, so changes
 //!   spread through the group and stop once everyone agrees
+//! - **Input**: input messages and datagrams go to the input actor, which
+//!   also gets the links to send on and the online
+//!   part of the layout: a device that is offline cannot be crossed into
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
 use lan_kit::frame::FrameError;
 use lan_kit::{Peer, PeerEvent, PeerInfo};
 use lanroam_input::Rect;
+use lanroam_input::world::World;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{Instant, MissedTickBehavior};
 
+use super::input::{InputMsg, LinkHandle, Links};
 use super::{EngineError, EngineEvent, Spot, Status};
 use crate::group::{GroupDoc, GroupStore, Profile};
 use crate::layout;
-use crate::protocol::{Control, FRAMING, Purpose, reason_code};
+use crate::protocol::{Control, Datagram, FRAMING, Purpose, reason_code};
 use crate::transport::{Link, Transport, TransportError, close_code};
 
 /// First retry delay after a failed dial or a lost link
@@ -68,6 +73,8 @@ pub(super) enum Msg {
     DialFailed {
         /// The member
         fingerprint: String,
+        /// Which dial
+        attempt: u64,
         /// Why
         error: TransportError,
     },
@@ -116,6 +123,13 @@ pub(super) enum Msg {
         /// Done
         reply: oneshot::Sender<Result<(), EngineError>>,
     },
+    /// Turn the Command / Control swap for input into this device on or off
+    SetSwap {
+        /// On
+        on: bool,
+        /// Done
+        reply: oneshot::Sender<Result<(), EngineError>>,
+    },
     /// Remove a member
     Kick {
         /// The member
@@ -153,6 +167,10 @@ pub(super) struct Wiring {
     pub(super) inbox: mpsc::UnboundedSender<Msg>,
     /// Advertise the group ID in discovery
     pub(super) advertise: Advertise,
+    /// The input actor's inbox
+    pub(super) input: mpsc::UnboundedSender<InputMsg>,
+    /// Member links, for the input actor
+    pub(super) links: watch::Sender<Links>,
 }
 
 /// A registered member link
@@ -179,6 +197,9 @@ struct Dial {
     backoff: Duration,
     /// A dial is running
     in_flight: bool,
+    /// Number of the latest dial, so the outcome of an abandoned one is
+    /// ignored
+    attempt: u64,
 }
 
 /// The actor
@@ -194,6 +215,8 @@ pub(super) struct Mesh {
     /// This device's displays (device coordinates) and scale (percent);
     /// `None` until first read
     screens: Option<(Vec<Rect>, u32)>,
+    /// The Command / Control swap setting, once changed while running
+    swap_cmd_ctrl: Option<bool>,
     /// Channels
     wiring: Wiring,
     /// Group ID currently advertised
@@ -209,6 +232,8 @@ pub(super) struct Mesh {
     announced: HashMap<String, Option<Instant>>,
     /// Next link ID
     next_id: u64,
+    /// Number of the latest dial
+    next_attempt: u64,
 }
 
 impl Mesh {
@@ -226,6 +251,7 @@ impl Mesh {
             store,
             doc,
             screens: None,
+            swap_cmd_ctrl: None,
             wiring,
             advertised: None,
             peers: HashMap::new(),
@@ -233,6 +259,7 @@ impl Mesh {
             dials: HashMap::new(),
             announced: HashMap::new(),
             next_id: 0,
+            next_attempt: 0,
         }
     }
 
@@ -247,6 +274,7 @@ impl Mesh {
                     Some(Msg::Shutdown { reply }) => {
                         // Dropping the entries closes the links
                         self.links.clear();
+                        self.publish_links();
                         let _ = reply.send(());
                         break;
                     }
@@ -277,7 +305,11 @@ impl Mesh {
         match msg {
             Msg::Peer(event) => self.on_peer(event),
             Msg::LinkUp { link, dialed } => self.on_link_up(link, dialed),
-            Msg::DialFailed { fingerprint, error } => self.on_dial_failed(&fingerprint, &error),
+            Msg::DialFailed {
+                fingerprint,
+                attempt,
+                error,
+            } => self.on_dial_failed(&fingerprint, attempt, &error),
             Msg::Received { id, msg } => self.on_received(id, msg),
             Msg::LinkDown { id, duplicate } => self.on_link_down(id, duplicate),
             Msg::Admit { joiner, reply } => {
@@ -299,6 +331,17 @@ impl Mesh {
                 reply,
             } => {
                 let _ = reply.send(self.place(&fingerprint, spot));
+            }
+            Msg::SetSwap { on, reply } => {
+                let result = match self.doc {
+                    Some(_) => {
+                        self.swap_cmd_ctrl = Some(on);
+                        self.commit();
+                        Ok(())
+                    }
+                    None => Err(EngineError::NoGroup),
+                };
+                let _ = reply.send(result);
             }
             Msg::Adopt { doc, reply } => {
                 let _ = reply.send(self.adopt(doc));
@@ -324,7 +367,16 @@ impl Mesh {
     fn on_peer(&mut self, event: PeerEvent) {
         match event {
             PeerEvent::Up(peer) => {
-                self.peers.insert(peer.info.fingerprint.clone(), peer);
+                let fp = peer.info.fingerprint.clone();
+                let moved = self
+                    .peers
+                    .insert(fp.clone(), peer.clone())
+                    .is_some_and(|old| (&old.addrs, old.port) != (&peer.addrs, peer.port));
+                if moved {
+                    // A dial to the old address may hang until its timeout;
+                    // start over at the new one
+                    self.dials.remove(&fp);
+                }
                 self.maintain();
             }
             PeerEvent::Down(fp) => {
@@ -367,6 +419,7 @@ impl Mesh {
                     due: now + defer,
                     backoff: RETRY_MIN,
                     in_flight: false,
+                    attempt: 0,
                 },
             );
         }
@@ -380,9 +433,11 @@ impl Mesh {
         for fp in due {
             match self.peers.get(&fp) {
                 Some(peer) if self.wants_link(&fp) => {
-                    self.spawn_dial(peer.clone());
+                    self.next_attempt += 1;
+                    self.spawn_dial(peer.clone(), self.next_attempt);
                     if let Some(dial) = self.dials.get_mut(&fp) {
                         dial.in_flight = true;
+                        dial.attempt = self.next_attempt;
                     }
                 }
                 _ => {
@@ -408,7 +463,7 @@ impl Mesh {
     }
 
     /// Dial a member in the background; the result comes back to the inbox
-    fn spawn_dial(&self, peer: Peer) {
+    fn spawn_dial(&self, peer: Peer, attempt: u64) {
         let transport = Arc::clone(&self.transport);
         let info = self.info.clone();
         let inbox = self.wiring.inbox.clone();
@@ -417,6 +472,7 @@ impl Mesh {
                 Ok(link) => Msg::LinkUp { link, dialed: true },
                 Err(error) => Msg::DialFailed {
                     fingerprint: peer.info.fingerprint,
+                    attempt,
                     error,
                 },
             };
@@ -426,7 +482,7 @@ impl Mesh {
 
     /// Back off after a failed dial; a member saying this device was removed
     /// ends its membership
-    fn on_dial_failed(&mut self, fp: &str, error: &TransportError) {
+    fn on_dial_failed(&mut self, fp: &str, attempt: u64, error: &TransportError) {
         let removed =
             matches!(error, TransportError::Rejected(code) if code == reason_code::REMOVED);
         // Only a current member is believed: the dial pinned its certificate
@@ -439,7 +495,7 @@ impl Mesh {
             return;
         }
         tracing::debug!(member = %self.name_of(fp), "dial failed: {error}");
-        if let Some(dial) = self.dials.get_mut(fp) {
+        if let Some(dial) = self.dials.get_mut(fp).filter(|d| d.attempt == attempt) {
             dial.in_flight = false;
             dial.due = Instant::now() + dial.backoff;
             dial.backoff = (dial.backoff * 2).min(RETRY_MAX);
@@ -481,6 +537,11 @@ impl Mesh {
         let (out, out_rx) = mpsc::unbounded_channel();
         tokio::spawn(write_link(send, conn.clone(), out_rx));
         tokio::spawn(read_link(id, recv, conn.clone(), self.wiring.inbox.clone()));
+        tokio::spawn(read_datagrams(
+            info.fingerprint.clone(),
+            conn.clone(),
+            self.wiring.input.clone(),
+        ));
         if let Some(doc) = &self.doc {
             let _ = out.send(Control::Group { doc: doc.clone() });
         }
@@ -499,6 +560,8 @@ impl Mesh {
                 conn,
             },
         );
+        self.publish_links();
+        self.publish_world();
     }
 
     /// The member behind a link ID, if that link is still the registered one
@@ -521,6 +584,15 @@ impl Mesh {
                     let _ = entry.out.send(Control::Pong { seq, sent_us });
                 }
             }
+            msg @ (Control::Enter { .. }
+            | Control::Leave
+            | Control::Key { .. }
+            | Control::Button { .. }
+            | Control::Wheel { .. }
+            | Control::Released { .. }
+            | Control::Pong { .. }) => {
+                let _ = self.wiring.input.send(InputMsg::Control { from: fp, msg });
+            }
             other => {
                 tracing::debug!(kind = other.kind(), from = %self.name_of(&fp), "ignoring control message");
             }
@@ -538,12 +610,15 @@ impl Mesh {
         if duplicate {
             self.announced.insert(fp, Some(Instant::now()));
         } else {
+            let _ = self.wiring.input.send(InputMsg::LinkDown(fp.clone()));
             self.announced.remove(&fp);
             self.emit(EngineEvent::Offline {
                 fingerprint: fp,
                 name: entry.info.name,
             });
         }
+        self.publish_links();
+        self.publish_world();
         self.maintain();
     }
 
@@ -606,17 +681,24 @@ impl Mesh {
         Ok(())
     }
 
-    /// This device's profile as it stands; until the displays are first
-    /// read, those the document already holds
+    /// This device's profile as it stands: settings and, until they are
+    /// first read, displays as the document holds them
     fn own_profile(&self) -> Profile {
-        let mut profile = Profile::new(&self.info);
-        let known = self.doc.as_ref().and_then(|doc| {
-            let record = doc.devices.get(&self.info.fingerprint)?;
-            Some((record.profile.displays.clone(), record.profile.scale))
-        });
-        if let Some((displays, scale)) = self.screens.clone().or(known) {
-            profile.displays = displays;
-            profile.scale = scale;
+        let known = self
+            .doc
+            .as_ref()
+            .and_then(|doc| doc.devices.get(&self.info.fingerprint))
+            .map(|record| record.profile.clone());
+        let mut profile = known.unwrap_or_else(|| Profile::new(&self.info));
+        profile.device_id.clone_from(&self.info.device_id);
+        profile.name.clone_from(&self.info.name);
+        profile.platform.clone_from(&self.info.platform);
+        if let Some((displays, scale)) = &self.screens {
+            profile.displays.clone_from(displays);
+            profile.scale = *scale;
+        }
+        if let Some(on) = self.swap_cmd_ctrl {
+            profile.swap_cmd_ctrl = on;
         }
         profile
     }
@@ -693,6 +775,7 @@ impl Mesh {
         for fp in gone {
             // Dropping the entry closes the link after the document is out
             if let Some(entry) = self.links.remove(&fp) {
+                let _ = self.wiring.input.send(InputMsg::LinkDown(fp.clone()));
                 self.announced.remove(&fp);
                 self.emit(EngineEvent::Offline {
                     fingerprint: fp,
@@ -700,6 +783,8 @@ impl Mesh {
                 });
             }
         }
+        self.publish_links();
+        self.publish_world();
         self.emit(EngineEvent::Group(Some(shared)));
         self.maintain();
     }
@@ -712,11 +797,14 @@ impl Mesh {
         self.advertise(None);
         let links: Vec<(String, LinkEntry)> = self.links.drain().collect();
         for (fp, entry) in links {
+            let _ = self.wiring.input.send(InputMsg::LinkDown(fp.clone()));
             self.emit(EngineEvent::Offline {
                 fingerprint: fp,
                 name: entry.info.name,
             });
         }
+        self.publish_links();
+        self.publish_world();
         self.announced.clear();
         self.dials.clear();
         self.emit(EngineEvent::Group(None));
@@ -739,6 +827,61 @@ impl Mesh {
             self.advertised = group.map(str::to_string);
             (self.wiring.advertise)(group);
         }
+    }
+
+    /// Hand the current links to the input actor
+    fn publish_links(&self) {
+        let links = self
+            .links
+            .iter()
+            .map(|(fp, entry)| {
+                let handle = LinkHandle {
+                    out: entry.out.clone(),
+                    conn: entry.conn.clone(),
+                };
+                (fp.clone(), handle)
+            })
+            .collect();
+        self.wiring.links.send_replace(Arc::new(links));
+    }
+
+    /// Hand the input actor the layout of the devices online right now (this
+    /// one and those linked), which of them get Command and Control swapped,
+    /// and the members' names
+    fn publish_world(&self) {
+        let own = self.info.fingerprint.as_str();
+        let (world, swapped, names) = match &self.doc {
+            Some(doc) => {
+                let online = |fp: &str| fp == own || self.links.contains_key(fp);
+                let devices = layout::world(doc)
+                    .devices()
+                    .iter()
+                    .filter(|d| online(&d.key))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let swapped = doc
+                    .members()
+                    .filter(|(fp, record)| {
+                        online(fp)
+                            && *fp != own
+                            && record.profile.swap_cmd_ctrl
+                            && record.profile.platform != self.info.platform
+                    })
+                    .map(|(fp, _)| fp.to_string())
+                    .collect();
+                let names = doc
+                    .members()
+                    .map(|(fp, record)| (fp.to_string(), record.profile.name.clone()))
+                    .collect();
+                (World::new(devices), swapped, names)
+            }
+            None => (World::default(), HashSet::new(), HashMap::new()),
+        };
+        let _ = self.wiring.input.send(InputMsg::World {
+            world,
+            swapped,
+            names,
+        });
     }
 
     /// A member's name for messages
@@ -787,6 +930,32 @@ async fn read_link(
             if close.error_code == close_code::DUPLICATE
     );
     let _ = inbox.send(Msg::LinkDown { id, duplicate });
+}
+
+/// Hand a link's datagrams to the input actor, answering diagnostic pings
+/// on the spot
+async fn read_datagrams(
+    from: String,
+    conn: quinn::Connection,
+    input: mpsc::UnboundedSender<InputMsg>,
+) {
+    while let Ok(bytes) = conn.read_datagram().await {
+        match Datagram::decode(&bytes) {
+            Some(Datagram::Ping { seq, sent_us }) => {
+                let _ = conn.send_datagram(Datagram::Pong { seq, sent_us }.encode());
+            }
+            Some(datagram) => {
+                let msg = InputMsg::Datagram {
+                    from: from.clone(),
+                    datagram,
+                };
+                if input.send(msg).is_err() {
+                    return;
+                }
+            }
+            None => {}
+        }
+    }
 }
 
 /// Write a link's outgoing messages; once the mesh lets go of the link,

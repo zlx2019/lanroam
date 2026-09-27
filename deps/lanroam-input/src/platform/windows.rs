@@ -279,10 +279,15 @@ struct Hooks {
 impl Hooks {
     /// Decide one mouse event
     fn on_mouse(&mut self, message: u32, info: &MSLLHOOKSTRUCT) -> Verdict {
+        let at = Point::new(info.pt.x, info.pt.y);
         if info.dwExtraInfo == INJECTED_MARKER as usize {
+            // Another device moves the cursor here: follow it, or the next
+            // local motion would count from where the cursor used to be
+            if message == WM_MOUSEMOVE && self.parked.is_none() {
+                self.last = clip_to_desktop(at);
+            }
             return Verdict::Pass;
         }
-        let at = Point::new(info.pt.x, info.pt.y);
         let button = |button, down| Some(InputEvent::Button { button, down });
         let event = match message {
             WM_MOUSEMOVE => {

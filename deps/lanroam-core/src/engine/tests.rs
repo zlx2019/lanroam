@@ -4,6 +4,10 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 
 use lan_kit::DeviceIdentity;
+use lanroam_input::inject::Injector;
+use lanroam_input::platform::EmitSink;
+use lanroam_input::switch::{self, Decision, Switch};
+use lanroam_input::{InputError, InputEvent, MouseButton};
 
 use super::*;
 use crate::PROFILE;
@@ -12,7 +16,104 @@ use crate::test_util::TempDir;
 /// How long to wait for an expected outcome
 const WAIT: Duration = Duration::from_secs(10);
 
-/// An engine with its event stream and data directory
+/// What the fake injector was asked to do
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Injected {
+    /// Cursor moved
+    Move(Point),
+    /// Key pressed or released
+    Key(u16, bool),
+    /// Button pressed or released
+    Button(MouseButton, bool),
+    /// Scrolled
+    Wheel(i32, i32),
+}
+
+/// Records injections
+struct Recorder(Arc<Mutex<Vec<Injected>>>);
+
+impl Injector for Recorder {
+    fn move_to(&mut self, at: Point) -> Result<(), InputError> {
+        self.0.lock().unwrap().push(Injected::Move(at));
+        Ok(())
+    }
+    fn button(&mut self, button: MouseButton, down: bool) -> Result<(), InputError> {
+        self.0.lock().unwrap().push(Injected::Button(button, down));
+        Ok(())
+    }
+    fn wheel(&mut self, dx: i32, dy: i32) -> Result<(), InputError> {
+        self.0.lock().unwrap().push(Injected::Wheel(dx, dy));
+        Ok(())
+    }
+    fn key(&mut self, usage: u16, down: bool) -> Result<(), InputError> {
+        self.0.lock().unwrap().push(Injected::Key(usage, down));
+        Ok(())
+    }
+}
+
+/// A keyboard and mouse driven by the test
+#[derive(Default)]
+struct FakeInput {
+    /// What the engine handed to the capture
+    capture: Mutex<Option<(Arc<Mutex<Switch>>, EmitSink)>>,
+    /// Injections so far
+    injected: Arc<Mutex<Vec<Injected>>>,
+}
+
+impl InputBackend for FakeInput {
+    fn screens(&self) -> Result<(Vec<lanroam_input::Rect>, u32), InputError> {
+        // The tests report screens themselves, at once
+        Err(InputError::Unsupported("fake screens"))
+    }
+    fn capture(
+        &self,
+        switch: Arc<Mutex<Switch>>,
+        sink: EmitSink,
+    ) -> Result<Box<dyn std::any::Any + Send>, InputError> {
+        *self.capture.lock().unwrap() = Some((switch, sink));
+        Ok(Box::new(()))
+    }
+    fn injector(&self) -> Result<Box<dyn Injector>, InputError> {
+        Ok(Box::new(Recorder(Arc::clone(&self.injected))))
+    }
+}
+
+impl FakeInput {
+    /// One local event through the switch, as the capture thread would
+    fn feed(&self, event: InputEvent) -> Decision {
+        let mut capture = self.capture.lock().unwrap();
+        let (switch, sink) = capture.as_mut().unwrap();
+        let mut out = Vec::new();
+        let decision = switch::lock(switch).handle(event, &mut out);
+        for emit in out {
+            sink(emit);
+        }
+        decision
+    }
+
+    /// Push the pointer from `at` by (`dx`, `dy`)
+    fn push(&self, at: (i32, i32), dx: f64, dy: f64) -> Decision {
+        self.feed(InputEvent::Motion {
+            at: Point::new(at.0, at.1),
+            dx,
+            dy,
+        })
+    }
+
+    /// Press or release a key
+    fn key(&self, usage: u16, down: bool) -> Decision {
+        self.feed(InputEvent::Key { usage, down })
+    }
+
+    /// Devices the switch knows of
+    fn devices(&self) -> usize {
+        let capture = self.capture.lock().unwrap();
+        let (switch, _) = capture.as_ref().unwrap();
+        switch::lock(switch).world().devices().len()
+    }
+}
+
+/// An engine with its event stream, data directory and fake input
 struct TestEngine {
     /// The engine
     engine: Engine,
@@ -20,6 +121,8 @@ struct TestEngine {
     events: mpsc::UnboundedReceiver<EngineEvent>,
     /// Its data directory
     dir: TempDir,
+    /// Its keyboard and mouse
+    input: Arc<FakeInput>,
 }
 
 impl TestEngine {
@@ -33,12 +136,22 @@ impl TestEngine {
         let identity = Arc::new(DeviceIdentity::load_or_create(&dir.0, &PROFILE).unwrap());
         let info = identity.peer_info();
         let transport = Arc::new(Transport::bind(identity, 0).unwrap());
-        let (engine, events) =
-            Engine::launch(GroupStore::new(&dir.0), transport, info, None, None).unwrap();
+        let input = Arc::new(FakeInput::default());
+        let backend = Arc::clone(&input) as Arc<dyn InputBackend>;
+        let (engine, events) = Engine::launch(
+            GroupStore::new(&dir.0),
+            transport,
+            info,
+            None,
+            None,
+            backend,
+        )
+        .unwrap();
         Self {
             engine,
             events,
             dir,
+            input,
         }
     }
 
@@ -324,4 +437,162 @@ async fn layout_syncs() {
         matches!(refused, Err(EngineError::Layout(LayoutError::Overlap(..)))),
         "{refused:?}"
     );
+}
+
+impl TestEngine {
+    /// Wait for a control event
+    async fn expect_control(&mut self, want: ControlEvent) {
+        let what = format!("{want:?}");
+        self.expect(&what, |event| match event {
+            EngineEvent::Control(got) if *got == want => Some(()),
+            _ => None,
+        })
+        .await;
+    }
+
+    /// Wait until the injector recorded `want` (and return everything so
+    /// far)
+    async fn injected(&self, want: &Injected) -> Vec<Injected> {
+        let deadline = tokio::time::Instant::now() + WAIT;
+        loop {
+            let injected = self.input.injected.lock().unwrap().clone();
+            if injected.contains(want) {
+                return injected;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{want:?} not injected within {WAIT:?}: {injected:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// Wait until the switch knows `n` devices
+    async fn until_devices(&self, n: usize) {
+        let deadline = tokio::time::Instant::now() + WAIT;
+        while self.input.devices() != n {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{n} devices within {WAIT:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// This device's name
+    fn name(&self) -> String {
+        self.engine.info().name.clone()
+    }
+}
+
+/// a | b | c, each one 1000x1000 display, all linked, every switch aware of
+/// all three
+async fn row_of_three() -> (TestEngine, TestEngine, TestEngine) {
+    let (mut a, mut b, c) = (
+        TestEngine::start(),
+        TestEngine::start(),
+        TestEngine::start(),
+    );
+    for (engine, others) in [(&a, [&b, &c]), (&b, [&a, &c]), (&c, [&a, &b])] {
+        engine.sees(&others);
+        engine.screens(1000, 1000, 100);
+    }
+    join(&b, &mut a).await;
+    join(&c, &mut b).await;
+    for engine in [&a, &b, &c] {
+        engine.until_devices(3).await;
+    }
+    (a, b, c)
+}
+
+/// The pointer walks a → b → c and back; each device gets its input, and
+/// a hop is not reported as coming home
+#[tokio::test]
+async fn control_walks_across_devices() {
+    let (mut a, b, c) = row_of_three().await;
+    let (b_name, c_name) = (b.name(), c.name());
+
+    a.input.push((999, 500), 5.0, 0.0);
+    b.injected(&Injected::Move(Point::new(1, 500))).await;
+    a.expect_control(ControlEvent::Controlling {
+        name: b_name.clone(),
+    })
+    .await;
+    a.input.key(0x04, true);
+    a.input.key(0x04, false);
+    b.injected(&Injected::Key(0x04, false)).await;
+
+    a.input.push((0, 0), 1000.0, 0.0);
+    c.injected(&Injected::Move(Point::new(1, 500))).await;
+    a.expect_control(ControlEvent::Controlling { name: c_name })
+        .await;
+    a.input.push((0, 0), -5.0, 0.0);
+    b.injected(&Injected::Move(Point::new(998, 500))).await;
+
+    let decision = a.input.push((0, 0), -1000.0, 0.0);
+    assert!(decision.cursor.is_some(), "back home: {decision:?}");
+    let mut hops = Vec::new();
+    a.expect("home", |event| match event {
+        EngineEvent::Control(ControlEvent::Home) => Some(()),
+        EngineEvent::Control(other) => {
+            hops.push(other.clone());
+            None
+        }
+        _ => None,
+    })
+    .await;
+    assert_eq!(hops, [ControlEvent::Controlling { name: b_name }]);
+}
+
+/// A second controller preempts the first, which gets its keys released
+/// and control back; local input then takes the device back from the
+/// second
+#[tokio::test]
+async fn preemption_and_takeover() {
+    let (mut a, mut b, mut c) = row_of_three().await;
+    let (a_name, b_name, c_name) = (a.name(), b.name(), c.name());
+
+    a.input.push((999, 500), 5.0, 0.0);
+    a.input.key(0x04, true);
+    b.injected(&Injected::Key(0x04, true)).await;
+    b.expect_control(ControlEvent::ControlledBy { name: a_name })
+        .await;
+
+    // c comes in from the right
+    c.input.push((0, 500), -5.0, 0.0);
+    let injected = b.injected(&Injected::Move(Point::new(998, 500))).await;
+    assert!(
+        injected.contains(&Injected::Key(0x04, false)),
+        "{injected:?}"
+    );
+    a.expect_control(ControlEvent::LetGo {
+        name: b_name.clone(),
+        reason: crate::protocol::released::PREEMPTED.into(),
+    })
+    .await;
+    let decision = a.input.key(0x05, true);
+    assert!(decision.cursor.is_some(), "a comes home at its next input");
+
+    // Someone at b touches its keyboard
+    b.input.key(0x06, true);
+    b.expect_control(ControlEvent::TookBack { name: c_name })
+        .await;
+    c.expect_control(ControlEvent::LetGo {
+        name: b_name,
+        reason: crate::protocol::released::LOCAL_INPUT.into(),
+    })
+    .await;
+}
+
+/// A controller that vanishes gets what it held released
+#[tokio::test]
+async fn lost_controller_is_released() {
+    let (a, mut b, _c) = row_of_three().await;
+    let a_name = a.name();
+    a.input.push((999, 500), 5.0, 0.0);
+    a.input.key(0x04, true);
+    b.injected(&Injected::Key(0x04, true)).await;
+    a.engine.shutdown().await;
+    b.injected(&Injected::Key(0x04, false)).await;
+    b.expect_control(ControlEvent::Freed { name: a_name }).await;
 }

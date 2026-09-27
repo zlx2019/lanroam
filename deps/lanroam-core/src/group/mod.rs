@@ -64,6 +64,15 @@ pub struct Profile {
     /// [`lanroam_input::platform::scale`])
     #[serde(default = "full_scale")]
     pub scale: u32,
+    /// Swap Command and Control on input from a device of the other
+    /// platform, so shortcuts stay under the same fingers
+    #[serde(default = "enabled")]
+    pub swap_cmd_ctrl: bool,
+}
+
+/// Default of switches that start on
+fn enabled() -> bool {
+    true
 }
 
 /// Scale of devices that report none: device units are logical pixels
@@ -81,24 +90,17 @@ impl Profile {
             platform: info.platform.clone(),
             displays: Vec::new(),
             scale: full_scale(),
+            swap_cmd_ctrl: enabled(),
         }
     }
 
     /// Whether both say the same, revisions aside
     fn same_as(&self, other: &Self) -> bool {
-        (
-            &self.device_id,
-            &self.name,
-            &self.platform,
-            &self.displays,
-            self.scale,
-        ) == (
-            &other.device_id,
-            &other.name,
-            &other.platform,
-            &other.displays,
-            other.scale,
-        )
+        let unrevised = |p: &Self| Self {
+            rev: 0,
+            ..p.clone()
+        };
+        unrevised(self) == unrevised(other)
     }
 }
 
