@@ -63,6 +63,20 @@ To work on the interface without a backend, run `pnpm dev` and open `http://loca
 
 The app and the CLI share `~/.lanroam`: they are the same device and cannot run at the same time. To run a second identity next to them, set `LANROAM_DATA_DIR` to another directory and `LANROAM_PORT=0`, as `--data-dir` and `--port 0` do for the CLI.
 
+## The Command-Line Node
+
+`lanroam-cli` runs the same engine without the app, which is handy for debugging the protocol and for trying input between machines:
+
+```bash
+cargo run -p lanroam-cli -- run        # run this device in its desk group (console: join, layout, place, ...)
+cargo run -p lanroam-cli -- scan       # list nodes on the LAN
+cargo run -p lanroam-cli -- ping <name | fingerprint prefix | ip:port>
+```
+
+In `run`, `join <device>` asks a nearby device to let this one into its group (founding a group when neither has one); that device shows a 6-digit PIN to type here. `layout` shows where every member's screens sit on the shared canvas and which edges they share; `place <member> right-of <member> [offset]` (or `left-of`, `above`, `below`) rearranges them, for the whole group. `swap off` stops swapping Command and Control for input into this device.
+
+Two instances on one machine need their own identities: pass a different `--data-dir` to each and `--port 0`. `run --dry-run` captures nothing and prints the input it receives instead of injecting it.
+
 ## Local Checks
 
 The app embeds its built frontend, so build it once before any cargo command that compiles the whole workspace (`pnpm build` also type-checks it):
@@ -96,7 +110,7 @@ Tests that need OS permissions (posting input on macOS) are ignored by default; 
 The engine tests run several nodes in one process, but input capture and injection can only really be checked on real machines. Changes to `lanroam-input` or to how input is routed should be tried between a Mac and a Windows PC:
 
 - Run `cargo run -p lanroam-cli -- run` on each machine; `--dry-run` prints received input instead of injecting it.
-- Every push to `main` publishes `lanroam-cli.exe` to the rolling [`dev` pre-release](https://github.com/zlx2019/lanroam/releases/tag/dev); the README shows how to fetch it on Windows.
+- Every push publishes `Lanroam.exe` and `lanroam-cli.exe` to the rolling [`dev` pre-release](https://github.com/zlx2019/lanroam/releases/tag/dev); the README shows how to fetch them on Windows.
 
 ## Conventions
 

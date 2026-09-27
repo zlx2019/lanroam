@@ -1,80 +1,137 @@
-# Lanroam
+<p align="center">
+  <img src="./assets/logo.svg" width="96" alt="Lanroam logo" />
+</p>
 
-[![CI](https://github.com/zlx2019/lanroam/actions/workflows/ci.yml/badge.svg)](https://github.com/zlx2019/lanroam/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.96.0%2B-orange.svg)](https://www.rust-lang.org)
-![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-3ccfbe)
+<h1 align="center">Lanroam</h1>
 
-[English](./README.md) · **简体中文**
+<p align="center">
+让你在触手可及的视界，自由漫游。
+</p>
 
-> 一套键盘鼠标，控制局域网里的多台电脑。
 
-把光标推出一块屏幕的边缘，它就落到下一台电脑上，键盘也随之切换过去。每台设备都是对等节点：不需要配置服务器，设备在局域网里自动互相发现，所有数据都经双向认证的 TLS 1.3 传输。Lanroam 是同系列的第三个局域网工具，前两个是 [Deskmate](https://github.com/zlx2019/deskmate)（文件传输）和 [Lanecho](https://github.com/zlx2019/lanecho)（剪贴板同步）。
+<p align="center">
+  <a href="https://github.com/zlx2019/lanroam/actions/workflows/ci.yml"><img src="https://github.com/zlx2019/lanroam/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT" /></a>
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-3ccfbe" alt="Platform" />
+</p>
 
-## 状态
+<p align="center">
+  <a href="./README.md">English</a> · <b>简体中文</b>
+</p>
 
-**早期开发中，暂不可用。** 设备发现、设备身份、绑定证书指纹的 QUIC 传输已经完成。在命令行里，设备可以组成桌面组（用 PIN 加入）、共享屏幕布局并互相控制：光标能在 Mac 与 Windows 之间、朝任意方向穿过相接的屏幕边缘，也能用快捷键直接跳转。下一步是桌面端应用。
+---
 
-| 里程碑 | 内容 | |
+**Lanroam** 是一个免费开源的用于鼠标、键盘共享应用。可通过一台电脑的鼠标、键盘或触摸板来控制所有的设备，并且支持剪切板、文件传输同步。
+
+每台运行着 Lanroam 的设备，都是局域网里一个对等的节点。你的几台设备加入同一个桌面组，它们的屏幕按照在桌上的摆放，排列在一张共享的画布上。设备之间点对点传输，默认为双向认证的 TLS 1.3 加密。
+
+## ✨ 功能特性
+
+- 🔗 **局域网 P2P** —— 每台设备都是对等节点；无需服务端、云端或账号。
+- 📡 **零配置发现** —— mDNS 为主、UDP 组播兜底；附近的设备自己就会出现。
+- 🤝 **PIN 加入** —— 在新设备上输入组内成员显示的 6 位 PIN 即可加入，PIN 通过一次绑定双方 TLS 证书的口令认证密钥交换来校验。
+- 🔐 **默认安全** —— 基于 QUIC 的 TLS 1.3 双向认证，设备身份以证书指纹绑定；输入只会发往你所在组的成员。
+- 🗂️ **常驻菜单栏** —— 在菜单栏（macOS）或托盘（Windows）里暂停、锁定或切换到某台设备，也可以设为开机启动。
+
+## 🗺️ 路线图
+
+| 里程碑 | 内容 | 状态 |
 |---|---|---|
-| M0 | 共享的局域网基础库、QUIC 传输、集成测试用 CLI | 已完成 |
-| M1 | 键鼠捕获与注入原型（macOS ↔ Windows） | 已完成 |
-| M2 | 桌面组、屏幕布局、边缘穿越、快捷键 | 已完成 |
-| M3 | 桌面端：屏幕排列、配对、托盘 | 下一步 |
+| M0 | 共享的局域网基础库、QUIC 传输、集成测试用 CLI | ✅ |
+| M1 | 键鼠捕获与注入（macOS ↔ Windows） | ✅ |
+| M2 | 桌面组、屏幕布局、边缘穿越、快捷键 | ✅ |
+| M3 | 桌面端：屏幕排列、配对、托盘、设置 | 🚧 |
 | M4 | 剪贴板交接 | |
 | M5 | 设备之间直接拖拽文件 | |
 
-## 工作区
+## 📥 安装
 
-```text
-deps/lan-kit        共享的局域网基础库：身份、双向 TLS 1.3、发现、分帧
-deps/lanroam-input  键盘与鼠标：捕获、注入、键位映射、边缘切换
-deps/lanroam-core   引擎：桌面组、QUIC 传输、协议、输入会话、诊断
-deps/lanroam-cli    命令行工具，用于协议调试和集成测试
-```
+目前还没有正式版本，第一个版本会随桌面端应用一起发布。
 
-## 开发
-
-Rust 版本由 `rust-toolchain.toml` 固定，所需工具见 [CONTRIBUTING.md](./CONTRIBUTING.md)。
-
-```bash
-cargo nextest run --workspace          # 运行测试
-cargo run -p lanroam-cli -- run        # 让本机以桌面组成员身份运行（控制台命令：join、layout、place……）
-cargo run -p lanroam-cli -- scan       # 列出局域网里的节点
-cargo run -p lanroam-cli -- ping <名称 | 指纹前缀 | ip:端口>
-```
-
-在 `run` 里，`join <设备>` 请求附近的一台设备让本机加入它的组（两台都没有组时会新建一个）；那台设备会显示一个 6 位 PIN，在这边输入即可。PIN 通过一次绑定双方 TLS 证书的口令认证密钥交换（PAKE）来校验，所以冒充你所选设备的第三方拿不到任何可利用的信息。`layout` 显示每个成员的屏幕在共享画布上的位置（按逻辑像素计算，150% 缩放的 Windows 屏幕也能和 Mac 对齐）以及它们相接的边；`place <成员> right-of <成员> [偏移]`（或 `left-of`、`above`、`below`）调整摆放，对整个组生效。
-
-`run` 运行期间，把光标推出本机与其他成员相接的边，就开始控制那台设备；可以继续穿到更远的设备再穿回来，位置沿相接的边按比例对应。在被控设备上动一下它自己的鼠标或键盘，控制权就回到它本机。快捷键（Mac 上 Alt 即 Option）：
-
-| 按键 | 作用 |
+| 平台 | 系统要求 |
 |---|---|
-| Ctrl+Alt+1..9 | 跳到第 n 台设备，编号与 `layout` 显示的一致 |
-| Ctrl+Alt+方向键 | 跳到该方向上的相邻设备 |
-| Ctrl+Alt+L、Scroll Lock | 把光标锁定在当前设备上，或解锁 |
-| Ctrl+Alt+Esc | 回到本机并暂停边缘穿越，或恢复 |
+| macOS | macOS 13 Ventura 及以上 |
+| Windows | Windows 10 及以上，x64 |
 
-数字、方向键和 L 需要按左 Alt：很多键盘布局里 AltGr（Windows 上等于 Ctrl+右 Alt）配合这些键是用来输入字符的。Mac 与 PC 之间会互换 Command 和 Control，让快捷键还在原来的手指位置（`swap off` 可以关闭输入到本机时的互换）。在 macOS 上，运行命令的应用（也就是你的终端）需要在“系统设置 > 隐私与安全性”里获得“辅助功能”和“输入监控”权限。
+### 🪟 Windows
 
-在同一台机器上跑两个实例时，它们需要各自的身份：给每个实例传不同的 `--data-dir`，并使用 `--port 0`；`run --dry-run` 不捕获本机输入，只把收到的输入打印出来，而不是注入。
-
-Windows 部分的代码在任何机器上都能做静态检查：`cargo clippy -p lanroam-input --target x86_64-pc-windows-msvc`。
-
-### Windows 开发版
-
-每次推送都会构建 `lanroam-cli.exe`，并发布到滚动更新的 [`dev` 预发布版](https://github.com/zlx2019/lanroam/releases/tag/dev)。在 Windows 上用下面的命令获取最新版：
+每次推送都会构建应用（`Lanroam.exe`，免安装）和命令行节点（`lanroam-cli.exe`），并发布到滚动更新的 [`dev` 预发布版](https://github.com/zlx2019/lanroam/releases/tag/dev)。用下面的命令把最新版下载到 `%LOCALAPPDATA%\Lanroam\dev`：
 
 ```powershell
 irm "https://raw.githubusercontent.com/zlx2019/lanroam/main/scripts/windows/update.ps1?$(Get-Random)" | iex
 ```
 
-第一次运行时，请在管理员权限的 PowerShell 里加上 `-Firewall` 参数，放行入站流量（见脚本开头的说明）。
+第一次请在管理员权限的 PowerShell 里加上 `-Firewall` 运行，放行来自局域网的连接：
 
-## 参与贡献
+```powershell
+& ([scriptblock]::Create((irm "https://raw.githubusercontent.com/zlx2019/lanroam/main/scripts/windows/update.ps1?$(Get-Random)"))) -Firewall
+```
 
-工作区结构、CI 会跑的检查和开发约定见 [CONTRIBUTING.md](./CONTRIBUTING.md)。安全问题请按 [SECURITY.md](./SECURITY.md) 的说明私下报告。
+### 🍎 macOS
 
-## 许可证
+暂无构建包，请[从源码构建](#-从源码构建)。首次启动时，Lanroam 会引导你授予捕获和注入输入所需的**辅助功能**与**输入监控**权限。
+
+> 开发版未签名，运行 `Lanroam.exe` 前 Windows SmartScreen 可能会弹出确认提示。
+
+## 🔒 安全
+
+Lanroam 会转发按键、操控其他电脑的光标，所以细则需要讲明白：
+
+- **数据不出你的局域网。** 输入在设备之间点对点传输，走 TLS 1.3，且只发往你所在组的成员。没有服务端，也没有任何遥测。
+- **你敲的内容会经过网络。** 控制另一台设备时，你在那边敲的每个按键（包括密码）都会经网络加密传输。
+- **组内成员彼此完全信任。** 任何成员都能控制其他成员、放新设备进组、把已有设备移出。只加入由你自己的设备组成的组。
+- **加入必须输入 PIN。** PIN 显示在组内成员的屏幕上，通过绑定双方证书指纹的 SPAKE2 校验：最多尝试 3 次，之后冷却 30 秒。冒充你所选设备的第三方拿不到任何可利用的信息。
+- **设备发现在局域网内公开。** mDNS 会明文广播每台设备的名称、ID、证书指纹、平台、系统版本和桌面组 ID。
+- **身份密钥以明文存放**在 `~/.lanroam` 下，只有你的用户账号能读取。能访问该账号的人可以冒充这台设备。
+
+完整说明及漏洞报告方式见 [SECURITY.md](./SECURITY.md)。
+
+## ❓ 常见问题
+
+**光标停在 Mac 的屏幕边缘出不去，或者按键到不了另一台设备。**
+Lanroam 需要「系统设置 → 隐私与安全性」中的**辅助功能**和**输入监控**权限，而且 macOS 要等应用重启后才会生效（Lanroam 会提示你重启）。使用 CLI 时，需要授权的是你的终端。
+
+**更新版本后权限失效了（macOS）。**
+开发版只做了临时签名，授权与二进制本体绑定，每次新构建都会让旧授权作废 —— 而且在列表里重新勾选旧条目是没用的。请在两个列表中都移除 Lanroam，重新打开应用并授权新条目，然后重启 Lanroam。
+
+**macOS 上始终看不到其他设备。**
+macOS 15+ 会在首次启动时申请**本地网络**权限 —— 必须允许，否则设备发现会静默失败。可在「系统设置 → 隐私与安全性 → 本地网络」中重新开启。
+
+**Windows 上始终看不到其他设备。**
+设备发现和控制都需要入站防火墙规则。按上文加上 `-Firewall` 运行一次更新脚本，或在 Windows 询问时允许 `Lanroam.exe` 在专用网络下通信。
+
+**光标穿越的位置不对，或者穿不过去。**
+只有布局里相接的两块屏幕之间才能穿越。打开布局，点**识别屏幕**看清每块屏幕对应哪台设备，再拖成和桌面一致的摆放。
+
+**有些窗口不响应鼠标和键盘。**
+安全输入无法远程操控：Windows 上的锁屏、UAC 提示和以管理员身份运行的窗口都控制不了；macOS 上的安全输入（密码框、开启了「安全键盘输入」的终端）会让键盘无法被捕获。
+
+**应用和 CLI 能同时运行吗？**
+不能。它们共用 `~/.lanroam`，在局域网里是同一台设备；启动其中一个前先退出另一个。
+
+## 🔨 从源码构建
+
+桌面端是 Tauri 2 + React（`apps/desktop`），与命令行节点共用一个无 UI 的引擎：
+
+```text
+deps/lan-kit        共享的局域网基础库：身份、双向 TLS 1.3、发现、分帧
+deps/lanroam-input  键盘与鼠标：捕获、注入、键位映射、边缘切换
+deps/lanroam-core   引擎：桌面组、QUIC 传输、协议、输入会话
+deps/lanroam-cli    命令行节点，用于协议调试和多机测试
+apps/desktop        桌面端应用
+```
+
+Rust 版本由 `rust-toolchain.toml` 固定；桌面端还需要 Node 22+ 和 pnpm。
+
+```bash
+cd apps/desktop && pnpm install && pnpm tauri build  # 构建当前平台的应用
+cargo build --release -p lanroam-cli                 # 构建命令行节点
+```
+
+## 🤝 参与贡献
+
+开发时如何运行应用和 CLI、CI 会跑的检查以及开发约定，见 [CONTRIBUTING.md](./CONTRIBUTING.md)。安全问题请按 [SECURITY.md](./SECURITY.md) 的说明私下报告。
+
+## 📄 许可证
 
 [MIT](./LICENSE)
