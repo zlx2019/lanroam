@@ -512,6 +512,9 @@ fn print_control(event: &ControlEvent) {
     match event {
         ControlEvent::Controlling { name, .. } => println!("control  now controlling {name}"),
         ControlEvent::Home { .. } => println!("control  back on this device"),
+        ControlEvent::Lost { name, .. } => {
+            println!("warning  lost the link to {name}; back here at the next input");
+        }
         ControlEvent::ControlledBy { name, .. } => println!("control  {name} controls this device"),
         ControlEvent::Freed { name, .. } => println!("control  {name} gave this device back"),
         ControlEvent::TookBack { name, .. } => {

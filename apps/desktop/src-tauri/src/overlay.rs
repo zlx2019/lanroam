@@ -99,6 +99,11 @@ pub enum Hint {
         /// The device
         name: String,
     },
+    /// The link to the device being controlled dropped
+    Lost {
+        /// The device
+        name: String,
+    },
     /// The device being controlled let go (a `released` reason)
     LetGo {
         /// The device

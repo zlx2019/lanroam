@@ -28,6 +28,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use lan_kit::PeerInfo;
 use lan_kit::frame::Framing;
 use lanroam_input::MouseButton;
+use lanroam_input::switch::Request;
 use serde::{Deserialize, Serialize};
 
 use crate::group::GroupDoc;
@@ -72,6 +73,42 @@ pub mod released {
     pub const LOCAL_INPUT: &str = "local_input";
     /// It cannot inject input (no permission, unsupported platform)
     pub const UNAVAILABLE: &str = "unavailable";
+}
+
+/// What a controlled device asks its controller for ([`Control::Request`]):
+/// a [`Request`] on the wire
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum Ask {
+    /// Come home and pause crossing, or resume
+    Pause,
+    /// Lock the pointer to its device, or unlock
+    Lock,
+    /// Move control to a device
+    Jump {
+        /// Its fingerprint
+        device: String,
+    },
+}
+
+impl From<Request> for Ask {
+    fn from(request: Request) -> Self {
+        match request {
+            Request::Pause => Self::Pause,
+            Request::Lock => Self::Lock,
+            Request::Jump(device) => Self::Jump { device },
+        }
+    }
+}
+
+impl From<Ask> for Request {
+    fn from(ask: Ask) -> Self {
+        match ask {
+            Ask::Pause => Self::Pause,
+            Ask::Lock => Self::Lock,
+            Ask::Jump { device } => Self::Jump(device),
+        }
+    }
 }
 
 /// Why a join was turned down ([`Control::JoinDenied`])
@@ -198,6 +235,13 @@ pub enum Control {
         /// Locked
         on: bool,
     },
+    /// The sender's tray or window asked for this while the receiver
+    /// controls it: the user works the sender with the receiver's keyboard
+    /// and mouse, so the receiver carries it out (since 2.1)
+    Request {
+        /// What
+        request: Ask,
+    },
     /// One PIN attempt begins (sponsor → joiner): the sponsor's SPAKE2
     /// message
     JoinChallenge {
@@ -249,6 +293,7 @@ impl Control {
             Self::Group { .. } => "group",
             Self::Identify => "identify",
             Self::PointerLocked { .. } => "pointer_locked",
+            Self::Request { .. } => "request",
             Self::JoinChallenge { .. } => "join_challenge",
             Self::JoinAnswer { .. } => "join_answer",
             Self::JoinAccepted { .. } => "join_accepted",

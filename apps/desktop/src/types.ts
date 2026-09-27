@@ -80,6 +80,8 @@ export interface ControlDto {
   peerFingerprint: string | null;
   paused: boolean;
   locked: boolean;
+  /** The device controlling this one locked the pointer to it */
+  peerLocked: boolean;
 }
 
 /** Why capture or injection does not run (null: it runs) */
@@ -153,6 +155,7 @@ export type Hint =
   | { kind: "locked"; on: boolean; name: string; platform: string }
   | { kind: "jump"; number: number | null; name: string }
   | { kind: "unresponsive"; name: string }
+  | { kind: "lost"; name: string }
   | { kind: "letGo"; name: string; reason: string }
   | { kind: "stillRunning"; platform: string };
 

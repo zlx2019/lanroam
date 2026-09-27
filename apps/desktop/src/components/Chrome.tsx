@@ -87,7 +87,7 @@ function StatusPill({ snapshot }: { snapshot: Snapshot }) {
   if (control.mode === "controlled") {
     return (
       <div className="pill in">
-        <InIcon />
+        {control.peerLocked ? <LockIcon /> : <InIcon />}
         {t("status.controlled", { name })}
       </div>
     );

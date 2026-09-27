@@ -125,6 +125,7 @@ export const en: Record<TextKey, string> = {
   "hint.lockedSub": "{keys} to unlock",
   "hint.unlocked": "Pointer unlocked",
   "hint.unresponsive": "{name} is not responding",
+  "hint.lost": "Lost the connection to {name}",
   "hint.preempted": "Another device took over {name}",
   "hint.tookBack": "{name} took its keyboard and mouse back",
   "hint.unavailable": "{name} cannot take input",

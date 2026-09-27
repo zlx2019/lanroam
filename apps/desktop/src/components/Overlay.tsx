@@ -93,6 +93,8 @@ function words(hint: Hint, t: Translate): Words {
       return { icon: <OutIcon />, text: hint.number ? `${hint.number} · ${hint.name}` : hint.name };
     case "unresponsive":
       return { icon: <WarnIcon />, text: t("hint.unresponsive", { name: hint.name }), sub: t("hint.back"), warn: true };
+    case "lost":
+      return { icon: <WarnIcon />, text: t("hint.lost", { name: hint.name }), sub: t("hint.back"), warn: true };
     case "letGo":
       return letGo(hint.name, hint.reason, t);
     case "stillRunning": {

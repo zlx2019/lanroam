@@ -132,6 +132,7 @@ export const zh = {
   "hint.lockedSub": "{keys} 解锁",
   "hint.unlocked": "光标已解锁",
   "hint.unresponsive": "{name} 没有响应",
+  "hint.lost": "与 {name} 的连接断开了",
   "hint.preempted": "{name} 被另一台设备接管了",
   "hint.tookBack": "{name} 那边收回了控制",
   "hint.unavailable": "{name} 无法接收键鼠输入",

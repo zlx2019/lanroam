@@ -96,6 +96,8 @@ pub enum ControlEvent {
         /// Where the pointer came back, in this device's coordinates: on an
         /// outer edge after crossing it, mid-display otherwise
         at: Point,
+        /// It came back with a jump (hotkey or request)
+        jumped: bool,
     },
     /// `name` took control of this device
     ControlledBy {
@@ -134,6 +136,14 @@ pub enum ControlEvent {
     /// The device being controlled stopped answering; control comes back at
     /// the next input
     Unresponsive {
+        /// The device
+        name: String,
+        /// Its fingerprint
+        fingerprint: String,
+    },
+    /// The link to the device being controlled dropped; control comes back
+    /// at the next input
+    Lost {
         /// The device
         name: String,
         /// Its fingerprint
@@ -475,8 +485,11 @@ impl Input {
                         next = inbox.try_recv().ok();
                     }
                     if std::mem::take(&mut self.home_pending) && self.target.is_none() {
-                        let at = switch::lock(&self.switch).landed();
-                        self.notify(ControlEvent::Home { at });
+                        let back = switch::lock(&self.switch).homecoming();
+                        self.notify(ControlEvent::Home {
+                            at: back.at,
+                            jumped: back.jumped,
+                        });
                     }
                 }
                 _ = heartbeat.tick() => self.heartbeat(),
@@ -502,6 +515,15 @@ impl Input {
                 }
                 if self.target.as_deref() == Some(fp.as_str()) {
                     switch::lock(&self.switch).request_release(Some(&fp));
+                    // Said once: not again as unresponsive
+                    if !std::mem::replace(&mut self.unresponsive, true) {
+                        let name = self.name(&fp);
+                        tracing::info!(device = %name, "lost the link to the device controlled");
+                        self.notify(ControlEvent::Lost {
+                            name,
+                            fingerprint: fp,
+                        });
+                    }
                 }
             }
             InputMsg::World {
@@ -515,7 +537,17 @@ impl Input {
                 switch.set_world(world, swapped);
                 switch.set_numbering(numbered);
             }
-            InputMsg::Request(request) => switch::lock(&self.switch).request(request),
+            InputMsg::Request(request) => match self.controller.clone() {
+                // The user works this device with its controller's keyboard
+                // and mouse: that is where pausing, locking and jumping act
+                Some(controller) => self.send(
+                    &controller,
+                    Control::Request {
+                        request: request.into(),
+                    },
+                ),
+                None => switch::lock(&self.switch).request(request),
+            },
             InputMsg::Status(reply) => {
                 let _ = reply.send(self.status());
             }
@@ -627,11 +659,15 @@ impl Input {
             Control::Released { reason_code } if self.target.as_deref() == Some(from) => {
                 switch::lock(&self.switch).request_release(Some(from));
                 let name = self.name(from);
+                tracing::info!(device = %name, reason = %reason_code, "the device controlled let go");
                 self.notify(ControlEvent::LetGo {
                     name,
                     fingerprint: from.to_string(),
                     reason: reason_code,
                 });
+            }
+            Control::Request { request } if self.target.as_deref() == Some(from) => {
+                switch::lock(&self.switch).request(request.into());
             }
             Control::Pong { .. } if self.target.as_deref() == Some(from) => {
                 self.heard = Instant::now();
@@ -691,6 +727,7 @@ impl Input {
             self.unresponsive = true;
             switch::lock(&self.switch).request_release(Some(&target));
             let name = self.name(&target);
+            tracing::info!(device = %name, "the device controlled stopped answering");
             self.notify(ControlEvent::Unresponsive {
                 name,
                 fingerprint: target,

@@ -554,7 +554,7 @@ async fn control_walks_across_devices() {
     let mut hops = Vec::new();
     let at = a
         .expect("home", |event| match event {
-            EngineEvent::Control(ControlEvent::Home { at }) => Some(*at),
+            EngineEvent::Control(ControlEvent::Home { at, .. }) => Some(*at),
             EngineEvent::Control(other) => {
                 hops.push(other.clone());
                 None
@@ -830,6 +830,87 @@ async fn a_lock_reaches_the_controlled_device() {
         name: a_name,
         fingerprint: a.fp(),
         on: true,
+    })
+    .await;
+}
+
+/// Wait for an event `pick` accepts, feeding still motions to `input`
+/// meanwhile: a request only runs at the next local input
+async fn expect_nudging<T>(
+    events: &mut mpsc::UnboundedReceiver<EngineEvent>,
+    input: &FakeInput,
+    what: &str,
+    mut pick: impl FnMut(&EngineEvent) -> Option<T>,
+) -> T {
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        input.push((500, 500), 0.0, 0.0);
+        if let Ok(Some(event)) =
+            tokio::time::timeout(Duration::from_millis(50), events.recv()).await
+            && let Some(found) = pick(&event)
+        {
+            return found;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no {what} within {WAIT:?}"
+        );
+    }
+}
+
+/// Locking or pausing from the tray of a controlled device acts on its
+/// controller: the user works that device with the controller's keyboard
+/// and mouse
+#[tokio::test]
+async fn requests_reach_the_controller() {
+    let (mut a, mut b, _c) = row_of_three().await;
+    let a_name = a.name();
+    a.input.push((999, 500), 5.0, 0.0);
+    b.injected(&Injected::Move(Point::new(1, 500))).await;
+
+    b.engine.request(Request::Lock).unwrap();
+    expect_nudging(&mut a.events, &a.input, "a lock", |event| {
+        matches!(
+            event,
+            EngineEvent::Control(ControlEvent::Locked { on: true })
+        )
+        .then_some(())
+    })
+    .await;
+    b.expect_control(ControlEvent::LockedHere {
+        name: a_name.clone(),
+        fingerprint: a.fp(),
+        on: true,
+    })
+    .await;
+
+    b.engine.request(Request::Pause).unwrap();
+    expect_nudging(&mut a.events, &a.input, "a pause", |event| {
+        matches!(
+            event,
+            EngineEvent::Control(ControlEvent::Paused { on: true })
+        )
+        .then_some(())
+    })
+    .await;
+    b.expect_control(ControlEvent::Freed {
+        name: a_name,
+        fingerprint: a.fp(),
+    })
+    .await;
+}
+
+/// The link to the device controlled dropping is reported
+#[tokio::test]
+async fn a_lost_link_is_reported() {
+    let (mut a, b, _c) = row_of_three().await;
+    let b_name = b.name();
+    a.input.push((999, 500), 5.0, 0.0);
+    b.injected(&Injected::Move(Point::new(1, 500))).await;
+    b.engine.shutdown().await;
+    a.expect_control(ControlEvent::Lost {
+        name: b_name,
+        fingerprint: b.fp(),
     })
     .await;
 }

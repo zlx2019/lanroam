@@ -49,7 +49,7 @@ const state: Snapshot = {
       device("pc".padEnd(64, "0"), "DESKTOP-LBKSIT1", "windows", 1920, 1080, 125, 2560),
     ],
   },
-  control: { mode: "idle", peer: null, peerFingerprint: null, paused: false, locked: false },
+  control: { mode: "idle", peer: null, peerFingerprint: null, paused: false, locked: false, peerLocked: false },
   input: { capture: null, injection: null },
 };
 

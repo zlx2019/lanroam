@@ -610,6 +610,7 @@ impl Mesh {
             }
             msg @ (Control::Enter { .. }
             | Control::PointerLocked { .. }
+            | Control::Request { .. }
             | Control::Leave
             | Control::Key { .. }
             | Control::Button { .. }

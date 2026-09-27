@@ -191,7 +191,7 @@ fn build_menu(app: &AppHandle, snapshot: Option<&Snapshot>) -> tauri::Result<Men
                 ids::LOCK,
                 t.lock,
                 true,
-                snapshot.control.locked,
+                snapshot.control.locked || snapshot.control.peer_locked,
                 None::<&str>,
             )?)?;
             menu.append(&PredefinedMenuItem::separator(app)?)?;

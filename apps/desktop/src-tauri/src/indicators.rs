@@ -1,8 +1,8 @@
 //! What the on-screen overlays say about who controls what, where the user
 //! looks: the device the pointer is on.
 //!
-//! - The device the pointer comes into lights the edge it came in by, or
-//!   shows its number and name after a jump
+//! - The device the pointer comes into (back home included) lights the
+//!   edge it came in by, or shows its number and name after a jump
 //! - Pauses, locks and lost devices are said on the device the pointer is on
 //! - A device controlling another dims its own screens (off by default)
 //!
@@ -29,17 +29,14 @@ pub fn control_event(app: &AppHandle, event: &ControlEvent, was: &ControlDto) {
     };
     match event {
         ControlEvent::Controlling { .. } if settings.dim => overlay::dim(app, true),
-        ControlEvent::Home { at } => {
+        ControlEvent::Home { at, jumped } => {
             overlay::dim(app, false);
-            // Back over an edge: light it. Mid-display (a jump, a pause, a
-            // release) says nothing more
-            if settings.edge_glow
-                && let Some((index, Some(edge))) = overlay::locate(app, *at)
-            {
-                overlay::glow(app, index, edge);
-            }
+            // Mid-display after a pause or a release too, which have their
+            // own hints
+            came_in(app, *at, *jumped, &settings);
         }
-        ControlEvent::ControlledBy { at, .. } => came_in(app, *at, &settings),
+        // Mid-display here only after a jump
+        ControlEvent::ControlledBy { at, .. } => came_in(app, *at, true, &settings),
         ControlEvent::Paused { on } => hint(Hint::Paused {
             on: *on,
             platform: state.engine.info().platform,
@@ -62,6 +59,7 @@ pub fn control_event(app: &AppHandle, event: &ControlEvent, was: &ControlDto) {
             platform: platform_of(&state, fingerprint),
         }),
         ControlEvent::Unresponsive { name, .. } => hint(Hint::Unresponsive { name: name.clone() }),
+        ControlEvent::Lost { name, .. } => hint(Hint::Lost { name: name.clone() }),
         ControlEvent::LetGo { name, reason, .. } => hint(Hint::LetGo {
             name: name.clone(),
             reason: reason.clone(),
@@ -71,15 +69,14 @@ pub fn control_event(app: &AppHandle, event: &ControlEvent, was: &ControlDto) {
 }
 
 /// The pointer came into this device at `at`: light the edge it crossed,
-/// or say where a jump landed
-fn came_in(app: &AppHandle, at: Point, settings: &crate::settings::Settings) {
+/// or, when `jumped`, say where the jump landed
+fn came_in(app: &AppHandle, at: Point, jumped: bool, settings: &crate::settings::Settings) {
     let Some((index, edge)) = overlay::locate(app, at) else {
         return;
     };
     match edge {
         Some(edge) if settings.edge_glow => overlay::glow(app, index, edge),
-        Some(_) => {}
-        None if settings.hints => {
+        None if jumped && settings.hints => {
             let Some(state) = app.try_state::<AppState>() else {
                 return;
             };
@@ -89,7 +86,7 @@ fn came_in(app: &AppHandle, at: Point, settings: &crate::settings::Settings) {
             };
             overlay::hint(app, hint, Some(index));
         }
-        None => {}
+        _ => {}
     }
 }
 

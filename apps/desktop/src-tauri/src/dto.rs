@@ -236,6 +236,8 @@ pub struct ControlDto {
     pub paused: bool,
     /// The pointer stays on its device
     pub locked: bool,
+    /// The device controlling this one locked the pointer to it
+    pub peer_locked: bool,
 }
 
 /// Where input goes right now
@@ -260,6 +262,7 @@ impl ControlDto {
                 self.mode = ControlMode::Controlling;
                 self.peer = Some(name.clone());
                 self.peer_fingerprint = Some(fingerprint.clone());
+                self.peer_locked = false;
             }
             ControlEvent::ControlledBy {
                 name, fingerprint, ..
@@ -267,21 +270,24 @@ impl ControlDto {
                 self.mode = ControlMode::Controlled;
                 self.peer = Some(name.clone());
                 self.peer_fingerprint = Some(fingerprint.clone());
+                self.peer_locked = false;
             }
             // Control is back here, or about to come back at the next input
             ControlEvent::Home { .. }
             | ControlEvent::Freed { .. }
             | ControlEvent::TookBack { .. }
             | ControlEvent::LetGo { .. }
-            | ControlEvent::Unresponsive { .. } => {
+            | ControlEvent::Unresponsive { .. }
+            | ControlEvent::Lost { .. } => {
                 self.mode = ControlMode::Idle;
                 self.peer = None;
                 self.peer_fingerprint = None;
+                self.peer_locked = false;
             }
             ControlEvent::Paused { on } => self.paused = *on,
             ControlEvent::Locked { on } => self.locked = *on,
-            // Said on screen only (the lock is the controller's)
-            ControlEvent::LockedHere { .. } | ControlEvent::Unavailable { .. } => {}
+            ControlEvent::LockedHere { on, .. } => self.peer_locked = *on,
+            ControlEvent::Unavailable { .. } => {}
         }
         *self != before
     }

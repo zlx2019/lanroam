@@ -155,6 +155,16 @@ pub enum Request {
     Jump(String),
 }
 
+/// How control last came back to this machine
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Homecoming {
+    /// Where the local cursor reappeared: on the edge it crossed, or
+    /// mid-display after a jump, a pause or a release
+    pub at: Point,
+    /// It came back with a jump (a number or arrow hotkey, a request)
+    pub jumped: bool,
+}
+
 /// Where the local cursor reappears when control comes back
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Landing {
@@ -207,8 +217,8 @@ pub struct Switch {
     remote: Option<Remote>,
     /// Where the local cursor left this machine, for coming back to it
     departed: Point,
-    /// Where the local cursor reappeared when control last came back
-    landed: Point,
+    /// How control last came back
+    homecoming: Homecoming,
     /// Where the local cursor is, as last seen
     local_at: Point,
     /// Where the cursor last was on each device left
@@ -247,7 +257,7 @@ impl Switch {
             local: local.into(),
             remote: None,
             departed: Point::default(),
-            landed: Point::default(),
+            homecoming: Homecoming::default(),
             local_at: Point::default(),
             last: HashMap::new(),
             numbered: Vec::new(),
@@ -278,10 +288,9 @@ impl Switch {
         self.remote.is_some()
     }
 
-    /// Where the local cursor reappeared when control last came back: on
-    /// the edge it crossed, or mid-display after a jump or a release
-    pub fn landed(&self) -> Point {
-        self.landed
+    /// How control last came back to this machine
+    pub fn homecoming(&self) -> Homecoming {
+        self.homecoming
     }
 
     /// Update the layout, and the devices that get Command and Control
@@ -480,7 +489,10 @@ impl Switch {
                 .and_then(|desktop| desktop.display_at(self.departed))
                 .map_or(self.departed, Rect::centre),
         };
-        self.landed = back;
+        self.homecoming = Homecoming {
+            at: back,
+            jumped: false,
+        };
         CursorAction::Release(back)
     }
 
@@ -686,6 +698,7 @@ impl Switch {
         }
         if device == self.local {
             *cursor = Some(self.come_home(Landing::Centre, out));
+            self.homecoming.jumped = true;
             return;
         }
         let Some(at) = self.landing_on(&device) else {
@@ -884,7 +897,13 @@ mod tests {
             }]
         );
         assert_eq!(d.cursor, Some(CursorAction::Release(Point::new(1510, 400))));
-        assert_eq!(sw.landed(), Point::new(1510, 400));
+        assert_eq!(
+            sw.homecoming(),
+            Homecoming {
+                at: Point::new(1510, 400),
+                jumped: false
+            }
+        );
         assert!(!sw.is_remote());
     }
 
@@ -1044,6 +1063,8 @@ mod tests {
         let (d, out) = chord(&mut sw, usage::LEFT_ALT, usage::ESCAPE);
         assert_eq!(d.verdict, Verdict::Swallow);
         assert_eq!(d.cursor, Some(CursorAction::Release(Point::new(756, 540))));
+        // Mid-display, but not a jump
+        assert!(!sw.homecoming().jumped);
         assert_eq!(
             out,
             [
@@ -1099,6 +1120,13 @@ mod tests {
             [Emit::Leave {
                 device: "pc".into()
             }]
+        );
+        assert_eq!(
+            sw.homecoming(),
+            Homecoming {
+                at: Point::new(756, 540),
+                jumped: true
+            }
         );
 
         let (d, out) = chord(&mut sw, usage::LEFT_ALT, usage::DIGIT_1 + 4);
