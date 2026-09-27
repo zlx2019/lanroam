@@ -4,7 +4,10 @@ use std::time::Duration;
 
 use lanroam_core::diag::RttStats;
 use lanroam_core::lan_kit::{Peer, PeerInfo};
+use lanroam_core::lanroam_input::Desktop;
+use lanroam_core::lanroam_input::inject::InjectStats;
 use lanroam_core::protocol::PROP_PROTOCOL;
+use lanroam_core::session::{SessionEnd, SourceReport};
 
 /// Leading part of a fingerprint, enough to tell devices apart by eye
 pub(crate) fn short_fp(fingerprint: &str) -> &str {
@@ -62,6 +65,38 @@ pub(crate) fn print_stats(label: &str, stats: &RttStats) {
         ms(p50),
         ms(p99),
         ms(max),
+    );
+}
+
+/// One-line description of a desktop's displays
+pub(crate) fn describe_screens(desktop: &Desktop) -> String {
+    let displays: Vec<String> = desktop
+        .displays()
+        .iter()
+        .map(|d| format!("{}x{} at ({}, {})", d.width, d.height, d.x, d.y))
+        .collect();
+    format!("{} display(s): {}", displays.len(), displays.join(", "))
+}
+
+/// Print what a source session sent and how it ended
+pub(crate) fn print_source_report(report: &SourceReport) {
+    match &report.end {
+        SessionEnd::Shutdown => println!("session ended"),
+        SessionEnd::LinkLost(reason) => println!("session ended: link lost ({reason})"),
+        SessionEnd::CaptureStopped => println!("session ended: the capture stopped"),
+    }
+    println!(
+        "sent     {} crossing(s), {} key event(s), {} button event(s), {} scroll step(s)",
+        report.crossings, report.keys, report.buttons, report.wheels
+    );
+    print_stats("motion  ", &report.motion);
+}
+
+/// Print what a target replayed
+pub(crate) fn print_inject_stats(stats: &InjectStats) {
+    println!(
+        "replayed {} position(s) ({} stale), {} key event(s), {} button event(s), {} scroll step(s), {} failed",
+        stats.motions, stats.stale_motions, stats.keys, stats.buttons, stats.wheels, stats.failures
     );
 }
 

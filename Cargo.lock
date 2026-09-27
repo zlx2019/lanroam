@@ -553,6 +553,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "lan-kit",
+ "lanroam-input",
  "quinn",
  "rustls",
  "rustls-pki-types",
@@ -561,6 +562,18 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "lanroam-input"
+version = "0.1.0"
+dependencies = [
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "serde",
+ "thiserror",
+ "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -758,6 +771,7 @@ checksum = "e022c9d066895efa1345f8e33e584b9f958da2fd4cd116792e15e07e4720a807"
 dependencies = [
  "bitflags",
  "dispatch2",
+ "libc",
  "objc2",
  "objc2-core-foundation",
  "objc2-io-surface",

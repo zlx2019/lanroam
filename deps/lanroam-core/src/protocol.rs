@@ -4,10 +4,16 @@
 //! - **Control stream**: the first bidirectional stream, opened by the
 //!   dialer. Length-prefixed JSON [`Control`] messages, reliable and
 //!   ordered. It opens with the Hello gate:
-//!   `Hello → HelloAck | Rejected`
+//!   `Hello → HelloAck | Rejected`. Keys, buttons and scrolling travel here
+//!   too: none of them may be lost or reordered
 //! - **Datagrams**: unreliable and unordered, for high-frequency data where
-//!   only the latest value matters (pointer motion, from M1). A compact
-//!   binary [`Datagram`] codec; the first byte is the kind
+//!   only the latest value matters (pointer motion). A compact binary
+//!   [`Datagram`] codec; the first byte is the kind
+//!
+//! An input session (M1): the acceptor reports its displays with
+//! [`Control::Screens`] right after the Hello gate; the dialer then takes
+//! and gives back control with [`Control::Enter`] / [`Control::Leave`], and
+//! streams input in the acceptor's coordinates.
 //!
 //! The protocol version is `major.minor`; a different major refuses the
 //! connection, a newer minor only adds messages an older peer may ignore.
@@ -15,6 +21,7 @@
 use bytes::{BufMut, Bytes, BytesMut};
 use lan_kit::PeerInfo;
 use lan_kit::frame::Framing;
+use lanroam_input::{MouseButton, Rect};
 use serde::{Deserialize, Serialize};
 
 /// Protocol version (major.minor), checked by the Hello gate
@@ -79,6 +86,48 @@ pub enum Control {
         /// Echoed sender clock
         sent_us: u64,
     },
+    /// The sender's displays, in its desktop coordinates (the acceptor,
+    /// right after the Hello gate)
+    Screens {
+        /// Display rectangles
+        displays: Vec<Rect>,
+    },
+    /// The dialer takes control; the cursor goes to (`x`, `y`)
+    Enter {
+        /// Horizontal position (receiver's coordinates)
+        x: i32,
+        /// Vertical position
+        y: i32,
+    },
+    /// The dialer gives control back; the receiver releases every key and
+    /// button the dialer still holds
+    Leave,
+    /// Key press, autorepeat or release
+    Key {
+        /// USB HID usage (keyboard page)
+        usage: u16,
+        /// Pressed (true) or released
+        down: bool,
+    },
+    /// Mouse button, at the cursor position it happened at (the latest
+    /// motion datagram may not have arrived yet)
+    Button {
+        /// Which button
+        button: MouseButton,
+        /// Pressed (true) or released
+        down: bool,
+        /// Horizontal position (receiver's coordinates)
+        x: i32,
+        /// Vertical position
+        y: i32,
+    },
+    /// Scrolling, in 1/120 of a notch
+    Wheel {
+        /// Horizontal amount; positive scrolls right
+        dx: i32,
+        /// Vertical amount; positive scrolls up
+        dy: i32,
+    },
 }
 
 impl Control {
@@ -90,6 +139,12 @@ impl Control {
             Self::Rejected { .. } => "rejected",
             Self::Ping { .. } => "ping",
             Self::Pong { .. } => "pong",
+            Self::Screens { .. } => "screens",
+            Self::Enter { .. } => "enter",
+            Self::Leave => "leave",
+            Self::Key { .. } => "key",
+            Self::Button { .. } => "button",
+            Self::Wheel { .. } => "wheel",
         }
     }
 }
@@ -125,6 +180,21 @@ pub enum Datagram {
         /// Echoed sender clock
         sent_us: u64,
     },
+    /// The controlled cursor moved; a lower `seq` than the last one applied
+    /// is stale and dropped
+    Motion {
+        /// Sequence number, increasing over the session
+        seq: u32,
+        /// Horizontal position (receiver's coordinates)
+        x: i32,
+        /// Vertical position
+        y: i32,
+    },
+    /// Receipt of [`Datagram::Motion`], for measuring input latency
+    MotionAck {
+        /// Sequence number of the motion
+        seq: u32,
+    },
 }
 
 /// Datagram kind tags
@@ -133,6 +203,10 @@ mod kind {
     pub(super) const PING: u8 = 1;
     /// [`super::Datagram::Pong`]
     pub(super) const PONG: u8 = 2;
+    /// [`super::Datagram::Motion`]
+    pub(super) const MOTION: u8 = 3;
+    /// [`super::Datagram::MotionAck`]
+    pub(super) const MOTION_ACK: u8 = 4;
 }
 
 impl Datagram {
@@ -149,6 +223,16 @@ impl Datagram {
                 buf.put_u8(kind::PONG);
                 buf.put_u32(seq);
                 buf.put_u64(sent_us);
+            }
+            Self::Motion { seq, x, y } => {
+                buf.put_u8(kind::MOTION);
+                buf.put_u32(seq);
+                buf.put_i32(x);
+                buf.put_i32(y);
+            }
+            Self::MotionAck { seq } => {
+                buf.put_u8(kind::MOTION_ACK);
+                buf.put_u32(seq);
             }
         }
         buf.freeze()
@@ -167,6 +251,21 @@ impl Datagram {
                     Self::Ping { seq, sent_us }
                 } else {
                     Self::Pong { seq, sent_us }
+                })
+            }
+            kind::MOTION => {
+                let rest: &[u8; 12] = rest.try_into().ok()?;
+                let [s0, s1, s2, s3, x0, x1, x2, x3, y0, y1, y2, y3] = *rest;
+                Some(Self::Motion {
+                    seq: u32::from_be_bytes([s0, s1, s2, s3]),
+                    x: i32::from_be_bytes([x0, x1, x2, x3]),
+                    y: i32::from_be_bytes([y0, y1, y2, y3]),
+                })
+            }
+            kind::MOTION_ACK => {
+                let rest: &[u8; 4] = rest.try_into().ok()?;
+                Some(Self::MotionAck {
+                    seq: u32::from_be_bytes(*rest),
                 })
             }
             _ => None,
@@ -215,6 +314,22 @@ mod tests {
                 seq: 7,
                 sent_us: 123_456,
             },
+            Control::Screens {
+                displays: vec![Rect::new(0, 0, 1920, 1080), Rect::new(-1280, 0, 1280, 1024)],
+            },
+            Control::Enter { x: 1, y: 540 },
+            Control::Leave,
+            Control::Key {
+                usage: 0x04,
+                down: true,
+            },
+            Control::Button {
+                button: MouseButton::Back,
+                down: false,
+                x: -3,
+                y: 7,
+            },
+            Control::Wheel { dx: 0, dy: -120 },
         ];
         let (mut a, mut b) = tokio::io::duplex(64 * 1024);
         for msg in &samples {
@@ -251,6 +366,18 @@ mod tests {
             assert_eq!(bytes.len(), 13);
             assert_eq!(Datagram::decode(&bytes), Some(dg));
         }
+        let motion = Datagram::Motion {
+            seq: 9,
+            x: -1280,
+            y: i32::MAX,
+        };
+        assert_eq!(motion.encode().len(), 13);
+        assert_eq!(Datagram::decode(&motion.encode()), Some(motion));
+        let ack = Datagram::MotionAck { seq: 9 };
+        assert_eq!(ack.encode().len(), 5);
+        assert_eq!(Datagram::decode(&ack.encode()), Some(ack));
+        assert_eq!(Datagram::decode(&ack.encode()[..4]), None);
+
         let ping = Datagram::Ping { seq: 1, sent_us: 2 }.encode();
         assert_eq!(Datagram::decode(&ping[..12]), None);
         let mut padded = ping.to_vec();

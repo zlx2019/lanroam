@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "deps/lan-kit",
+    "deps/lanroam-input",
     "deps/lanroam-core",
     "deps/lanroam-cli",
 ]
@@ -19,6 +20,7 @@ readme = "README.md"
 
 [workspace.dependencies]
 lan-kit = { path = "deps/lan-kit" }
+lanroam-input = { path = "deps/lanroam-input" }
 lanroam-core = { path = "deps/lanroam-core" }
 tokio = { version = "1", features = [
     "rt-multi-thread",
@@ -58,6 +60,33 @@ uuid = { version = "1", features = ["v4"] }
 hostname = "0.4"
 os_info = { version = "3", default-features = false }
 clap = { version = "4", features = ["derive"] }
+# Platform input APIs, each compiled only on its own OS (same versions as the
+# sibling apps, which pull them in through Tauri)
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "CFCGTypes",
+    "CFDate",
+    "CFMachPort",
+    "CFRunLoop",
+] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "CGDirectDisplay",
+    "CGError",
+    "CGEvent",
+    "CGEventSource",
+    "CGEventTypes",
+    "CGRemoteOperation",
+    "libc",
+] }
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Threading",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 ### Lint rules shared by every member (opt in with `[lints] workspace = true`)
 [workspace.lints.rust]

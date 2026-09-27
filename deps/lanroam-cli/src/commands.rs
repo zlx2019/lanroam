@@ -2,20 +2,26 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use lanroam_core::PROFILE;
-use lanroam_core::diag;
 use lanroam_core::lan_kit::discovery::DiscoveryOptions;
 use lanroam_core::lan_kit::{DeviceIdentity, DiscoveryService, Peer, PeerEvent, PeerInfo};
+use lanroam_core::lanroam_input::inject::Injector;
+use lanroam_core::lanroam_input::switch::Switch;
+use lanroam_core::lanroam_input::{Desktop, Edge, platform};
 use lanroam_core::node::{Node, NodeConfig};
+use lanroam_core::session::{self, SourceNotice, TargetNotice};
 use lanroam_core::transport::{Link, Transport};
+use lanroam_core::{PROFILE, diag};
 use tokio::sync::mpsc;
 
 use crate::CommonArgs;
-use crate::output::{describe, describe_peer, print_stats};
+use crate::dryrun::PrintInjector;
+use crate::output::{
+    describe, describe_peer, describe_screens, print_inject_stats, print_source_report, print_stats,
+};
 
 /// How long to wait for the last datagram answers
 const DATAGRAM_GRACE: Duration = Duration::from_secs(2);
@@ -63,8 +69,36 @@ pub(crate) async fn cmd_scan(common: &CommonArgs, wait_secs: u64) -> Result<()> 
     Ok(())
 }
 
-/// `listen`: run a node until Ctrl-C, answering pings on every link
-pub(crate) async fn cmd_listen(common: &CommonArgs, port: u16, name: Option<String>) -> Result<()> {
+/// What `listen` does with a link
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Replay {
+    /// Inject the source's input into this session
+    Inject,
+    /// Print the source's input instead of injecting it
+    DryRun,
+    /// No injection on this platform: only answer pings
+    PingOnly,
+}
+
+/// `listen`: run a node until Ctrl-C, replaying input sessions and
+/// answering pings on every link
+pub(crate) async fn cmd_listen(
+    common: &CommonArgs,
+    port: u16,
+    name: Option<String>,
+    dry_run: bool,
+) -> Result<()> {
+    let replay = if dry_run {
+        Replay::DryRun
+    } else {
+        match platform::injector() {
+            Ok(_) => Replay::Inject,
+            Err(e) => {
+                println!("{e}: links will only answer pings (try --dry-run)");
+                Replay::PingOnly
+            }
+        }
+    };
     let mut config = NodeConfig::new(common.data_dir.clone());
     config.port = port;
     config.discovery_port = common.discovery_port;
@@ -81,6 +115,7 @@ pub(crate) async fn cmd_listen(common: &CommonArgs, port: u16, name: Option<Stri
     let accept = tokio::spawn(accept_loop(
         Arc::clone(node.transport()),
         node.info().clone(),
+        replay,
     ));
     // Down events only carry a fingerprint; remember names to print them
     let mut names: HashMap<String, String> = HashMap::new();
@@ -110,7 +145,7 @@ pub(crate) async fn cmd_listen(common: &CommonArgs, port: u16, name: Option<Stri
 }
 
 /// Accept connections forever, each handshake and session in its own task
-async fn accept_loop(transport: Arc<Transport>, local: PeerInfo) {
+async fn accept_loop(transport: Arc<Transport>, local: PeerInfo, replay: Replay) {
     while let Some(incoming) = transport.accept().await {
         let local = local.clone();
         tokio::spawn(async move {
@@ -119,7 +154,7 @@ async fn accept_loop(transport: Arc<Transport>, local: PeerInfo) {
                 Ok(link) => {
                     let who = describe(link.remote());
                     println!("linked   {who} from {from}");
-                    diag::respond(link).await;
+                    serve_link(link, replay).await;
                     println!("unlinked {who}");
                 }
                 // Other nodes probing our identity for discovery
@@ -127,6 +162,35 @@ async fn accept_loop(transport: Arc<Transport>, local: PeerInfo) {
                 Err(e) => println!("refused  {from}: {e}"),
             }
         });
+    }
+}
+
+/// Serve one link: an input session (which answers pings too), or pings
+/// only where input cannot be replayed
+async fn serve_link(link: Link, replay: Replay) {
+    let name = link.remote().name.clone();
+    let setup = match replay {
+        Replay::PingOnly => None,
+        Replay::DryRun => Some(
+            platform::displays().map(|d| (d, Box::new(PrintInjector::new()) as Box<dyn Injector>)),
+        ),
+        Replay::Inject => Some(platform::displays().and_then(|d| Ok((d, platform::injector()?)))),
+    };
+    let (displays, injector) = match setup {
+        None => return diag::respond(link).await,
+        Some(Ok(setup)) => setup,
+        Some(Err(e)) => {
+            println!("cannot replay input from {name} ({e}); answering pings only");
+            return diag::respond(link).await;
+        }
+    };
+    let notice = |notice| match notice {
+        TargetNotice::Entered => println!("control  {name} took over"),
+        TargetNotice::Left => println!("release  {name} gave control back"),
+    };
+    match session::run_target(link, displays, injector, notice).await {
+        Ok(stats) => print_inject_stats(&stats),
+        Err(e) => println!("session failed: {e}"),
     }
 }
 
@@ -145,34 +209,8 @@ pub(crate) async fn cmd_ping(
     let (node, mut events) = Node::start(config)
         .await
         .context("failed to start the node")?;
-
-    let mut link = match target.parse::<SocketAddr>() {
-        Ok(addr) => {
-            let started = Instant::now();
-            let link = node
-                .transport()
-                .connect_direct(addr, node.info())
-                .await
-                .with_context(|| format!("failed to connect to {addr}"))?;
-            report_link(&link, started.elapsed());
-            println!(
-                "direct connection: nothing was pinned, verify this fingerprint yourself:\n  {}",
-                link.remote().fingerprint
-            );
-            link
-        }
-        Err(_) => {
-            let peer =
-                find_target(&node, &mut events, target, Duration::from_secs(wait_secs)).await?;
-            let started = Instant::now();
-            let link = node
-                .connect(&peer)
-                .await
-                .with_context(|| format!("failed to connect to {}", peer.info.name))?;
-            report_link(&link, started.elapsed());
-            link
-        }
-    };
+    let mut link =
+        connect_target(&node, &mut events, target, Duration::from_secs(wait_secs)).await?;
 
     let stream = diag::ping_stream(&mut link, count).await?;
     print_stats("control stream", &stream);
@@ -188,6 +226,103 @@ pub(crate) async fn cmd_ping(
     link.close();
     node.shutdown().await;
     Ok(())
+}
+
+/// `share`: capture this machine's keyboard and mouse and control `target`,
+/// which sits on `edge` of the local desktop, until Ctrl-C or `duration`
+pub(crate) async fn cmd_share(
+    common: &CommonArgs,
+    target: &str,
+    edge: Edge,
+    wait_secs: u64,
+    duration: Option<u64>,
+) -> Result<()> {
+    let local = Desktop::new(platform::displays().context("cannot read the local displays")?);
+    let mut config = NodeConfig::new(common.data_dir.clone());
+    config.port = 0;
+    config.discovery_port = common.discovery_port;
+    config.passive = true;
+    let (node, mut events) = Node::start(config)
+        .await
+        .context("failed to start the node")?;
+    let mut link =
+        connect_target(&node, &mut events, target, Duration::from_secs(wait_secs)).await?;
+    let screens = session::recv_screens(&mut link).await?;
+    let name = link.remote().name.clone();
+    println!("local    {}", describe_screens(&local));
+    println!("target   {}", describe_screens(&screens));
+
+    let switch = Arc::new(Mutex::new(Switch::new(local, screens, edge)));
+    let (emit_tx, emit_rx) = mpsc::unbounded_channel();
+    let sink = Box::new(move |emit| {
+        // Only fails once the session is over, when nothing listens anymore
+        let _ = emit_tx.send(emit);
+    });
+    let capture =
+        platform::start_capture(Arc::clone(&switch), sink).context("cannot capture input")?;
+    println!(
+        "sharing: push the pointer through the {edge} edge to control {name}\n  \
+         Ctrl+Alt+Esc (Ctrl+Option+Esc on a Mac) takes control back at once, Ctrl-C quits"
+    );
+
+    let notice = |notice| match notice {
+        SourceNotice::Entered => println!("control  now controlling {name}"),
+        SourceNotice::Left => println!("release  back on this machine"),
+        SourceNotice::Unresponsive => {
+            println!("warning  {name} stopped answering; control comes back at the next input")
+        }
+    };
+    let shutdown = async {
+        match duration {
+            Some(secs) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    () = tokio::time::sleep(Duration::from_secs(secs)) => println!("time is up"),
+                }
+            }
+            None => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    };
+    let report = session::run_source(link, switch, emit_rx, notice, shutdown).await;
+    // Stops the capture and frees the local cursor
+    drop(capture);
+    print_source_report(&report);
+    node.shutdown().await;
+    Ok(())
+}
+
+/// Connect to `target`: an `ip:port` directly, printing the fingerprint to
+/// verify by hand; anything else through discovery, fingerprint pinned
+async fn connect_target(
+    node: &Node,
+    events: &mut mpsc::Receiver<PeerEvent>,
+    target: &str,
+    wait: Duration,
+) -> Result<Link> {
+    if let Ok(addr) = target.parse::<SocketAddr>() {
+        let started = Instant::now();
+        let link = node
+            .transport()
+            .connect_direct(addr, node.info())
+            .await
+            .with_context(|| format!("failed to connect to {addr}"))?;
+        report_link(&link, started.elapsed());
+        println!(
+            "direct connection: nothing was pinned, verify this fingerprint yourself:\n  {}",
+            link.remote().fingerprint
+        );
+        return Ok(link);
+    }
+    let peer = find_target(node, events, target, wait).await?;
+    let started = Instant::now();
+    let link = node
+        .connect(&peer)
+        .await
+        .with_context(|| format!("failed to connect to {}", peer.info.name))?;
+    report_link(&link, started.elapsed());
+    Ok(link)
 }
 
 /// Print who we are linked to and how long the handshake took

@@ -12,6 +12,7 @@ readme.workspace = true
 
 [dependencies]
 lan-kit = { workspace = true }
+lanroam-input = { workspace = true }
 tokio = { workspace = true }
 quinn = { workspace = true }
 rustls = { workspace = true }

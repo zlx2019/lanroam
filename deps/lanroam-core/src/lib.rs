@@ -9,16 +9,17 @@
 //! │              the Hello gate, identity probes for discovery  (M0)
 //! ├─ protocol  ─ control messages and datagram codec            (M0)
 //! ├─ diag      ─ round-trip measurement on both paths            (M0)
+//! ├─ session   ─ input sessions: source forwards, target replays  (M1)
+//! │              control arbitration                             (M2)
 //! ├─ group     ─ desk group: signed membership, join / kick       (M2)
 //! ├─ layout    ─ monitor arrangement shared by the group         (M2)
-//! ├─ input     ─ platform capture and injection (macOS / Windows) (M1)
-//! ├─ session   ─ control arbitration, edge crossing              (M2)
 //! ├─ clipboard ─ clipboard hand-off on entering a device          (M4)
 //! └─ dnd       ─ cross-device file drag and drop                  (M5)
 //! ```
 //!
 //! Discovery, device identity, mutual TLS and framing come from [`lan_kit`],
-//! the foundation shared with the sibling apps.
+//! the foundation shared with the sibling apps; keyboard and mouse capture,
+//! injection and edge switching from [`lanroam_input`].
 
 use std::net::Ipv4Addr;
 
@@ -27,12 +28,14 @@ use lan_kit::AppProfile;
 pub mod diag;
 pub mod node;
 pub mod protocol;
+pub mod session;
 pub mod transport;
 
 #[cfg(test)]
 mod test_util;
 
 pub use lan_kit;
+pub use lanroam_input;
 
 /// Lanroam's constants on the LAN
 pub const PROFILE: AppProfile = AppProfile {

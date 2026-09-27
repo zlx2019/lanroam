@@ -1,0 +1,30 @@
+[package]
+name = "lanroam-input"
+description = "Lanroam input layer: keyboard and mouse capture and injection, key maps, edge switching"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+readme.workspace = true
+
+# No networking here on purpose: without aws-lc in the dependency tree, the
+# Windows code can be checked from a Mac with
+# `cargo clippy -p lanroam-input --target x86_64-pc-windows-msvc`
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-foundation = { workspace = true }
+objc2-core-graphics = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
+
+[lints]
+workspace = true
