@@ -1,0 +1,301 @@
+//! Commands the frontend invokes (**mirrored in `src/api.ts`**).
+
+use std::sync::atomic::Ordering;
+
+use lanroam_core::engine::Request;
+use lanroam_core::group::join::normalize_pin;
+use lanroam_core::lanroam_input::platform;
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Manager, State};
+use tauri_plugin_autostart::ManagerExt as _;
+use tauri_plugin_opener::OpenerExt as _;
+
+use crate::bridge::{self, events};
+use crate::dto::{
+    CommandError, InputDto, JoinAnswerDto, JoinPromptDto, JoinStartDto, JoiningEndedDto, NearbyDto,
+    PermissionsDto, Snapshot,
+};
+use crate::settings::Settings;
+use crate::state::{AppState, lock};
+use crate::tray;
+
+/// Result of a command
+type Reply<T> = Result<T, CommandError>;
+
+/// The whole state
+#[tauri::command]
+pub async fn get_snapshot(app: AppHandle, state: State<'_, AppState>) -> Reply<Snapshot> {
+    Ok(bridge::snapshot(&state, &app.package_info().version.to_string()).await)
+}
+
+/// Devices on the LAN outside this device's group
+#[tauri::command]
+pub fn list_nearby(state: State<'_, AppState>) -> Vec<NearbyDto> {
+    let own = state.engine.info().fingerprint;
+    let group = state.engine.group();
+    let mut nearby: Vec<NearbyDto> = state
+        .engine
+        .nearby()
+        .iter()
+        .filter(|peer| peer.info.fingerprint != own)
+        .filter(|peer| {
+            !group
+                .as_ref()
+                .is_some_and(|doc| doc.is_member(&peer.info.fingerprint))
+        })
+        .map(NearbyDto::from)
+        .collect();
+    nearby.sort_by(|a, b| a.name.cmp(&b.name));
+    nearby
+}
+
+/// Ask a nearby device to let this one into its group; returns once it
+/// shows its PIN
+#[tauri::command]
+pub async fn start_join(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    fingerprint: String,
+) -> Reply<JoinStartDto> {
+    let peer = state
+        .engine
+        .nearby()
+        .into_iter()
+        .find(|p| p.info.fingerprint == fingerprint)
+        .ok_or_else(|| CommandError::new("gone", "the device is no longer on the LAN"))?;
+    let joining = state.engine.join(&peer).await?;
+    let started = JoinStartDto {
+        sponsor: joining.sponsor().name.clone(),
+        attempts_left: joining.attempts_left(),
+    };
+    let seq = state.join_seq.fetch_add(1, Ordering::SeqCst) + 1;
+    let ended = joining.ended();
+    *state.joining.lock().await = Some(joining);
+    // The sponsor may turn it down (or time out) while the PIN is typed
+    tauri::async_runtime::spawn(async move {
+        let reason = ended.await;
+        let state = app.state::<AppState>();
+        if state.join_seq.load(Ordering::SeqCst) != seq {
+            return;
+        }
+        if state.joining.lock().await.take().is_some() {
+            bridge::emit(&app, events::JOINING_ENDED, JoiningEndedDto { reason });
+        }
+    });
+    Ok(started)
+}
+
+/// Answer the join in progress with a PIN
+#[tauri::command]
+pub async fn answer_join(state: State<'_, AppState>, pin: String) -> Reply<JoinAnswerDto> {
+    let pin =
+        normalize_pin(&pin).ok_or_else(|| CommandError::new("pin_format", "a PIN is 6 digits"))?;
+    let mut slot = state.joining.lock().await;
+    let joining = slot
+        .as_mut()
+        .ok_or_else(|| CommandError::new("no_join", "no join in progress"))?;
+    match joining.answer(&pin).await {
+        Ok(Some(_)) => {
+            *slot = None;
+            Ok(JoinAnswerDto {
+                joined: true,
+                attempts_left: 0,
+            })
+        }
+        Ok(None) => Ok(JoinAnswerDto {
+            joined: false,
+            attempts_left: joining.attempts_left(),
+        }),
+        Err(e) => {
+            *slot = None;
+            Err(e.into())
+        }
+    }
+}
+
+/// Give up the join in progress
+#[tauri::command]
+pub async fn cancel_join(state: State<'_, AppState>) -> Reply<()> {
+    state.join_seq.fetch_add(1, Ordering::SeqCst);
+    state.joining.lock().await.take();
+    Ok(())
+}
+
+/// The join this device sponsors right now, for a join window that opened
+/// after the event
+#[tauri::command]
+pub fn get_join_prompt(state: State<'_, AppState>) -> Option<JoinPromptDto> {
+    lock(&state.prompt).clone()
+}
+
+/// Turn down the join this device sponsors
+#[tauri::command]
+pub fn reject_join(state: State<'_, AppState>) {
+    state.engine.reject_join();
+}
+
+/// Leave the desk group
+#[tauri::command]
+pub async fn leave_group(state: State<'_, AppState>) -> Reply<()> {
+    Ok(state.engine.leave().await?)
+}
+
+/// Remove a member from the group
+#[tauri::command]
+pub async fn kick(state: State<'_, AppState>, fingerprint: String) -> Reply<()> {
+    Ok(state.engine.kick(&fingerprint).await?)
+}
+
+/// Rename this device
+#[tauri::command]
+pub async fn rename(app: AppHandle, state: State<'_, AppState>, name: String) -> Reply<()> {
+    state.engine.rename(&name).await?;
+    // The name shows in the window even outside a group
+    bridge::refresh(&app).await;
+    Ok(())
+}
+
+/// Turn the Command / Control swap for input into this device on or off
+#[tauri::command]
+pub async fn set_swap(state: State<'_, AppState>, on: bool) -> Reply<()> {
+    Ok(state.engine.set_swap(on).await?)
+}
+
+/// What the window asks the keyboard and mouse to do
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum Action {
+    /// Pause crossing, or resume
+    Pause,
+    /// Lock the pointer to its device, or unlock
+    Lock,
+    /// Move control to a device
+    Jump {
+        /// The device
+        fingerprint: String,
+    },
+}
+
+/// Carry out an action at the next local input event
+#[tauri::command]
+pub fn request_action(state: State<'_, AppState>, action: Action) -> Reply<()> {
+    let request = match action {
+        Action::Pause => Request::Pause,
+        Action::Lock => Request::Lock,
+        Action::Jump { fingerprint } => Request::Jump(fingerprint),
+    };
+    Ok(state.engine.request(request)?)
+}
+
+/// The OS input permissions
+#[tauri::command]
+pub fn get_permissions() -> PermissionsDto {
+    let granted = platform::permissions();
+    PermissionsDto {
+        required: cfg!(target_os = "macos"),
+        accessibility: granted.accessibility,
+        input_monitoring: granted.input_monitoring,
+    }
+}
+
+/// Which permission to grant
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Permission {
+    /// Accessibility
+    Accessibility,
+    /// Input Monitoring
+    InputMonitoring,
+}
+
+/// Open the system settings where `permission` is granted, with Lanroam
+/// already listed there
+#[tauri::command]
+pub fn open_permission(app: AppHandle, permission: Permission) -> Reply<()> {
+    platform::request_permissions();
+    let pane = match permission {
+        Permission::Accessibility => "Privacy_Accessibility",
+        Permission::InputMonitoring => "Privacy_ListenEvent",
+    };
+    let url = format!("x-apple.systempreferences:com.apple.preference.security?{pane}");
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| CommandError::new("internal", e.to_string()))
+}
+
+/// Start capture and injection if they do not run yet (after a permission
+/// was granted)
+#[tauri::command]
+pub async fn restart_input(app: AppHandle, state: State<'_, AppState>) -> Reply<InputDto> {
+    let status = state.engine.restart_input().await?;
+    bridge::refresh(&app).await;
+    Ok(status.into())
+}
+
+/// Start Lanroam over (some permissions only apply to a new process)
+#[tauri::command]
+pub fn relaunch(app: AppHandle) {
+    app.restart();
+}
+
+/// The app's preferences as the settings page edits them
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsDto {
+    /// `system`, `zh` or `en`
+    pub language: String,
+    /// `system`, `dark` or `light`
+    pub theme: String,
+    /// Start at login
+    pub autostart: bool,
+}
+
+/// The app's preferences
+#[tauri::command]
+pub fn get_settings(app: AppHandle, state: State<'_, AppState>) -> SettingsDto {
+    let settings = lock(&state.settings).clone();
+    SettingsDto {
+        language: settings.language,
+        theme: settings.theme,
+        autostart: app.autolaunch().is_enabled().unwrap_or(false),
+    }
+}
+
+/// Save the app's preferences and apply them
+#[tauri::command]
+pub async fn save_settings(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    settings: SettingsDto,
+) -> Reply<()> {
+    let autolaunch = app.autolaunch();
+    if autolaunch.is_enabled().unwrap_or(false) != settings.autostart {
+        let switched = if settings.autostart {
+            autolaunch.enable()
+        } else {
+            autolaunch.disable()
+        };
+        switched.map_err(|e| CommandError::new("autostart", e.to_string()))?;
+    }
+    let saved = Settings {
+        language: settings.language,
+        theme: settings.theme,
+    };
+    saved.save(&state.data_dir)?;
+    *lock(&state.settings) = saved;
+    // The tray speaks the language just chosen
+    bridge::refresh(&app).await;
+    Ok(())
+}
+
+/// Bring up the main window
+#[tauri::command]
+pub fn show_main_window(app: AppHandle) {
+    tray::show_main_window(&app);
+}
+
+/// Quit Lanroam
+#[tauri::command]
+pub fn quit_app(app: AppHandle) {
+    app.exit(0);
+}

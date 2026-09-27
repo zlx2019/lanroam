@@ -5,6 +5,7 @@ members = [
     "deps/lanroam-input",
     "deps/lanroam-core",
     "deps/lanroam-cli",
+    "apps/desktop/src-tauri",
 ]
 
 [workspace.package]

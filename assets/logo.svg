@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1c2440"/>
+      <stop offset="1" stop-color="#0c1120"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5fe3d3"/>
+      <stop offset="1" stop-color="#2bb3a4"/>
+    </linearGradient>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="200" fill="url(#bg)"/>
+  <rect x="64" y="64" width="896" height="896" rx="200" fill="none" stroke="#2c3656" stroke-width="6"/>
+  <!-- The screen the pointer leaves -->
+  <rect x="190" y="250" width="420" height="300" rx="46" fill="none" stroke="url(#glow)" stroke-width="44"/>
+  <!-- The screen it lands on -->
+  <rect x="414" y="474" width="420" height="300" rx="46" fill="#3ccfbe" fill-opacity="0.28" stroke="#3ccfbe" stroke-opacity="0.55" stroke-width="20"/>
+  <!-- The pointer, crossing over -->
+  <path d="M520 390 L760 494 L664 522 L636 618 Z" fill="url(#glow)" stroke="#0c1120" stroke-width="18" stroke-linejoin="round"/>
+</svg>

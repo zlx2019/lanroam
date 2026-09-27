@@ -70,6 +70,7 @@ feature-depth = 1
 # A list of advisory IDs to ignore. Note that ignored advisories will still
 # output a note when they are encountered.
 ignore = [
+  { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is unmaintained; it comes with Tauri's Linux GTK stack, no fix upstream" },
   # "RUSTSEC-2024-0436",
   #"RUSTSEC-0000-0000",
   #{ id = "RUSTSEC-0000-0000", reason = "you can specify a reason the advisory is ignored" },
@@ -157,9 +158,10 @@ registries = [
 # https://embarkstudios.github.io/cargo-deny/checks/bans/cfg.html
 [bans]
 # Lint level for when multiple versions of the same crate are detected
-# Kept at warn: the few duplicates all come from transitive dependencies (e.g.
-# spake2's older RustCrypto stack); revisit once the Tauri tree lands
-multiple-versions = "warn"
+# Off since the Tauri app landed: its tree brings dozens of duplicate
+# versions nobody here controls, and skipping them one by one does not
+# scale. License and advisory checks stay strict
+multiple-versions = "allow"
 # Lint level for when a crate version requirement is `*`
 wildcards = "allow"
 # The graph highlighting used when creating dotgraphs for crates

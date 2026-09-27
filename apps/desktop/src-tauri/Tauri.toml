@@ -1,0 +1,77 @@
+# Product name: window titles, the installer and the executable
+productName = "Lanroam"
+version = "../package.json"
+identifier = "io.github.zlx2019.lanroam"
+
+[build]
+beforeDevCommand = "pnpm dev"
+devUrl = "http://localhost:1420"
+beforeBuildCommand = "pnpm build"
+frontendDist = "../dist"
+
+[app.security]
+csp = "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' data:; style-src 'self' 'unsafe-inline'"
+
+# The main window: layout, devices, settings. Hidden until the setup shows
+# it (not at all when started at login with --hidden). On macOS the header
+# doubles as the title bar, with the traffic lights over its left end
+[[app.windows]]
+label = "main"
+title = "Lanroam"
+width = 1040
+height = 680
+minWidth = 860
+minHeight = 560
+visible = false
+titleBarStyle = "Overlay"
+hiddenTitle = true
+
+# The PIN a device asking to join has to type, shown on top of everything:
+# the main window may well be hidden in the tray when someone asks
+[[app.windows]]
+label = "join"
+title = "Lanroam"
+width = 380
+height = 460
+resizable = false
+maximizable = false
+minimizable = false
+alwaysOnTop = true
+center = true
+visible = false
+titleBarStyle = "Overlay"
+hiddenTitle = true
+
+[bundle]
+active = true
+targets = ["app", "dmg", "nsis"]
+publisher = "zlx2019"
+copyright = "Copyright © 2026 zlx2019"
+category = "Utility"
+shortDescription = "Share one keyboard and mouse across your computers"
+longDescription = "Lanroam shares one keyboard and mouse across the computers on your LAN: move the pointer past the edge of one screen and it lands on the next computer. No server, devices find each other on the LAN, and everything travels over mutually authenticated TLS 1.3."
+icon = [
+  "icons/32x32.png",
+  "icons/128x128.png",
+  "icons/128x128@2x.png",
+  "icons/icon.icns",
+  "icons/icon.ico",
+]
+
+[bundle.macos]
+minimumSystemVersion = "13.0"
+# Ad-hoc signing ("-"): without any identity the bundler skips codesign, and
+# a quarantined app with no seal is rejected as "damaged" with no way to
+# open it anyway. A real certificate wins once there is one: the CLI prefers
+# the APPLE_SIGNING_IDENTITY environment variable
+signingIdentity = "-"
+
+# Localized permission dialog text, relative to .app/Contents
+[bundle.macos.files]
+"Resources/zh-Hans.lproj/InfoPlist.strings" = "macos/zh-Hans.lproj/InfoPlist.strings"
+
+[bundle.windows.nsis]
+installMode = "perMachine"
+installerHooks = "windows/hooks.nsh"
+# The installer follows the OS language; the first entry is the fallback
+languages = ["English", "SimpChinese"]

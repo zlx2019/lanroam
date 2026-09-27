@@ -10,6 +10,7 @@ Thank you for contributing. Please read the following guidelines before submitti
 | `deps/lanroam-input` | Keyboard and mouse: capture, injection, key maps, screen geometry, edge switching. No networking |
 | `deps/lanroam-core` | The engine: desk groups, screen layout, QUIC transport, protocol, input routing. No UI |
 | `deps/lanroam-cli` | Command-line node for trying things out, debugging the protocol and testing between machines |
+| `apps/desktop` | The desktop app: Tauri 2 (`src-tauri`, crate `lanroam-desktop`) with a React and TypeScript frontend (`src`) |
 | `scripts/windows` | Fetches the latest Windows dev build onto a test machine |
 
 Each layer only depends on the ones listed above it. `lan-kit` is shared with the sibling apps ([Deskmate](https://github.com/zlx2019/deskmate), [Lanecho](https://github.com/zlx2019/lanecho)), so keep app-specific logic out of it.
@@ -25,6 +26,8 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 The project pins its Rust version in `rust-toolchain.toml`. After entering the project directory, `rustup` will automatically install the required toolchain and components when needed.
 
 ### Development Tools
+
+The desktop app also needs Node 22 or later and pnpm (`corepack enable`).
 
 ```bash
 cargo install --locked cargo-deny     # Dependency security and license auditing
@@ -48,9 +51,25 @@ Note that pre-commit stashes unstaged changes while it runs, which silently disc
 
 On macOS, capturing and injecting input needs **Accessibility** and **Input Monitoring** (System Settings > Privacy & Security), granted to the app that starts Lanroam — your terminal when you use the CLI. Windows needs no extra permissions, but its firewall has to let the LAN reach the port (see `scripts/windows/update.ps1`).
 
+## Running The App
+
+```bash
+cd apps/desktop
+pnpm install
+pnpm tauri dev
+```
+
+The app and the CLI share `~/.lanroam`: they are the same device and cannot run at the same time. To run a second identity next to them, set `LANROAM_DATA_DIR` to another directory and `LANROAM_PORT=0`, as `--data-dir` and `--port 0` do for the CLI.
+
 ## Local Checks
 
-Before submitting changes, make sure the same checks CI runs pass:
+The app embeds its built frontend, so build it once before any cargo command that compiles the whole workspace (`pnpm build` also type-checks it):
+
+```bash
+(cd apps/desktop && pnpm install --frozen-lockfile && pnpm build)
+```
+
+Then make sure the same checks CI runs pass:
 
 ```bash
 cargo fmt --all -- --check

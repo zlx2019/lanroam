@@ -3,10 +3,10 @@
     Fetch the latest Lanroam Windows dev build.
 
 .DESCRIPTION
-    Downloads lanroam-cli.exe from the rolling `dev` pre-release (rebuilt by
-    CI on every push) into %LOCALAPPDATA%\Lanroam\dev and prints its version.
-    A running copy is stopped first, since Windows cannot overwrite an
-    executable in use.
+    Downloads the app (Lanroam.exe) and the CLI (lanroam-cli.exe) from the
+    rolling `dev` pre-release (rebuilt by CI on every push) into
+    %LOCALAPPDATA%\Lanroam\dev and prints the build. Running copies are
+    stopped first, since Windows cannot overwrite an executable in use.
 
     The file keeps its name from build to build, so a caching proxy or a
     GitHub download accelerator may keep serving an old copy of the plain
@@ -15,8 +15,8 @@
     installed build is the one the release announces.
 
     Run once with -Firewall from an elevated PowerShell to allow inbound
-    traffic. The rule is bound to the program path, so it survives updates
-    and covers every port the CLI uses (QUIC, discovery, mDNS).
+    traffic. The rules are bound to the program paths, so they survive
+    updates and cover every port Lanroam uses (QUIC, discovery, mDNS).
 
 .EXAMPLE
     # From anywhere, no checkout needed (the random query skips cached
@@ -36,35 +36,43 @@ $ErrorActionPreference = 'Stop'
 
 $Api = 'https://api.github.com/repos/zlx2019/lanroam/releases/tags/dev'
 $Dir = Join-Path $env:LOCALAPPDATA 'Lanroam\dev'
-$Exe = Join-Path $Dir 'lanroam-cli.exe'
-$RuleName = 'Lanroam dev (lanroam-cli)'
+# Executable name -> process name; the CLI reports the build it is
+$Programs = [ordered]@{ 'Lanroam.exe' = 'Lanroam'; 'lanroam-cli.exe' = 'lanroam-cli' }
+$App = Join-Path $Dir 'Lanroam.exe'
+$Cli = Join-Path $Dir 'lanroam-cli.exe'
 
 Write-Host 'Looking up the latest dev build'
 $release = Invoke-RestMethod -Uri $Api -Headers @{ 'Cache-Control' = 'no-cache' } -UseBasicParsing
-$asset = $release.assets | Where-Object { $_.name -eq 'lanroam-cli.exe' } | Select-Object -First 1
-if (-not $asset) {
-    throw 'The dev pre-release has no lanroam-cli.exe yet'
-}
 $expected = if ($release.body -match 'commit: ([0-9a-f]{7})') { $Matches[1] } else { $null }
 
 New-Item -ItemType Directory -Force -Path $Dir | Out-Null
-Get-Process -Name 'lanroam-cli' -ErrorAction SilentlyContinue |
+Get-Process -Name @($Programs.Values) -ErrorAction SilentlyContinue |
     Stop-Process -Force -PassThru |
     Wait-Process -Timeout 5 -ErrorAction SilentlyContinue
 
 Write-Host "Downloading build $expected"
-Invoke-WebRequest -Uri $asset.url -Headers @{ Accept = 'application/octet-stream' } -OutFile $Exe -UseBasicParsing
-$version = & $Exe --version
-Write-Host "Installed $version at $Exe"
+foreach ($name in $Programs.Keys) {
+    $asset = $release.assets | Where-Object { $_.name -eq $name } | Select-Object -First 1
+    if (-not $asset) {
+        throw "The dev pre-release has no $name yet"
+    }
+    Invoke-WebRequest -Uri $asset.url -Headers @{ Accept = 'application/octet-stream' } `
+        -OutFile (Join-Path $Dir $name) -UseBasicParsing
+}
+$version = & $Cli --version
+Write-Host "Installed $version in $Dir"
 if ($expected -and $version -notlike "*@$expected") {
     Write-Warning "Expected build ${expected}, but something between this machine and GitHub served an old copy"
 }
 
 if ($Firewall) {
-    Remove-NetFirewallRule -DisplayName $RuleName -ErrorAction SilentlyContinue
-    New-NetFirewallRule -DisplayName $RuleName -Direction Inbound -Program $Exe `
-        -Action Allow -Profile Domain, Private | Out-Null
-    Write-Host "Firewall rule '$RuleName' allows inbound traffic on Domain and Private networks"
+    foreach ($name in $Programs.Keys) {
+        $rule = "Lanroam dev ($($Programs[$name]))"
+        Remove-NetFirewallRule -DisplayName $rule -ErrorAction SilentlyContinue
+        New-NetFirewallRule -DisplayName $rule -Direction Inbound -Program (Join-Path $Dir $name) `
+            -Action Allow -Profile Domain, Private | Out-Null
+        Write-Host "Firewall rule '$rule' allows inbound traffic on Domain and Private networks"
+    }
 }
 
 # The rule deliberately leaves Public networks closed; say so when that is
@@ -76,4 +84,5 @@ foreach ($net in $public) {
         "Set-NetConnectionProfile -InterfaceIndex $($net.InterfaceIndex) -NetworkCategory Private")
 }
 
-Write-Host "Run it with: & '$Exe' run"
+Write-Host "Start the app with: & '$App'"
+Write-Host "Or the CLI with:   & '$Cli' run"

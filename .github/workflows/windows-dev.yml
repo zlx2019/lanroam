@@ -1,15 +1,16 @@
 name: Windows Dev Build
 
-# Builds the Windows CLI on every push, so changes can be tried on a real
-# Windows machine that has no toolchain. Each run keeps its binary as an
-# artifact, and the rolling `dev` pre-release always holds the latest one at
-# a fixed URL, which scripts/windows/update.ps1 downloads.
+# Builds the Windows app and CLI on every push, so changes can be tried on a
+# real Windows machine that has no toolchain. Each run keeps its binaries as
+# an artifact, and the rolling `dev` pre-release always holds the latest ones
+# at a fixed URL, which scripts/windows/update.ps1 downloads.
 on:
   push:
     # Branches only: the rolling `dev` tag must never trigger a build
     branches: ["**"]
     paths:
       - "deps/**"
+      - "apps/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
@@ -28,28 +29,47 @@ env:
 
 jobs:
   build:
-    name: Build lanroam-cli (Windows x64)
+    name: Build Lanroam and lanroam-cli (Windows x64)
     if: github.repository != 'zlx2019/rust-template'
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: apps/desktop/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
       # `lanroam-cli --version` reports the branch and commit it was built
       # from; untrusted values reach the script only through env
-      - name: Build
+      - name: Build the CLI
         shell: bash
         env:
           BRANCH: ${{ github.ref_name }}
           SHA: ${{ github.sha }}
         run: LANROAM_BUILD="dev ${BRANCH}@${SHA:0:7}" cargo build --release --locked -p lanroam-cli
 
+      # The bare executable, no installer: update.ps1 drops it next to the
+      # CLI (the app needs the WebView2 runtime, which Windows 10 and 11 ship
+      # with Edge)
+      - name: Build the app
+        working-directory: apps/desktop
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm tauri build --no-bundle
+
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: lanroam-cli-windows-x64-${{ github.sha }}
-          path: target/release/lanroam-cli.exe
+          name: lanroam-windows-x64-${{ github.sha }}
+          path: |
+            target/release/lanroam-cli.exe
+            target/release/Lanroam.exe
           if-no-files-found: error
           retention-days: 14
 
@@ -68,4 +88,4 @@ jobs:
           else
             gh release create dev --prerelease --title "Dev build" --notes "$notes" --target "$SHA"
           fi
-          gh release upload dev target/release/lanroam-cli.exe --clobber
+          gh release upload dev target/release/lanroam-cli.exe target/release/Lanroam.exe --clobber

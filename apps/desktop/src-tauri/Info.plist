@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- macOS 15+ local network permission: without it, discovery fails silently -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Lanroam needs the local network to find your other computers and share the keyboard and mouse with them.</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_lanroam._udp</string>
+    </array>
+</dict>
+</plist>

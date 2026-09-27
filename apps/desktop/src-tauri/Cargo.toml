@@ -1,0 +1,40 @@
+[package]
+name = "lanroam-desktop"
+description = "Lanroam desktop app: the engine behind a window and a tray icon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "lanroam_desktop_lib"
+crate-type = ["lib"]
+
+[[bin]]
+name = "Lanroam"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = ["config-toml"] }
+
+[dependencies]
+lanroam-core = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tauri = { version = "2", features = ["config-toml", "tray-icon", "image-png"] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+sys-locale = "0.3"
+
+[lints]
+workspace = true
