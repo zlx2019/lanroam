@@ -10,12 +10,12 @@ Move the pointer past the edge of one screen and it lands on the next computer, 
 
 ## Status
 
-**Early development, not usable yet.** The first milestone is done: peer discovery, device identity and a QUIC transport pinned to certificate fingerprints. Keyboard and mouse sharing comes next, starting with Windows and macOS.
+**Early development, not usable yet.** Peer discovery, device identity and a QUIC transport pinned to certificate fingerprints are done. The keyboard and mouse prototype is under way: a Mac can already drive a Windows PC from the command line; the other direction comes next.
 
 | Milestone | Scope | |
 |---|---|---|
 | M0 | Shared LAN foundation, QUIC transport, integration CLI | done |
-| M1 | Input capture and injection prototype (macOS ↔ Windows) | next |
+| M1 | Input capture and injection prototype (macOS ↔ Windows) | in progress |
 | M2 | Desk groups, screen layout, edge crossing, hotkeys | |
 | M3 | Desktop app: screen arrangement, pairing, tray | |
 | M4 | Clipboard hand-off | |
@@ -25,7 +25,8 @@ Move the pointer past the edge of one screen and it lands on the next computer, 
 
 ```text
 deps/lan-kit        shared LAN foundation: identity, mutual TLS 1.3, discovery, framing
-deps/lanroam-core   the engine: QUIC transport, protocol, diagnostics
+deps/lanroam-input  keyboard and mouse: capture, injection, key maps, edge switching
+deps/lanroam-core   the engine: QUIC transport, protocol, input sessions, diagnostics
 deps/lanroam-cli    command-line tool for protocol debugging and integration tests
 ```
 
@@ -38,9 +39,14 @@ cargo nextest run --workspace          # tests
 cargo run -p lanroam-cli -- listen     # run a node
 cargo run -p lanroam-cli -- scan       # list nodes on the LAN
 cargo run -p lanroam-cli -- ping <name | fingerprint prefix | ip:port>
+cargo run -p lanroam-cli -- share <target> --edge right   # control <target> from here
 ```
 
-Two instances on one machine need their own identities: pass a different `--data-dir` to each and `--port 0`.
+Two instances on one machine need their own identities: pass a different `--data-dir` to each and `--port 0`; `listen --dry-run` prints the input it receives instead of injecting it.
+
+`share` captures the local keyboard and mouse: push the pointer through the chosen edge to control the target, move it back to return. **Ctrl+Alt+Esc** (Ctrl+Option+Esc on a Mac) takes control back at once. On macOS, the app running the command (your terminal) needs Accessibility and Input Monitoring under System Settings > Privacy & Security.
+
+The Windows code can be linted from any machine: `cargo clippy -p lanroam-input --target x86_64-pc-windows-msvc`.
 
 ### Windows dev builds
 
