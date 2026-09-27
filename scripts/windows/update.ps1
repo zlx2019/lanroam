@@ -8,17 +8,24 @@
     A running copy is stopped first, since Windows cannot overwrite an
     executable in use.
 
+    The file keeps its name from build to build, so a caching proxy or a
+    GitHub download accelerator may keep serving an old copy of the plain
+    download link. The script asks the GitHub API for the current file
+    instead, whose address changes with every upload, and checks that the
+    installed build is the one the release announces.
+
     Run once with -Firewall from an elevated PowerShell to allow inbound
     traffic. The rule is bound to the program path, so it survives updates
     and covers every port the CLI uses (QUIC, discovery, mDNS).
 
 .EXAMPLE
-    # From anywhere, no checkout needed:
-    irm https://raw.githubusercontent.com/zlx2019/lanroam/main/scripts/windows/update.ps1 | iex
+    # From anywhere, no checkout needed (the random query skips cached
+    # copies of the script itself):
+    irm "https://raw.githubusercontent.com/zlx2019/lanroam/main/scripts/windows/update.ps1?$(Get-Random)" | iex
 
 .EXAMPLE
     # First time, elevated, with the firewall rule:
-    & ([scriptblock]::Create((irm https://raw.githubusercontent.com/zlx2019/lanroam/main/scripts/windows/update.ps1))) -Firewall
+    & ([scriptblock]::Create((irm "https://raw.githubusercontent.com/zlx2019/lanroam/main/scripts/windows/update.ps1?$(Get-Random)"))) -Firewall
 #>
 param(
     # Also create (or refresh) the inbound firewall rule; needs elevation
@@ -27,17 +34,31 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$Url = 'https://github.com/zlx2019/lanroam/releases/download/dev/lanroam-cli.exe'
+$Api = 'https://api.github.com/repos/zlx2019/lanroam/releases/tags/dev'
 $Dir = Join-Path $env:LOCALAPPDATA 'Lanroam\dev'
 $Exe = Join-Path $Dir 'lanroam-cli.exe'
 $RuleName = 'Lanroam dev (lanroam-cli)'
 
-New-Item -ItemType Directory -Force -Path $Dir | Out-Null
-Get-Process -Name 'lanroam-cli' -ErrorAction SilentlyContinue | Stop-Process -Force
+Write-Host 'Looking up the latest dev build'
+$release = Invoke-RestMethod -Uri $Api -Headers @{ 'Cache-Control' = 'no-cache' } -UseBasicParsing
+$asset = $release.assets | Where-Object { $_.name -eq 'lanroam-cli.exe' } | Select-Object -First 1
+if (-not $asset) {
+    throw 'The dev pre-release has no lanroam-cli.exe yet'
+}
+$expected = if ($release.body -match 'commit: ([0-9a-f]{7})') { $Matches[1] } else { $null }
 
-Write-Host "Downloading $Url"
-Invoke-WebRequest -Uri $Url -OutFile $Exe -UseBasicParsing
-Write-Host "Installed $(& $Exe --version) at $Exe"
+New-Item -ItemType Directory -Force -Path $Dir | Out-Null
+Get-Process -Name 'lanroam-cli' -ErrorAction SilentlyContinue |
+    Stop-Process -Force -PassThru |
+    Wait-Process -Timeout 5 -ErrorAction SilentlyContinue
+
+Write-Host "Downloading build $expected"
+Invoke-WebRequest -Uri $asset.url -Headers @{ Accept = 'application/octet-stream' } -OutFile $Exe -UseBasicParsing
+$version = & $Exe --version
+Write-Host "Installed $version at $Exe"
+if ($expected -and $version -notlike "*@$expected") {
+    Write-Warning "Expected build ${expected}, but something between this machine and GitHub served an old copy"
+}
 
 if ($Firewall) {
     Remove-NetFirewallRule -DisplayName $RuleName -ErrorAction SilentlyContinue

@@ -53,7 +53,7 @@ The Windows code can be linted from any machine: `cargo clippy -p lanroam-input 
 Every push builds `lanroam-cli.exe` and publishes it to the rolling [`dev` pre-release](https://github.com/zlx2019/lanroam/releases/tag/dev). On a Windows machine, fetch the latest one with:
 
 ```powershell
-irm https://raw.githubusercontent.com/zlx2019/lanroam/main/scripts/windows/update.ps1 | iex
+irm "https://raw.githubusercontent.com/zlx2019/lanroam/main/scripts/windows/update.ps1?$(Get-Random)" | iex
 ```
 
 The first time, run it from an elevated PowerShell with `-Firewall` to allow inbound traffic (see the script header).
