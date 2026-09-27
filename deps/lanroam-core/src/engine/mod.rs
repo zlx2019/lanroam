@@ -14,15 +14,19 @@
 mod input;
 mod mesh;
 
-pub use input::{ControlEvent, InputBackend, PlatformInput};
+pub use input::{ControlEvent, InputBackend, InputStatus, PlatformInput};
+pub use lanroam_input::switch::Request;
 
+use std::future::Future;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use lan_kit::identity::{self, IdentityError};
 use lan_kit::{Peer, PeerEvent, PeerInfo};
 use lanroam_input::{Edge, Point};
 use thiserror::Error;
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{Notify, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::diag;
@@ -31,13 +35,16 @@ use crate::group::{GroupDoc, GroupStore, Standing};
 use crate::layout::LayoutError;
 use crate::node::{Node, NodeConfig, NodeError};
 use crate::protocol::{Purpose, join_denied, reason_code};
-use crate::transport::{Incoming, Link, Transport, TransportError};
+use crate::transport::{Incoming, Link, Transport, TransportError, closed_because};
 use input::{Input, InputMsg};
 use mesh::{Mesh, Msg, Wiring};
 
 /// How often this device's displays are read, to notice a display being
 /// plugged in, removed or rearranged
 const SCREEN_POLL: Duration = Duration::from_secs(2);
+
+/// Longest device name, in characters
+pub const MAX_NAME_CHARS: usize = 40;
 
 /// Engine errors
 #[derive(Debug, Error)]
@@ -66,6 +73,12 @@ pub enum EngineError {
     /// The device is not a current member
     #[error("{0} is not a member of the desk group")]
     NotAMember(String),
+    /// The device name could not be saved
+    #[error(transparent)]
+    Identity(#[from] IdentityError),
+    /// A device name must not be blank or too long
+    #[error("a device name needs 1 to {MAX_NAME_CHARS} characters")]
+    InvalidName,
     /// The engine has stopped
     #[error("the engine has stopped")]
     Stopped,
@@ -88,11 +101,14 @@ pub enum EngineEvent {
     /// Another member removed this device from the group
     Kicked,
     /// A device asks to join through this one: show the PIN to the user
+    /// (again as each attempt starts)
     JoinPin {
         /// Who asks
         joiner: PeerInfo,
         /// The PIN to show
         pin: String,
+        /// Attempts the joiner has left, the current one included
+        attempts_left: u32,
     },
     /// Who controls what changed
     Control(ControlEvent),
@@ -144,8 +160,12 @@ struct Inner {
     node: Option<Arc<Node>>,
     /// QUIC endpoint
     transport: Arc<Transport>,
-    /// This device's info, sent in handshakes
-    info: PeerInfo,
+    /// This device's info, sent in handshakes; changes with its name
+    info: watch::Receiver<PeerInfo>,
+    /// Where the device name is persisted (`None` in tests)
+    identity_dir: Option<PathBuf>,
+    /// Wakes the join being sponsored, to turn it down
+    reject: Arc<Notify>,
     /// The mesh's inbox
     inbox: mpsc::UnboundedSender<Msg>,
     /// The input actor's inbox
@@ -165,17 +185,28 @@ impl Engine {
         input: Arc<dyn InputBackend>,
     ) -> Result<(Self, mpsc::UnboundedReceiver<EngineEvent>), EngineError> {
         let store = GroupStore::new(&config.data_dir);
+        let identity_dir = Some(config.data_dir.clone());
         let (node, peer_events) = Node::start(config).await?;
         let node = Arc::new(node);
         let transport = Arc::clone(node.transport());
         let info = node.info().clone();
-        Self::launch(store, transport, info, Some(node), Some(peer_events), input)
+        let peers = Some(peer_events);
+        Self::launch(
+            store,
+            identity_dir,
+            transport,
+            info,
+            Some(node),
+            peers,
+            input,
+        )
     }
 
     /// Wire the mesh, the input actor, the accept loop, the display poller
     /// and the discovery feed around a bound transport
     fn launch(
         store: GroupStore,
+        identity_dir: Option<PathBuf>,
         transport: Arc<Transport>,
         info: PeerInfo,
         node: Option<Arc<Node>>,
@@ -194,23 +225,26 @@ impl Engine {
         let (doc_tx, doc_rx) = watch::channel(initial);
         let advertise = {
             let node = node.clone();
-            move |group: Option<&str>| {
+            move |info: &PeerInfo, group: Option<&str>| {
                 if let Some(node) = &node {
-                    advertise_group(node, group);
+                    advertise_group(node, info, group);
                 }
             }
         };
+        let (local_tx, local_rx) = watch::channel(info.clone());
+        let reject = Arc::new(Notify::new());
         let (input_tx, input_inbox) = mpsc::unbounded_channel();
         let (links_tx, links_rx) = watch::channel(Arc::default());
         let input = Input::new(
             &info.fingerprint,
-            backend.as_ref(),
+            Arc::clone(&backend),
             links_rx,
             events_tx.clone(),
             input_tx.clone(),
         );
         let wiring = Wiring {
             published: doc_tx,
+            local: local_tx,
             events: events_tx.clone(),
             inbox: inbox_tx.clone(),
             advertise: Box::new(advertise),
@@ -225,10 +259,11 @@ impl Engine {
         ];
         tasks.push(tokio::spawn(accept_loop(
             Arc::clone(&transport),
-            info.clone(),
+            local_rx.clone(),
             doc_rx.clone(),
             inbox_tx.clone(),
             events_tx,
+            Arc::clone(&reject),
         )));
         if let Some(mut peer_events) = peer_events {
             let inbox = inbox_tx.clone();
@@ -244,7 +279,9 @@ impl Engine {
             inner: Arc::new(Inner {
                 node,
                 transport,
-                info,
+                info: local_rx,
+                identity_dir,
+                reject,
                 inbox: inbox_tx,
                 input: input_tx,
                 doc: doc_rx,
@@ -255,8 +292,8 @@ impl Engine {
     }
 
     /// This device's info
-    pub fn info(&self) -> &PeerInfo {
-        &self.inner.info
+    pub fn info(&self) -> PeerInfo {
+        self.inner.info.borrow().clone()
     }
 
     /// Port of the QUIC endpoint
@@ -295,7 +332,7 @@ impl Engine {
         let mut link = self
             .inner
             .transport
-            .connect(sponsor, &self.inner.info, Purpose::Join)
+            .connect(sponsor, &self.info(), Purpose::Join)
             .await?;
         let challenge = join::recv_challenge(&mut link).await?;
         Ok(Joining {
@@ -333,6 +370,48 @@ impl Engine {
         self.ask(|reply| Msg::Leave { reply }).await?
     }
 
+    /// Turn down the join this device sponsors right now, if any: the
+    /// joiner hears [`join_denied::REJECTED`]
+    pub fn reject_join(&self) {
+        self.inner.reject.notify_waiters();
+    }
+
+    /// Go by `name` from now on: saved, advertised on the LAN, and sent to
+    /// the group
+    pub async fn rename(&self, name: &str) -> Result<(), EngineError> {
+        let name = name.trim().to_string();
+        if name.is_empty() || name.chars().count() > MAX_NAME_CHARS {
+            return Err(EngineError::InvalidName);
+        }
+        if let Some(dir) = self.inner.identity_dir.clone() {
+            let saved = name.clone();
+            tokio::task::spawn_blocking(move || identity::persist_display_name(&dir, Some(&saved)))
+                .await
+                .map_err(|e| EngineError::Store(std::io::Error::other(e)))??;
+        }
+        self.ask(|reply| Msg::Rename { name, reply }).await
+    }
+
+    /// Carry out a request (pause, lock, jump) at this device's next input
+    /// event
+    pub fn request(&self, request: Request) -> Result<(), EngineError> {
+        self.inner
+            .input
+            .send(InputMsg::Request(request))
+            .map_err(|_| EngineError::Stopped)
+    }
+
+    /// Whether capture and injection run on this device
+    pub async fn input_status(&self) -> Result<InputStatus, EngineError> {
+        self.ask_input(InputMsg::Status).await
+    }
+
+    /// Start whichever of capture and injection does not run, typically
+    /// after the user granted a permission, and report
+    pub async fn restart_input(&self) -> Result<InputStatus, EngineError> {
+        self.ask_input(InputMsg::Restart).await
+    }
+
     /// Stop the engine: give the keyboard and mouse back, close every
     /// link, say goodbye on the LAN
     pub async fn shutdown(&self) {
@@ -368,6 +447,19 @@ impl Engine {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Send the input actor a request and wait for its reply
+    async fn ask_input<T>(
+        &self,
+        msg: impl FnOnce(oneshot::Sender<T>) -> InputMsg,
+    ) -> Result<T, EngineError> {
+        let (reply, answer) = oneshot::channel();
+        self.inner
+            .input
+            .send(msg(reply))
+            .map_err(|_| EngineError::Stopped)?;
+        answer.await.map_err(|_| EngineError::Stopped)
+    }
+
     /// Send the mesh a request and wait for its reply
     async fn ask<T>(&self, msg: impl FnOnce(oneshot::Sender<T>) -> Msg) -> Result<T, EngineError> {
         let (reply, answer) = oneshot::channel();
@@ -400,10 +492,18 @@ impl Joining {
         self.challenge.attempts_left
     }
 
+    /// Resolves when the sponsor ends the join while the PIN is being
+    /// typed: with its reason (a [`join_denied`] code such as
+    /// [`join_denied::REJECTED`]) when it gave one
+    pub fn ended(&self) -> impl Future<Output = Option<String>> + Send + 'static {
+        let conn = self.link.connection().clone();
+        async move { closed_because(&conn).await }
+    }
+
     /// Answer with a PIN: `Some` with the group once in, `None` when the PIN
     /// was wrong and another attempt is left
     pub async fn answer(&mut self, pin: &str) -> Result<Option<Arc<GroupDoc>>, EngineError> {
-        let own_fp = self.engine.inner.info.fingerprint.clone();
+        let own_fp = self.engine.inner.info.borrow().fingerprint.clone();
         match join::answer(&mut self.link, &own_fp, &self.challenge, pin).await? {
             Verdict::Retry(next) => {
                 self.challenge = next;
@@ -450,9 +550,9 @@ async fn poll_screens(backend: Arc<dyn InputBackend>, inbox: mpsc::UnboundedSend
     }
 }
 
-/// Advertise the group ID in discovery (or stop advertising it)
-fn advertise_group(node: &Node, group: Option<&str>) {
-    let mut info = node.info().clone();
+/// Advertise this device in discovery, with its group ID (or none)
+fn advertise_group(node: &Node, info: &PeerInfo, group: Option<&str>) {
+    let mut info = info.clone();
     match group {
         Some(id) => {
             info.props
@@ -487,22 +587,41 @@ fn admission(
 /// Accept connections until the endpoint closes, each in its own task
 async fn accept_loop(
     transport: Arc<Transport>,
-    info: PeerInfo,
+    info: watch::Receiver<PeerInfo>,
     doc: watch::Receiver<Option<Arc<GroupDoc>>>,
     inbox: mpsc::UnboundedSender<Msg>,
     events: mpsc::UnboundedSender<EngineEvent>,
+    reject: Arc<Notify>,
 ) {
-    let gate = Arc::new(Mutex::new(JoinGate::default()));
+    let join = JoinWiring {
+        gate: Arc::new(Mutex::new(JoinGate::default())),
+        reject,
+        inbox: inbox.clone(),
+        events,
+    };
     while let Some(incoming) = transport.accept().await {
+        let info = info.borrow().clone();
         tokio::spawn(serve_incoming(
             incoming,
-            info.clone(),
+            info,
             doc.clone(),
             inbox.clone(),
-            events.clone(),
-            Arc::clone(&gate),
+            join.clone(),
         ));
     }
+}
+
+/// What sponsoring a join needs
+#[derive(Clone)]
+struct JoinWiring {
+    /// One join at a time, with a cooldown after a used-up PIN
+    gate: Arc<Mutex<JoinGate>>,
+    /// Wakes the join in progress to turn it down
+    reject: Arc<Notify>,
+    /// The mesh, to admit the joiner
+    inbox: mpsc::UnboundedSender<Msg>,
+    /// Events for the user (the PIN)
+    events: mpsc::UnboundedSender<EngineEvent>,
 }
 
 /// Run the handshake of one incoming connection and hand the link to what
@@ -512,8 +631,7 @@ async fn serve_incoming(
     info: PeerInfo,
     doc: watch::Receiver<Option<Arc<GroupDoc>>>,
     inbox: mpsc::UnboundedSender<Msg>,
-    events: mpsc::UnboundedSender<EngineEvent>,
-    gate: Arc<Mutex<JoinGate>>,
+    join: JoinWiring,
 ) {
     let from = incoming.remote_address();
     let admit = |peer: &PeerInfo, purpose| admission(doc.borrow().as_deref(), peer, purpose);
@@ -533,39 +651,40 @@ async fn serve_incoming(
                 dialed: false,
             });
         }
-        Purpose::Join => sponsor(link, &info, &gate, &inbox, &events).await,
+        Purpose::Join => sponsor(link, &info, &join).await,
         Purpose::Diag => diag::respond(link).await,
     }
 }
 
 /// Sponsor one join: show a PIN, verify the joiner knows it, let it in
-async fn sponsor(
-    mut link: Link,
-    own: &PeerInfo,
-    gate: &Mutex<JoinGate>,
-    inbox: &mpsc::UnboundedSender<Msg>,
-    events: &mpsc::UnboundedSender<EngineEvent>,
-) {
-    let lock = || gate.lock().unwrap_or_else(PoisonError::into_inner);
+async fn sponsor(mut link: Link, own: &PeerInfo, wiring: &JoinWiring) {
+    let lock = || wiring.gate.lock().unwrap_or_else(PoisonError::into_inner);
     let joiner = link.remote().clone();
     let begun = lock().begin(Instant::now());
     if let Err(code) = begun {
         tracing::debug!(joiner = %joiner.name, "turned a join away: {code}");
         let _ = join::deny(&mut link, code).await;
-        link.close_after_flush().await;
+        link.close_after_flush_because(code).await;
         return;
     }
-    let result = sponsor_join(&mut link, own, &joiner, inbox, events).await;
+    let result = sponsor_join(&mut link, own, &joiner, wiring).await;
     if let Err(e) = &result {
         tracing::info!(joiner = %joiner.name, "join failed: {e}");
     }
     lock().end(Instant::now(), &result);
-    let _ = events.send(EngineEvent::JoinEnded {
+    let _ = wiring.events.send(EngineEvent::JoinEnded {
         joiner,
         admitted: result.is_ok(),
     });
-    // The last message (acceptance or denial) must reach the joiner
-    link.close_after_flush().await;
+    // The last message (acceptance or denial) must reach the joiner; the
+    // reason goes into the close too, for a joiner still typing the PIN
+    let reason = match &result {
+        Err(JoinError::Denied(code)) => code.as_str(),
+        Err(JoinError::PinUsedUp) => join_denied::WRONG_PIN,
+        Err(JoinError::Timeout(_)) => join_denied::TIMEOUT,
+        _ => "",
+    };
+    link.close_after_flush_because(reason).await;
 }
 
 /// The steps of a sponsored join
@@ -573,17 +692,27 @@ async fn sponsor_join(
     link: &mut Link,
     own: &PeerInfo,
     joiner: &PeerInfo,
-    inbox: &mpsc::UnboundedSender<Msg>,
-    events: &mpsc::UnboundedSender<EngineEvent>,
+    wiring: &JoinWiring,
 ) -> Result<(), JoinError> {
     let pin = join::new_pin()?;
-    let _ = events.send(EngineEvent::JoinPin {
-        joiner: joiner.clone(),
-        pin: pin.clone(),
-    });
-    let verified = join::verify(link, &own.fingerprint, &pin).await?;
+    // Registered before the PIN is shown, so no rejection is missed
+    let rejected = wiring.reject.notified();
+    let show_pin = |attempts_left| {
+        let _ = wiring.events.send(EngineEvent::JoinPin {
+            joiner: joiner.clone(),
+            pin: pin.clone(),
+            attempts_left,
+        });
+    };
+    let verified = tokio::select! {
+        verified = join::verify(link, &own.fingerprint, &pin, show_pin) => verified?,
+        () = rejected => {
+            join::deny(link, join_denied::REJECTED).await?;
+            return Err(JoinError::Denied(join_denied::REJECTED.into()));
+        }
+    };
     let (reply, admitted) = oneshot::channel();
-    let _ = inbox.send(Msg::Admit {
+    let _ = wiring.inbox.send(Msg::Admit {
         joiner: joiner.clone(),
         reply,
     });

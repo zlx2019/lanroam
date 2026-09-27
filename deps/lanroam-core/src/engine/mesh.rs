@@ -147,6 +147,13 @@ pub(super) enum Msg {
         /// The report
         reply: oneshot::Sender<Status>,
     },
+    /// This device got a new name (already persisted)
+    Rename {
+        /// The name
+        name: String,
+        /// Done
+        reply: oneshot::Sender<()>,
+    },
     /// Close everything and stop
     Shutdown {
         /// Done
@@ -154,13 +161,17 @@ pub(super) enum Msg {
     },
 }
 
-/// Advertises the group ID in discovery (`None`: no group)
-pub(super) type Advertise = Box<dyn Fn(Option<&str>) + Send>;
+/// Advertises this device in discovery, with its group ID (`None`: no
+/// group)
+pub(super) type Advertise = Box<dyn Fn(&PeerInfo, Option<&str>) + Send>;
 
 /// Channels the mesh talks through
 pub(super) struct Wiring {
     /// Latest document, for the rest of the engine
     pub(super) published: watch::Sender<Option<Arc<GroupDoc>>>,
+    /// This device's info as it changes (its name), for the rest of the
+    /// engine
+    pub(super) local: watch::Sender<PeerInfo>,
     /// Events for the user
     pub(super) events: mpsc::UnboundedSender<EngineEvent>,
     /// The mesh's own inbox, handed to the tasks it spawns
@@ -357,6 +368,10 @@ impl Mesh {
                     doc: self.wiring.published.borrow().clone(),
                     online: self.links.values().map(|l| l.info.clone()).collect(),
                 });
+            }
+            Msg::Rename { name, reply } => {
+                self.rename(name);
+                let _ = reply.send(());
             }
             // Handled by the run loop
             Msg::Shutdown { .. } => {}
@@ -825,7 +840,17 @@ impl Mesh {
     fn advertise(&mut self, group: Option<&str>) {
         if self.advertised.as_deref() != group {
             self.advertised = group.map(str::to_string);
-            (self.wiring.advertise)(group);
+            (self.wiring.advertise)(&self.info, group);
+        }
+    }
+
+    /// Go by a new name: in discovery, in handshakes, and in the group
+    fn rename(&mut self, name: String) {
+        self.info.name = name;
+        self.wiring.local.send_replace(self.info.clone());
+        (self.wiring.advertise)(&self.info, self.advertised.as_deref());
+        if self.doc.is_some() {
+            self.commit();
         }
     }
 
@@ -854,7 +879,7 @@ impl Mesh {
             Some(doc) => {
                 let online = |fp: &str| fp == own || self.links.contains_key(fp);
                 let placed = layout::world(doc);
-                let numbered = placed.ordered().iter().map(|d| d.key.clone()).collect();
+                let numbered = layout::numbered(doc);
                 let devices = placed
                     .devices()
                     .iter()

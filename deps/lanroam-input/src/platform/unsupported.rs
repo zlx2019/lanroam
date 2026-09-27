@@ -3,11 +3,22 @@
 
 use std::sync::{Arc, Mutex};
 
-use super::{Capture, EmitSink};
+use super::{Capture, EmitSink, Permissions};
 use crate::InputError;
 use crate::geometry::Rect;
 use crate::inject::Injector;
 use crate::switch::Switch;
+
+/// Nothing to hold here; capture itself is unsupported
+pub(super) fn permissions() -> Permissions {
+    Permissions {
+        accessibility: true,
+        input_monitoring: true,
+    }
+}
+
+/// Nothing to ask for
+pub(super) fn request_permissions() {}
 
 /// Not available
 pub(super) fn displays() -> Result<Vec<Rect>, InputError> {

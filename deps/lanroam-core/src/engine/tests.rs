@@ -54,6 +54,8 @@ impl Injector for Recorder {
 /// A keyboard and mouse driven by the test
 #[derive(Default)]
 struct FakeInput {
+    /// The OS refuses the capture (a missing permission)
+    denied: std::sync::atomic::AtomicBool,
     /// What the engine handed to the capture
     capture: Mutex<Option<(Arc<Mutex<Switch>>, EmitSink)>>,
     /// Injections so far
@@ -70,6 +72,9 @@ impl InputBackend for FakeInput {
         switch: Arc<Mutex<Switch>>,
         sink: EmitSink,
     ) -> Result<Box<dyn std::any::Any + Send>, InputError> {
+        if self.denied.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(InputError::PermissionDenied("grant it".into()));
+        }
         *self.capture.lock().unwrap() = Some((switch, sink));
         Ok(Box::new(()))
     }
@@ -133,13 +138,19 @@ impl TestEngine {
 
     /// An engine in `dir`, keeping the identity and group found there
     fn start_in(dir: TempDir) -> Self {
+        Self::start_with(dir, FakeInput::default())
+    }
+
+    /// An engine in `dir` on the keyboard and mouse `input`
+    fn start_with(dir: TempDir, input: FakeInput) -> Self {
         let identity = Arc::new(DeviceIdentity::load_or_create(&dir.0, &PROFILE).unwrap());
         let info = identity.peer_info();
         let transport = Arc::new(Transport::bind(identity, 0).unwrap());
-        let input = Arc::new(FakeInput::default());
+        let input = Arc::new(input);
         let backend = Arc::clone(&input) as Arc<dyn InputBackend>;
         let (engine, events) = Engine::launch(
             GroupStore::new(&dir.0),
+            Some(dir.0.clone()),
             transport,
             info,
             None,
@@ -299,7 +310,7 @@ async fn kick_and_rejoin() {
         .engine
         .inner
         .transport
-        .connect(&a.as_peer(), c.engine.info(), Purpose::Member)
+        .connect(&a.as_peer(), &c.engine.info(), Purpose::Member)
         .await;
     assert!(
         matches!(&refused, Err(TransportError::Rejected(code)) if code == reason_code::REMOVED),
@@ -371,7 +382,7 @@ async fn strangers_and_grouped_devices() {
         .engine
         .inner
         .transport
-        .connect(&a.as_peer(), stranger.engine.info(), Purpose::Member)
+        .connect(&a.as_peer(), &stranger.engine.info(), Purpose::Member)
         .await;
     assert!(
         matches!(&refused, Err(TransportError::Rejected(code)) if code == reason_code::NOT_A_MEMBER),
@@ -630,4 +641,122 @@ async fn hotkeys_jump_across_the_group() {
         !injected.contains(&Injected::Key(usage::ESCAPE, true)),
         "{injected:?}"
     );
+}
+
+/// The sponsor's user turns a join down: the joiner hears why while it is
+/// still typing the PIN
+#[tokio::test]
+async fn rejected_join() {
+    let (mut a, b) = (TestEngine::start(), TestEngine::start());
+    let joining = b.engine.join(&a.as_peer()).await.unwrap();
+    a.expect("PIN", |event| {
+        matches!(event, EngineEvent::JoinPin { .. }).then_some(())
+    })
+    .await;
+    a.engine.reject_join();
+    let reason = tokio::time::timeout(WAIT, joining.ended()).await.unwrap();
+    assert_eq!(reason.as_deref(), Some(join_denied::REJECTED));
+    let admitted = a
+        .expect("the end of the join", |event| match event {
+            EngineEvent::JoinEnded { admitted, .. } => Some(*admitted),
+            _ => None,
+        })
+        .await;
+    assert!(!admitted);
+    assert!(b.engine.group().is_none());
+}
+
+/// Every attempt shows the PIN again with the attempts left, so the
+/// sponsor can count down
+#[tokio::test]
+async fn attempts_count_down_on_the_sponsor() {
+    use crate::group::join::PIN_ATTEMPTS;
+
+    let (mut a, b) = (TestEngine::start(), TestEngine::start());
+    let mut joining = b.engine.join(&a.as_peer()).await.unwrap();
+    let shown = |event: &EngineEvent| match event {
+        EngineEvent::JoinPin {
+            pin, attempts_left, ..
+        } => Some((pin.clone(), *attempts_left)),
+        _ => None,
+    };
+    let (pin, left) = a.expect("PIN", shown).await;
+    assert_eq!(left, PIN_ATTEMPTS);
+    let wrong = if pin == "000000" { "111111" } else { "000000" };
+    assert!(joining.answer(wrong).await.unwrap().is_none());
+    assert_eq!(
+        a.expect("PIN again", shown).await,
+        (pin.clone(), PIN_ATTEMPTS - 1)
+    );
+    assert!(joining.answer(&pin).await.unwrap().is_some());
+}
+
+/// A new name is saved with the identity and reaches the other members
+#[tokio::test]
+async fn rename_reaches_the_group() {
+    let (mut a, b) = (TestEngine::start(), TestEngine::start());
+    a.sees(&[&b]);
+    b.sees(&[&a]);
+    join(&b, &mut a).await;
+    b.until_online(&[a.fp()]).await;
+
+    a.engine.rename("  Studio  ").await.unwrap();
+    assert_eq!(a.engine.info().name, "Studio");
+    let fp = a.fp();
+    b.until("the new name in the group", |status| {
+        status
+            .doc
+            .as_ref()
+            .and_then(|doc| doc.devices.get(&fp))
+            .is_some_and(|record| record.profile.name == "Studio")
+    })
+    .await;
+    let saved = DeviceIdentity::load_or_create(&a.dir.0, &PROFILE).unwrap();
+    assert_eq!(saved.peer_info().name, "Studio");
+
+    for bad in ["   ", &"x".repeat(MAX_NAME_CHARS + 1)] {
+        assert!(matches!(
+            a.engine.rename(bad).await,
+            Err(EngineError::InvalidName)
+        ));
+    }
+}
+
+/// Requests from the tray reach the switch and act at the next local
+/// event, like their hotkeys
+#[tokio::test]
+async fn requests_from_the_tray() {
+    let (mut a, _b, c) = row_of_three().await;
+    let c_name = c.name();
+    a.engine.request(Request::Jump(c.fp())).unwrap();
+    // Answered after the request: it is in the switch by then
+    a.engine.input_status().await.unwrap();
+    a.input.push((500, 500), 1.0, 0.0);
+    c.injected(&Injected::Move(Point::new(500, 500))).await;
+    a.expect_control(ControlEvent::Controlling { name: c_name })
+        .await;
+
+    a.engine.request(Request::Pause).unwrap();
+    a.engine.input_status().await.unwrap();
+    a.input.push((500, 500), 1.0, 0.0);
+    a.expect_control(ControlEvent::Paused { on: true }).await;
+}
+
+/// A capture the OS refused starts once the permission is granted
+#[tokio::test]
+async fn input_restarts_after_a_permission() {
+    use std::sync::atomic::Ordering;
+
+    let input = FakeInput::default();
+    input.denied.store(true, Ordering::SeqCst);
+    let a = TestEngine::start_with(TempDir::new(), input);
+    let status = a.engine.input_status().await.unwrap();
+    assert!(status.capture.is_err());
+    assert_eq!(status.injection, Ok(()));
+    assert!(a.engine.restart_input().await.unwrap().capture.is_err());
+
+    a.input.denied.store(false, Ordering::SeqCst);
+    let status = a.engine.restart_input().await.unwrap();
+    assert_eq!((status.capture, status.injection), (Ok(()), Ok(())));
+    assert!(a.input.capture.lock().unwrap().is_some());
 }

@@ -53,7 +53,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 use windows_sys::core::BOOL;
 
-use super::{Capture, EmitSink, Ready};
+use super::{Capture, EmitSink, Permissions, Ready};
 use crate::event::{InputEvent, MouseButton};
 use crate::geometry::{Point, Rect};
 use crate::inject::Injector;
@@ -84,6 +84,17 @@ fn dpi_aware() {
         }
     });
 }
+
+/// No permissions to hold on Windows: both are granted
+pub(super) fn permissions() -> Permissions {
+    Permissions {
+        accessibility: true,
+        input_monitoring: true,
+    }
+}
+
+/// Nothing to ask for on Windows
+pub(super) fn request_permissions() {}
 
 /// The primary monitor's DPI scale in percent (physical pixels per logical
 /// pixel)

@@ -11,7 +11,7 @@ use lanroam_core::engine::{
     ControlEvent, Engine, EngineEvent, InputBackend, PlatformInput, Spot, Status,
 };
 use lanroam_core::group::GroupDoc;
-use lanroam_core::group::join::normalize_pin;
+use lanroam_core::group::join::{PIN_ATTEMPTS, normalize_pin};
 use lanroam_core::lan_kit::{Peer, PeerInfo};
 use lanroam_core::lanroam_input::Edge;
 use lanroam_core::layout;
@@ -83,11 +83,11 @@ pub(crate) async fn cmd_run(
         .context("failed to start the node")?;
     println!(
         "running as {} on udp/{}  (lanroam-cli {})",
-        describe(engine.info()),
+        describe(&engine.info()),
         engine.local_port(),
         crate::VERSION
     );
-    print_group(&engine.status().await?, engine.info());
+    print_group(&engine.status().await?, &engine.info());
     println!("type `help` for commands. {HOTKEYS}");
 
     let mut lines = stdin_lines();
@@ -165,7 +165,7 @@ async fn handle(
         ("group", _) => engine
             .status()
             .await
-            .map(|status| print_group(&status, engine.info()))
+            .map(|status| print_group(&status, &engine.info()))
             .map_err(anyhow::Error::from),
         ("join", false) => start_join(engine, &arg, asks, joining),
         ("kick", false) => kick(engine, &arg).await,
@@ -478,12 +478,23 @@ fn print_event(event: &EngineEvent, seen: &mut Option<Arc<GroupDoc>>) {
         EngineEvent::Kicked => {
             println!("group    another member removed this device from the group")
         }
-        EngineEvent::JoinPin { joiner, pin } => {
-            let (head, tail) = pin.split_at(pin.len() / 2);
-            println!(
-                "join     {} wants to join; enter this PIN there:  {head} {tail}",
-                describe(joiner)
-            );
+        EngineEvent::JoinPin {
+            joiner,
+            pin,
+            attempts_left,
+        } => {
+            if *attempts_left == PIN_ATTEMPTS {
+                let (head, tail) = pin.split_at(pin.len() / 2);
+                println!(
+                    "join     {} wants to join; enter this PIN there:  {head} {tail}",
+                    describe(joiner)
+                );
+            } else {
+                println!(
+                    "join     {} typed a wrong PIN; {attempts_left} attempts left",
+                    joiner.name
+                );
+            }
         }
         EngineEvent::JoinEnded { joiner, admitted } => {
             let outcome = if *admitted { "joined" } else { "did not join" };

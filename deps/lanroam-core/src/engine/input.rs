@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use lanroam_input::inject::{Injector, RemoteInput};
 use lanroam_input::platform::{self, EmitSink};
-use lanroam_input::switch::{self, Emit, Switch};
+use lanroam_input::switch::{self, Emit, Request, Switch};
 use lanroam_input::world::World;
 use lanroam_input::{InputError, MouseButton, Point, Rect};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -70,6 +70,15 @@ impl InputBackend for PlatformInput {
     fn injector(&self) -> Result<Box<dyn Injector>, InputError> {
         platform::injector()
     }
+}
+
+/// Whether capture and injection run on this device
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputStatus {
+    /// Capturing local input, to control other devices; why it does not run
+    pub capture: Result<(), String>,
+    /// Injecting input from other devices; why it does not run
+    pub injection: Result<(), String>,
 }
 
 /// What changed about who controls what, for the user
@@ -175,6 +184,13 @@ pub(super) enum InputMsg {
         /// number hotkeys)
         numbered: Vec<String>,
     },
+    /// Carry out the user's request at the next local event
+    Request(Request),
+    /// Report whether capture and injection run
+    Status(oneshot::Sender<InputStatus>),
+    /// Start whichever of capture and injection does not run (the user
+    /// granted a permission since), then report
+    Restart(oneshot::Sender<InputStatus>),
     /// Give everything back and stop
     Shutdown(oneshot::Sender<()>),
 }
@@ -248,14 +264,39 @@ impl Drop for Replay {
     }
 }
 
+/// A sink handing what the switch emits to the actor
+fn emit_sink(inbox: &mpsc::UnboundedSender<InputMsg>) -> EmitSink {
+    let inbox = inbox.clone();
+    Box::new(move |emit| {
+        // Fails only once the engine is gone
+        let _ = inbox.send(InputMsg::Emit(emit));
+    })
+}
+
+/// The platform's injector on a thread of its own
+fn start_injection(backend: &dyn InputBackend) -> Result<Replay, String> {
+    backend
+        .injector()
+        .map_err(|e| e.to_string())
+        .and_then(|injector| Replay::spawn(injector).map_err(|e| e.to_string()))
+}
+
 /// The actor
 pub(super) struct Input {
     /// Decides local events (shared with the capture thread)
     switch: Arc<Mutex<Switch>>,
+    /// The platform's keyboard, mouse and displays
+    backend: Arc<dyn InputBackend>,
+    /// The actor's own inbox, for the capture to emit into
+    inbox: mpsc::UnboundedSender<InputMsg>,
     /// The capture, while it runs
     capture: Option<Box<dyn Any + Send>>,
+    /// Why the capture does not run
+    capture_error: Option<String>,
     /// The injection thread, if this device can be controlled
     replay: Option<Replay>,
+    /// Why injection does not run
+    injection_error: Option<String>,
     /// Member links
     links: watch::Receiver<Links>,
     /// Events for the user
@@ -281,37 +322,22 @@ impl Input {
     /// are reported as [`ControlEvent::Unavailable`]
     pub(super) fn new(
         local: &str,
-        backend: &dyn InputBackend,
+        backend: Arc<dyn InputBackend>,
         links: watch::Receiver<Links>,
         events: mpsc::UnboundedSender<EngineEvent>,
         inbox: mpsc::UnboundedSender<InputMsg>,
     ) -> Self {
-        let unavailable = |what, reason: String| {
-            tracing::warn!("{what} is unavailable: {reason}");
-            let _ = events.send(EngineEvent::Control(ControlEvent::Unavailable {
-                what,
-                reason,
-            }));
-        };
         let switch = Arc::new(Mutex::new(Switch::new(local)));
-        let sink: EmitSink = Box::new(move |emit| {
-            // Fails only once the engine is gone
-            let _ = inbox.send(InputMsg::Emit(emit));
-        });
-        let capture = backend
-            .capture(Arc::clone(&switch), sink)
-            .map_err(|e| unavailable("input capture", e.to_string()))
-            .ok();
-        let replay = backend
-            .injector()
-            .map_err(|e| e.to_string())
-            .and_then(|injector| Replay::spawn(injector).map_err(|e| e.to_string()))
-            .map_err(|e| unavailable("input injection", e))
-            .ok();
-        Self {
+        let capture = backend.capture(Arc::clone(&switch), emit_sink(&inbox));
+        let injection = start_injection(backend.as_ref());
+        let mut input = Self {
             switch,
-            capture,
-            replay,
+            backend,
+            inbox,
+            capture: None,
+            capture_error: None,
+            replay: None,
+            injection_error: None,
             links,
             events,
             names: HashMap::new(),
@@ -321,6 +347,77 @@ impl Input {
             unresponsive: false,
             home_pending: false,
             controller: None,
+        };
+        input.took_capture(capture);
+        input.took_injection(injection);
+        input
+    }
+
+    /// Keep a capture that started, or report why it did not
+    fn took_capture(&mut self, started: Result<Box<dyn Any + Send>, InputError>) {
+        match started {
+            Ok(capture) => {
+                self.capture = Some(capture);
+                self.capture_error = None;
+            }
+            Err(e) => {
+                let reason = e.to_string();
+                self.unavailable("input capture", &reason);
+                self.capture_error = Some(reason);
+            }
+        }
+    }
+
+    /// Keep an injection thread that started, or report why it did not
+    fn took_injection(&mut self, started: Result<Replay, String>) {
+        match started {
+            Ok(replay) => {
+                self.replay = Some(replay);
+                self.injection_error = None;
+            }
+            Err(reason) => {
+                self.unavailable("input injection", &reason);
+                self.injection_error = Some(reason);
+            }
+        }
+    }
+
+    /// Tell the user that capture or injection does not run
+    fn unavailable(&self, what: &'static str, reason: &str) {
+        tracing::warn!("{what} is unavailable: {reason}");
+        self.notify(ControlEvent::Unavailable {
+            what,
+            reason: reason.to_string(),
+        });
+    }
+
+    /// Whether capture and injection run
+    fn status(&self) -> InputStatus {
+        let state = |error: &Option<String>| error.clone().map_or(Ok(()), Err);
+        InputStatus {
+            capture: state(&self.capture_error),
+            injection: state(&self.injection_error),
+        }
+    }
+
+    /// Start whichever of capture and injection does not run; both wait for
+    /// a thread to come up, so off the runtime
+    async fn restart(&mut self) {
+        if self.capture.is_none() {
+            let backend = Arc::clone(&self.backend);
+            let switch = Arc::clone(&self.switch);
+            let sink = emit_sink(&self.inbox);
+            let started = tokio::task::spawn_blocking(move || backend.capture(switch, sink))
+                .await
+                .unwrap_or_else(|e| Err(InputError::Os(e.to_string())));
+            self.took_capture(started);
+        }
+        if self.replay.is_none() {
+            let backend = Arc::clone(&self.backend);
+            let started = tokio::task::spawn_blocking(move || start_injection(backend.as_ref()))
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()));
+            self.took_injection(started);
         }
     }
 
@@ -334,12 +431,18 @@ impl Input {
                     // Everything already queued in one go, so a hop (leave
                     // one device, enter the next) is not reported as home
                     while let Some(msg) = next.take() {
-                        if let InputMsg::Shutdown(reply) = msg {
-                            self.stop().await;
-                            let _ = reply.send(());
-                            return;
+                        match msg {
+                            InputMsg::Shutdown(reply) => {
+                                self.stop().await;
+                                let _ = reply.send(());
+                                return;
+                            }
+                            InputMsg::Restart(reply) => {
+                                self.restart().await;
+                                let _ = reply.send(self.status());
+                            }
+                            msg => self.handle(msg),
                         }
-                        self.handle(msg);
                         next = inbox.try_recv().ok();
                     }
                     if std::mem::take(&mut self.home_pending) && self.target.is_none() {
@@ -382,8 +485,12 @@ impl Input {
                 switch.set_world(world, swapped);
                 switch.set_numbering(numbered);
             }
+            InputMsg::Request(request) => switch::lock(&self.switch).request(request),
+            InputMsg::Status(reply) => {
+                let _ = reply.send(self.status());
+            }
             // Handled by the run loop
-            InputMsg::Shutdown(_) => {}
+            InputMsg::Restart(_) | InputMsg::Shutdown(_) => {}
         }
     }
 

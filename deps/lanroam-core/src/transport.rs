@@ -42,6 +42,21 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 /// is closed anyway
 const REJECT_LINGER: Duration = Duration::from_secs(1);
 
+/// Reason given in an ordinary close
+const CLOSE_REASON: &str = "bye";
+
+/// Wait for `conn` to close; the reason the peer gave, unless it was an
+/// ordinary close or the connection simply broke
+pub async fn closed_because(conn: &quinn::Connection) -> Option<String> {
+    match conn.closed().await {
+        quinn::ConnectionError::ApplicationClosed(close) => {
+            let reason = String::from_utf8_lossy(&close.reason).into_owned();
+            (reason != CLOSE_REASON && !reason.is_empty()).then_some(reason)
+        }
+        _ => None,
+    }
+}
+
 /// Application close codes
 pub mod close_code {
     use quinn::VarInt;
@@ -542,16 +557,23 @@ impl Link {
 
     /// Close the connection normally
     pub fn close(&self) {
-        self.conn.close(close_code::NORMAL, b"bye");
+        self.conn.close(close_code::NORMAL, CLOSE_REASON.as_bytes());
     }
 
     /// Close once the messages already sent have reached the peer (bounded
     /// wait), so a final message is not discarded by the close
-    pub async fn close_after_flush(mut self) {
+    pub async fn close_after_flush(self) {
+        self.close_after_flush_because(CLOSE_REASON).await;
+    }
+
+    /// [`Self::close_after_flush`], giving `reason` in the close: a peer
+    /// that is not reading the stream right now still learns why (see
+    /// [`closed_because`])
+    pub async fn close_after_flush_because(mut self, reason: &str) {
         if self.control_tx.finish().is_ok() {
             let _ = tokio::time::timeout(REJECT_LINGER, self.control_tx.stopped()).await;
         }
-        self.close();
+        self.conn.close(close_code::NORMAL, reason.as_bytes());
     }
 
     /// Split into the remote info, the connection and the two control stream

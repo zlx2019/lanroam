@@ -50,6 +50,12 @@ pub fn world(doc: &GroupDoc) -> World {
     World::new(doc.members().filter_map(|(fp, record)| device(fp, record)))
 }
 
+/// Placed members in reading order (left to right, then top to bottom),
+/// online or not: device n of the Ctrl+Alt+n hotkeys is entry n - 1
+pub fn numbered(doc: &GroupDoc) -> Vec<String> {
+    world(doc).ordered().iter().map(|d| d.key.clone()).collect()
+}
+
 /// Where a newcomer goes: right of every placed device, top-aligned with
 /// the device `beside` (the origin for the first one)
 pub fn newcomer_spot(doc: &GroupDoc, beside: &str) -> Point {
@@ -187,6 +193,7 @@ mod tests {
         // Right of the PC's 1920 logical pixels, level with the PC
         assert_eq!(newcomer_spot(&doc, "pc"), Point::new(4480, 200));
         assert_eq!(world(&doc).devices().len(), 2);
+        assert_eq!(numbered(&doc), ["mac", "pc"]);
     }
 
     /// Beside another device, on each side, with offsets and scales

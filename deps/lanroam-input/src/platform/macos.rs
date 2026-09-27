@@ -37,11 +37,12 @@ use objc2_core_graphics::{
     CGDisplayHideCursor, CGDisplayShowCursor, CGError, CGEvent, CGEventField, CGEventFlags,
     CGEventMask, CGEventSource, CGEventSourceStateID, CGEventTapLocation, CGEventTapOptions,
     CGEventTapPlacement, CGEventTapProxy, CGEventType, CGGetActiveDisplayList, CGMainDisplayID,
-    CGMouseButton, CGPreflightPostEventAccess, CGRequestListenEventAccess,
-    CGRequestPostEventAccess, CGScrollEventUnit, CGWarpMouseCursorPosition,
+    CGMouseButton, CGPreflightListenEventAccess, CGPreflightPostEventAccess,
+    CGRequestListenEventAccess, CGRequestPostEventAccess, CGScrollEventUnit,
+    CGWarpMouseCursorPosition,
 };
 
-use super::{Capture, EmitSink, Ready};
+use super::{Capture, EmitSink, Permissions, Ready};
 use crate::event::{InputEvent, MouseButton};
 use crate::geometry::{Point, Rect};
 use crate::inject::Injector;
@@ -179,6 +180,20 @@ pub(super) fn displays() -> Result<Vec<Rect>, InputError> {
             )
         })
         .collect())
+}
+
+/// Accessibility and Input Monitoring, as granted right now
+pub(super) fn permissions() -> Permissions {
+    Permissions {
+        accessibility: CGPreflightPostEventAccess(),
+        input_monitoring: CGPreflightListenEventAccess(),
+    }
+}
+
+/// List the app under both privacy settings (prompting the first time)
+pub(super) fn request_permissions() {
+    CGRequestListenEventAccess();
+    CGRequestPostEventAccess();
 }
 
 /// Start the event tap on its own thread; returns once it runs

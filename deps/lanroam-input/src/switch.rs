@@ -142,6 +142,19 @@ enum Hotkey {
     Toward(Edge),
 }
 
+/// What the user asks for from outside the keyboard (the tray, the app
+/// window); each does what its hotkey does
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Request {
+    /// Come home and pause crossing, or resume (Ctrl+Alt+Esc)
+    Pause,
+    /// Lock the pointer to its device, or unlock (Ctrl+Alt+L)
+    Lock,
+    /// Move control to this device, this machine included (Ctrl+Alt+n);
+    /// ignored when it is not online
+    Jump(String),
+}
+
 /// Where the local cursor reappears when control comes back
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Landing {
@@ -212,6 +225,9 @@ pub struct Switch {
     buttons: [Option<Owner>; MouseButton::COUNT],
     /// Hand control back at the next event (set from outside the capture)
     release_requested: bool,
+    /// Requests to carry out at the next event (set from outside the
+    /// capture)
+    requests: Vec<Request>,
     /// Devices that get Command and Control swapped
     swapped: HashSet<String>,
     /// Another device controls this machine right now
@@ -237,6 +253,7 @@ impl Switch {
             keys: HashMap::new(),
             buttons: std::array::from_fn(|_| None),
             release_requested: false,
+            requests: Vec::new(),
             swapped: HashSet::new(),
             controlled: false,
             local_travel: 0.0,
@@ -294,6 +311,13 @@ impl Switch {
         }
     }
 
+    /// Carry out `request` at the next event, for the same reason as
+    /// [`Self::request_release`]: whoever clicked the tray or the window
+    /// moves the mouse right after
+    pub fn request(&mut self, request: Request) {
+        self.requests.push(request);
+    }
+
     /// Whether another device controls this machine; while it does, local
     /// input emits [`Emit::Takeover`] once
     pub fn set_controlled(&mut self, controlled: bool) {
@@ -308,6 +332,9 @@ impl Switch {
         if std::mem::take(&mut self.release_requested) && self.remote.is_some() {
             tracing::debug!("control comes back on request");
             cursor = Some(self.come_home(Landing::Centre, out));
+        }
+        for request in std::mem::take(&mut self.requests) {
+            self.run_request(request, out, &mut cursor);
         }
         if self.controlled && self.remote.is_none() && self.used_locally(&event) {
             self.controlled = false;
@@ -613,6 +640,28 @@ impl Switch {
             }
         }
         true
+    }
+
+    /// Carry out a request from outside the keyboard
+    fn run_request(
+        &mut self,
+        request: Request,
+        out: &mut Vec<Emit>,
+        cursor: &mut Option<CursorAction>,
+    ) {
+        match request {
+            Request::Pause => {
+                self.run_hotkey(Hotkey::Pause, out, cursor);
+            }
+            Request::Lock => {
+                self.run_hotkey(Hotkey::Lock, out, cursor);
+            }
+            Request::Jump(device) => {
+                if device == self.local || self.world.device(&device).is_some() {
+                    self.jump(device, out, cursor);
+                }
+            }
+        }
     }
 
     /// Move control straight to `device`, landing mid-display (see
@@ -1042,6 +1091,46 @@ mod tests {
         );
 
         let (d, out) = chord(&mut sw, usage::LEFT_ALT, usage::DIGIT_1 + 4);
+        assert_eq!((d.verdict, out.len()), (Verdict::Pass, 0));
+    }
+
+    /// Requests from outside the keyboard wait for the next event, then do
+    /// what their hotkeys do; a jump to a device that is not online is
+    /// ignored
+    #[test]
+    fn requests_run_at_the_next_event() {
+        let mut sw = numbered();
+        sw.request(Request::Jump("tv".into()));
+        assert_eq!(sw.target(), None);
+        // The event that carries the request out is handled too; this one
+        // moves nothing
+        let (d, out) = feed(&mut sw, motion(700, 500, 0.0, 0.0));
+        assert_eq!(d.cursor, Some(CursorAction::Park));
+        assert_eq!(
+            out,
+            [Emit::Enter {
+                device: "tv".into(),
+                at: Point::new(960, 540)
+            }]
+        );
+
+        sw.request(Request::Pause);
+        sw.request(Request::Lock);
+        let (d, out) = feed(&mut sw, motion(0, 0, 1.0, 0.0));
+        assert_eq!(d.cursor, Some(CursorAction::Release(Point::new(756, 540))));
+        assert_eq!(
+            out,
+            [
+                Emit::Leave {
+                    device: "tv".into()
+                },
+                Emit::Paused(true),
+                Emit::Locked(true)
+            ]
+        );
+
+        sw.request(Request::Jump("phone".into()));
+        let (d, out) = feed(&mut sw, motion(700, 500, 1.0, 0.0));
         assert_eq!((d.verdict, out.len()), (Verdict::Pass, 0));
     }
 

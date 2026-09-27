@@ -86,6 +86,8 @@ pub mod join_denied {
     pub const TIMEOUT: &str = "timeout";
     /// The sponsor failed on its side
     pub const INTERNAL: &str = "internal";
+    /// The user of the sponsor turned the join down
+    pub const REJECTED: &str = "rejected";
 }
 
 /// What a connection is for, declared in Hello

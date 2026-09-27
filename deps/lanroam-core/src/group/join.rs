@@ -263,13 +263,20 @@ pub struct Verified {
 }
 
 /// Run the PIN attempts until the joiner proves it knows `pin` (sponsor
-/// side)
+/// side); `on_round` hears the attempts left as each one starts, the
+/// current one included
 ///
 /// Denies the join itself when the PIN is used up or the joiner falls
 /// silent; the caller then only closes the link.
-pub async fn verify(link: &mut Link, own_fp: &str, pin: &str) -> Result<Verified, JoinError> {
+pub async fn verify(
+    link: &mut Link,
+    own_fp: &str,
+    pin: &str,
+    mut on_round: impl FnMut(u32),
+) -> Result<Verified, JoinError> {
     let joiner_fp = link.remote().fingerprint.clone();
     for attempts_left in (1..=PIN_ATTEMPTS).rev() {
+        on_round(attempts_left);
         let (state, pake) = start(pin, &joiner_fp, own_fp, false);
         link.send(&Control::JoinChallenge {
             pake,
@@ -327,7 +334,7 @@ mod tests {
     /// The sponsor side of a whole join: verify, then accept with a fresh
     /// group of the two
     async fn sponsor(mut link: Link, own: PeerInfo, pin: &str) -> Result<(), JoinError> {
-        let result = match verify(&mut link, &own.fingerprint, pin).await {
+        let result = match verify(&mut link, &own.fingerprint, pin, |_| {}).await {
             Ok(verified) => {
                 let mut doc = GroupDoc::new(&own);
                 doc.admit(link.remote());

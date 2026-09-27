@@ -38,6 +38,29 @@ use unsupported as imp;
 /// must hand the message off and return (an unbounded channel send).
 pub type EmitSink = Box<dyn FnMut(Emit) + Send>;
 
+/// Which of the rights to observe and post input the OS grants this
+/// process
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Permissions {
+    /// Posting input and filtering captured input (macOS: Accessibility)
+    pub accessibility: bool,
+    /// Observing keyboard input (macOS: Input Monitoring)
+    pub input_monitoring: bool,
+}
+
+/// The input permissions this process holds right now; platforms that
+/// have no such permissions report them granted
+pub fn permissions() -> Permissions {
+    imp::permissions()
+}
+
+/// Ask the OS for the input permissions: on macOS this lists the app under
+/// both privacy settings (and prompts the first time), ready to be
+/// switched on; elsewhere it does nothing
+pub fn request_permissions() {
+    imp::request_permissions();
+}
+
 /// Bounds of this machine's displays, in desktop coordinates
 pub fn displays() -> Result<Vec<Rect>, InputError> {
     imp::displays()
