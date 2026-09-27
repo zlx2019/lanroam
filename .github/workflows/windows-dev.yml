@@ -1,0 +1,71 @@
+name: Windows Dev Build
+
+# Builds the Windows CLI on every push, so changes can be tried on a real
+# Windows machine that has no toolchain. Each run keeps its binary as an
+# artifact, and the rolling `dev` pre-release always holds the latest one at
+# a fixed URL, which scripts/windows/update.ps1 downloads.
+on:
+  push:
+    # Branches only: the rolling `dev` tag must never trigger a build
+    branches: ["**"]
+    paths:
+      - "deps/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/windows-dev.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-dev-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build lanroam-cli (Windows x64)
+    if: github.repository != 'zlx2019/rust-template'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      # `lanroam-cli --version` reports the branch and commit it was built
+      # from; untrusted values reach the script only through env
+      - name: Build
+        shell: bash
+        env:
+          BRANCH: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: LANROAM_BUILD="dev ${BRANCH}@${SHA:0:7}" cargo build --release --locked -p lanroam-cli
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: lanroam-cli-windows-x64-${{ github.sha }}
+          path: target/release/lanroam-cli.exe
+          if-no-files-found: error
+          retention-days: 14
+
+      # One fixed download URL for the latest build of any branch; the notes
+      # say which commit it is
+      - name: Update the rolling dev pre-release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          notes="Latest Windows dev build (not a release). Branch: ${BRANCH}, commit: ${SHA}"
+          if gh release view dev >/dev/null 2>&1; then
+            gh release edit dev --notes "$notes"
+          else
+            gh release create dev --prerelease --title "Dev build" --notes "$notes" --target "$SHA"
+          fi
+          gh release upload dev target/release/lanroam-cli.exe --clobber
