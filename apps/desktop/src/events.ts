@@ -10,6 +10,8 @@ export const EVENTS = {
   JOINING_ENDED: "joining-ended",
   /** Another member removed this device from the group */
   KICKED: "kicked",
+  /** A key combination was recorded; payload: Chord, null when given up */
+  RECORDED: "recorded",
   /** What one on-screen overlay shows, sent to that window; payload: SceneDto (overlay.rs) */
   OVERLAY_SCENE: "overlay-scene",
 } as const;

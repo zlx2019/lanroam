@@ -476,17 +476,85 @@ footer code,
 }
 .jn {
   position: absolute;
-  width: 12px;
-  height: 12px;
-  margin: -6px 0 0 -6px;
+  width: 24px;
+  height: 24px;
+  margin: -12px 0 0 -12px;
+  padding: 0;
   border-radius: 50%;
   z-index: 4;
-  pointer-events: none;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
   background: var(--panel);
-  border: 2px solid var(--accent);
+  border: 1.5px solid var(--accent);
+  color: var(--accent);
+}
+.jn svg {
+  width: 12px;
+  height: 12px;
 }
 .jn.off {
   border-color: var(--faint);
+  color: var(--faint);
+}
+.jn.open {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+/* The settings of one edge, next to its junction */
+.pop {
+  position: absolute;
+  z-index: 9;
+  background: var(--panel);
+  border: 1px solid var(--line2);
+  border-radius: 12px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  cursor: default;
+}
+.pop-h {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pop-h b {
+  flex: 1;
+  font-size: 12.5px;
+}
+.pop small {
+  color: var(--mist);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.pop .btn {
+  align-self: flex-start;
+}
+.prow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12.5px;
+}
+.prow.col {
+  flex-direction: column;
+  align-items: flex-start;
+}
+.prow em {
+  font-style: normal;
+}
+.map {
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.map text {
+  fill: var(--faint);
+  font-size: 10px;
 }
 .warnbox {
   display: flex;
@@ -1302,4 +1370,81 @@ footer code,
   from {
     opacity: 0;
   }
+}
+
+/* ---------- Key combinations and steppers ---------- */
+
+.stepper {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--line2);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--panel2);
+}
+.stepper button {
+  width: 26px;
+  height: 26px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  color: var(--mist);
+}
+.stepper button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.stepper span {
+  min-width: 56px;
+  text-align: center;
+  font-size: 12px;
+}
+.kbd {
+  font: 500 11.5px var(--mono);
+  padding: 3px 7px;
+  border-radius: 6px;
+  border: 1px solid var(--line2);
+  border-bottom-width: 2px;
+  background: var(--panel2);
+  color: var(--text);
+  white-space: nowrap;
+}
+.keys {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  cursor: pointer;
+  padding: 3px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+}
+.keys:hover {
+  border-color: var(--line2);
+}
+.keys.rec {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  padding: 3px 10px;
+  font-size: 12px;
+}
+.kchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px 3px 8px;
+  border-radius: 7px;
+  background: var(--panel2);
+  border: 1px solid var(--line2);
+  font: 500 11.5px var(--mono);
+}
+.kchip button {
+  border: 0;
+  background: transparent;
+  color: var(--faint);
+  cursor: pointer;
+  padding: 0 2px;
+}
+.srow.end {
+  justify-content: flex-end;
 }

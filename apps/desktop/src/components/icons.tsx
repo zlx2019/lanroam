@@ -153,3 +153,29 @@ export function ScreenIcon() {
     </svg>
   );
 }
+
+/** Two arrows both ways: an edge the pointer crosses */
+export function LinkIcon() {
+  return (
+    <svg viewBox="0 0 16 16">
+      <path
+        d="M2.5 5.5h10M10 3l2.5 2.5L10 8M13.5 10.5h-10M6 8l-2.5 2.5L6 13"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        fill="none"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+/** A crossed circle: an edge closed to the pointer */
+export function NoLinkIcon() {
+  return (
+    <svg viewBox="0 0 16 16">
+      <circle cx="8" cy="8" r="5.5" stroke="currentColor" strokeWidth="1.6" fill="none" />
+      <path d="M4.2 11.8l7.6-7.6" stroke="currentColor" strokeWidth="1.6" />
+    </svg>
+  );
+}

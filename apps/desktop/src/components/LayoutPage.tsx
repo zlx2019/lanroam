@@ -1,18 +1,21 @@
 // The layout page: the group's screens on the canvas, dragged into place,
 // and the selected device beside it; outside a group, the devices to join.
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { api } from "../api";
 import { fit, neighbours, overlaps, snap, touches, type Box, type Touch, type View } from "../geometry";
 import { useArmed } from "../hooks/useLanroam";
 import { altKey, formatError, useI18n } from "../i18n";
-import type { DeviceDto, NearbyDto, Snapshot } from "../types";
+import type { DeviceDto, EdgeSettings, GroupDto, NearbyDto, Snapshot } from "../types";
+import { EdgePopover } from "./EdgePopover";
 import {
   CursorIcon,
   InIcon,
   InfoIcon,
+  LinkIcon,
   LockIcon,
   Logo,
+  NoLinkIcon,
   PlatformIcon,
   ScreenIcon,
   WarnIcon,
@@ -180,6 +183,9 @@ function Canvas({
   const ref = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [moved, setMoved] = useState<Moved | null>(null);
+  // The edge whose settings are open, by its key in `Edges`
+  const [openEdge, setOpenEdge] = useState<string | null>(null);
+  const closeEdge = useCallback(() => setOpenEdge(null), []);
   const drag = useRef<Drag | null>(null);
   // The latest drag position, for a drop that arrives before React has
   // rendered the last move
@@ -231,6 +237,7 @@ function Canvas({
     if (!d.moved) {
       d.moved = true;
       frozen.current = view;
+      setOpenEdge(null);
     }
     const box = boxes.find((b) => b.id === d.id);
     if (!box) return;
@@ -286,6 +293,10 @@ function Canvas({
   const py = (y: number) => view.oy + y * view.k;
   const dragging = moved?.dragging ?? false;
   const { control } = snapshot;
+  const touching = touches(boxes);
+  const opened = dragging ? undefined : touching.find((e) => edgeKey(e) === openEdge);
+  const settingsOf = (a: string, b: string) => edgeSettings(snapshot.group, a, b);
+  const nameOf = (id: string) => devices.find((d) => d.fingerprint === id)?.name ?? "";
 
   return (
     <div ref={ref} style={{ position: "absolute", inset: 0 }}>
@@ -345,14 +356,44 @@ function Canvas({
         );
       })}
       <Edges
-        touching={touches(boxes)}
+        touching={touching}
         online={(id) => devices.find((d) => d.fingerprint === id)?.online ?? false}
+        settings={settingsOf}
         view={view}
         dim={control.paused}
         markers={!dragging}
+        open={openEdge}
+        onOpen={(key) => setOpenEdge(openEdge === key ? null : key)}
       />
+      {opened && (
+        <EdgePopover
+          key={openEdge}
+          edge={opened}
+          names={[nameOf(opened.a.id), nameOf(opened.b.id)]}
+          settings={settingsOf(opened.a.id, opened.b.id)}
+          x={opened.dir === "h" ? px(opened.at) : px((opened.from + opened.to) / 2)}
+          y={opened.dir === "h" ? py((opened.from + opened.to) / 2) : py(opened.at)}
+          width={size.w}
+          onClose={closeEdge}
+          onToast={onToast}
+        />
+      )}
     </div>
   );
+}
+
+/** The settings of the edge between `a` and `b` in `group` (defaults when
+ * it has none of its own) */
+function edgeSettings(group: GroupDto | null, a: string, b: string): EdgeSettings {
+  const own = group?.edges.find((e) => (e.a === a && e.b === b) || (e.a === b && e.b === a));
+  return own
+    ? { crossable: own.crossable, cornerPx: own.cornerPx, mode: own.mode }
+    : { crossable: true, cornerPx: null, mode: null };
+}
+
+/** The key of a touching pair, stable across renders */
+function edgeKey(e: Touch): string {
+  return `${e.a.id}|${e.b.id}|${e.dir}`;
 }
 
 /** Both whole sides of every touching pair light up: crossing maps along
@@ -360,25 +401,34 @@ function Canvas({
 function Edges({
   touching,
   online,
+  settings,
   view,
   dim,
   markers,
+  open,
+  onOpen,
 }: {
   touching: Touch[];
   online: (id: string) => boolean;
+  settings: (a: string, b: string) => EdgeSettings;
   view: View;
   dim: boolean;
   markers: boolean;
+  /** The edge whose settings are open */
+  open: string | null;
+  onOpen: (key: string) => void;
 }) {
+  const { t } = useI18n();
   const px = (x: number) => view.ox + x * view.k;
   const py = (y: number) => view.oy + y * view.k;
   return (
     <>
       {touching.map((e) => {
-        const off = !online(e.a.id) || !online(e.b.id);
+        const crossable = settings(e.a.id, e.b.id).crossable;
+        const off = !crossable || !online(e.a.id) || !online(e.b.id);
         const cls = `ebar${off ? " off" : ""}${dim ? " dim" : ""}`;
         const k = view.k;
-        const key = `${e.a.id}|${e.b.id}|${e.dir}`;
+        const key = edgeKey(e);
         const mid = (e.from + e.to) / 2;
         const [jx, jy] = e.dir === "h" ? [px(e.at), py(mid)] : [px(mid), py(e.at)];
         return (
@@ -394,7 +444,17 @@ function Edges({
                 <div className={cls} style={{ top: py(e.at) + 2, left: px(e.b.x) + 3, height: 3, width: e.b.w * k - 6 }} />
               </>
             )}
-            {markers && <span className={`jn${off ? " off" : ""}`} style={{ left: jx, top: jy }} />}
+            {markers && (
+              <button
+                className={`jn${off ? " off" : ""}${open === key ? " open" : ""}`}
+                style={{ left: jx, top: jy }}
+                title={t("edge.open")}
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={() => onOpen(key)}
+              >
+                {crossable ? <LinkIcon /> : <NoLinkIcon />}
+              </button>
+            )}
           </div>
         );
       })}

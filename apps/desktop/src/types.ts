@@ -21,6 +21,65 @@ export interface GroupDto {
   id: string;
   /** Placed members in reading order, then the rest by name */
   devices: DeviceDto[];
+  /** Edges between members with settings of their own */
+  edges: EdgeDto[];
+}
+
+/** Modifiers of a key combination, left or right (lanroam-input config) */
+export interface Mods {
+  ctrl: boolean;
+  alt: boolean;
+  shift: boolean;
+  /** Command on macOS, the Windows key on Windows */
+  meta: boolean;
+}
+
+/** A key (HID usage) pressed with exactly these modifiers */
+export interface Chord extends Mods {
+  key: number;
+}
+
+/** The hotkeys; digits and arrows are fixed, only their modifiers change */
+export interface Hotkeys {
+  pause: Chord;
+  lock: Chord;
+  jump: Mods;
+  step: Mods;
+}
+
+/** How the pointer crosses an edge */
+export type SwitchMode = "direct" | "modifier" | "dwell";
+
+/** The modifier to hold in modifier mode */
+export type HoldKey = "shift" | "ctrl" | "alt";
+
+/** How the pointer crosses edges unless an edge says otherwise */
+export interface Switching {
+  mode: SwitchMode;
+  hold: HoldKey;
+  dwellMs: number;
+  cornerPx: number;
+}
+
+/** This device's input settings (lanroam-core settings.rs) */
+export interface InputSettings {
+  hotkeys: Hotkeys;
+  /** Combinations that stay on this machine while controlling another */
+  keepLocal: Chord[];
+  switching: Switching;
+}
+
+/** Settings of the edge between two devices; null follows the defaults */
+export interface EdgeSettings {
+  crossable: boolean;
+  cornerPx: number | null;
+  mode: SwitchMode | null;
+}
+
+/** An edge with settings of its own, between members `a` and `b` */
+export interface EdgeDto extends EdgeSettings {
+  a: string;
+  b: string;
 }
 
 /** A member of the group */

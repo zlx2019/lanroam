@@ -1,13 +1,15 @@
 // The settings page. Changes apply at once: choices on click, the name on
 // Enter or when the field loses focus.
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { formatError, useI18n } from "../i18n";
 import type { SettingsDto, Snapshot } from "../types";
+import { Row, Seg, Toggle } from "./controls";
+import { SwitchingSettings } from "./SwitchingSettings";
 
 /** Sections of the settings page */
-type Section = "general" | "look" | "about";
+type Section = "general" | "switching" | "look" | "about";
 
 /** The settings page */
 export function SettingsPage({
@@ -26,7 +28,7 @@ export function SettingsPage({
   return (
     <div className="settings">
       <nav className="snav">
-        {(["general", "look", "about"] as const).map((id) => (
+        {(["general", "switching", "look", "about"] as const).map((id) => (
           <button key={id} className={section === id ? "on" : ""} onClick={() => setSection(id)}>
             {t(`settings.${id}`)}
           </button>
@@ -36,6 +38,8 @@ export function SettingsPage({
         <div className="pane-inner" style={{ maxWidth: 640 }}>
           {section === "general" ? (
             <General snapshot={snapshot} settings={settings} onSettings={onSettings} onToast={onToast} />
+          ) : section === "switching" ? (
+            <SwitchingSettings snapshot={snapshot} onToast={onToast} />
           ) : section === "look" ? (
             <Look settings={settings} onSettings={onSettings} onToast={onToast} />
           ) : (
@@ -43,40 +47,6 @@ export function SettingsPage({
           )}
         </div>
       </div>
-    </div>
-  );
-}
-
-/** A segmented choice */
-function Seg<T extends string>({
-  options,
-  value,
-  onChange,
-}: {
-  options: [T, string][];
-  value: T;
-  onChange: (value: T) => void;
-}) {
-  return (
-    <span className="seg">
-      {options.map(([id, label]) => (
-        <button key={id} className={value === id ? "on" : ""} onClick={() => onChange(id)}>
-          {label}
-        </button>
-      ))}
-    </span>
-  );
-}
-
-/** One row of a settings group */
-function Row({ title, hint, children }: { title: string; hint?: string; children: ReactNode }) {
-  return (
-    <div className="srow">
-      <div className="t">
-        <b>{title}</b>
-        {hint && <small>{hint}</small>}
-      </div>
-      {children}
     </div>
   );
 }
@@ -174,11 +144,6 @@ function General({
       </div>
     </>
   );
-}
-
-/** An on/off switch */
-function Toggle({ on, label, onChange }: { on: boolean; label: string; onChange: (on: boolean) => void }) {
-  return <button className={`tg${on ? " on" : ""}`} onClick={() => onChange(!on)} aria-label={label} />;
 }
 
 /** The on-screen indicators */

@@ -3,7 +3,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   Action,
+  EdgeSettings,
   InputDto,
+  InputSettings,
   JoinAnswerDto,
   JoinPromptDto,
   JoinStartDto,
@@ -59,6 +61,16 @@ export const api = {
   getSettings: () => invoke<SettingsDto>("get_settings"),
   /** Save the app's preferences */
   saveSettings: (settings: SettingsDto) => invoke<void>("save_settings", { settings }),
+  /** This device's input settings */
+  getInputSettings: () => invoke<InputSettings>("get_input_settings"),
+  /** Use and save new input settings */
+  saveInputSettings: (settings: InputSettings) => invoke<void>("save_input_settings", { settings }),
+  /** Record the next key combination (the `recorded` event), or stop */
+  recordKeys: (on: boolean) => invoke<void>("record_keys", { on }),
+  /** Set the edge between two members, for the whole group */
+  setEdge: (a: string, b: string, settings: EdgeSettings) => invoke<void>("set_edge", { a, b, settings }),
+  /** Key names by HID usage (W3C code values) */
+  keyNames: () => invoke<Record<string, string>>("key_names"),
   /** Quit Lanroam */
   quit: () => invoke<void>("quit_app"),
 };
