@@ -103,7 +103,11 @@ allow = [
   "CC0-1.0",
   "Unlicense",
   "CDLA-Permissive-2.0",
+  "MPL-2.0",
 ]
+# The allow list is shared with the sibling apps and looks ahead to the
+# Tauri app (M3); a license missing from today's tree is not a problem
+unused-allowed-license = "allow"
 # The confidence threshold for detecting a license from license text.
 # The higher the value, the more closely the license text must be to the
 # canonical license text of a valid SPDX license file.
@@ -153,6 +157,8 @@ registries = [
 # https://embarkstudios.github.io/cargo-deny/checks/bans/cfg.html
 [bans]
 # Lint level for when multiple versions of the same crate are detected
+# Kept at warn: the few duplicates all come from transitive dependencies (e.g.
+# spake2's older RustCrypto stack); revisit once the Tauri tree lands
 multiple-versions = "warn"
 # Lint level for when a crate version requirement is `*`
 wildcards = "allow"

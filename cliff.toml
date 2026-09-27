@@ -24,7 +24,7 @@ body = """
     ## [unreleased]
 {% endif %}\
 {% for group, commits in commits | group_by(attribute="group") %}
-    ### {{ group | striptags | trim | upper_first }}
+    #### {{ group | striptags | trim | upper_first }}
     {% for commit in commits
     | filter(attribute="scope")
     | sort(attribute="scope") %}
@@ -59,24 +59,36 @@ filter_unconventional = false
 split_commits = false
 # regex for preprocessing the commit messages
 commit_preprocessors = [
-    # { pattern = '\((\w+\s)?#([0-9]+)\)', replace = "([#${2}](https://github.com/orhun/git-cliff/issues/${2}))"}, # replace issue numbers
+    # Keep only the subject line: bodies of non-conventional commits (e.g. merge
+    # messages with stray "# Conflicts:" comment lines) would otherwise leak
+    # into the notes and render as markdown headings
+    { pattern = '(?s)\n.*', replace = "" },
 ]
 # regex for parsing and grouping commits
+# The `<!-- N -->` prefix fixes the section order (groups sort by their raw
+# value; the body template strips it with `striptags` before rendering)
 commit_parsers = [
     { message = "\\[skip", skip = true },
     { message = "\\p{Han}", skip = true },
-    { message = "^feat", group = "Features" },
-    { message = "^fix", group = "Bug Fixes" },
-    { message = "^doc", group = "Documentation" },
-    { message = "^perf", group = "Performance" },
-    { message = "^refactor", group = "Refactoring" },
-    { message = "^style", group = "Style" },
-    { message = "^revert", group = "Revert" },
-    { message = "^test", group = "Tests" },
+    # Merge commits duplicate the PR's commits (and drag the whole PR body
+    # into the notes); the real changes are already listed by their groups.
+    # Covers "Merge pull request", "Merge branch" and "Merge remote-tracking branch"
+    { message = "^Merge (pull request|(remote-tracking )?branch)", skip = true },
+    { message = "^feat", group = "<!-- 00 -->🚀 Features" },
+    # Security fixes are tagged by scope: the commit body is stripped above,
+    # so a body match could never fire
+    { message = "^fix\\(security\\)", group = "<!-- 02 -->🛡️ Security" },
+    { message = "^fix", group = "<!-- 01 -->🐛 Bug Fixes" },
+    { message = "^perf", group = "<!-- 03 -->⚡ Performance" },
+    { message = "^refactor", group = "<!-- 04 -->🚜 Refactoring" },
+    { message = "^doc", group = "<!-- 05 -->📚 Documentation" },
+    { message = "^style", group = "<!-- 06 -->🎨 Style" },
+    { message = "^test", group = "<!-- 07 -->🧪 Tests" },
     { message = "^chore\\(version\\):", skip = true },
-    { message = "^chore", group = "Miscellaneous Chores" },
-    { message = ".*", group = "Other" },
-    { body = ".*security", group = "Security" },
+    { message = "^chore", group = "<!-- 08 -->⚙️ Miscellaneous Chores" },
+    { message = "^ci", group = "<!-- 09 -->👷 CI" },
+    { message = "^revert", group = "<!-- 10 -->◀️ Revert" },
+    { message = ".*", group = "<!-- 11 -->💼 Other" },
 ]
 # protect breaking changes from being skipped due to matching a skipping commit_parser
 protect_breaking_commits = false

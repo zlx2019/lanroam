@@ -54,3 +54,10 @@ repos:
         language: system
         files: (\.rs|Cargo\.(toml|lock))$
         pass_filenames: false
+      - id: cargo-doc
+        name: cargo doc
+        description: Build the docs with warnings denied, as CI does
+        entry: bash -c 'RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace --all-features'
+        language: system
+        files: (\.rs|Cargo\.(toml|lock))$
+        pass_filenames: false
