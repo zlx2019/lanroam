@@ -16,8 +16,8 @@ Move the pointer past the edge of one screen and it lands on the next computer, 
 |---|---|---|
 | M0 | Shared LAN foundation, QUIC transport, integration CLI | done |
 | M1 | Input capture and injection prototype (macOS ↔ Windows) | done |
-| M2 | Desk groups, screen layout, edge crossing, hotkeys | in progress |
-| M3 | Desktop app: screen arrangement, pairing, tray | |
+| M2 | Desk groups, screen layout, edge crossing, hotkeys | done |
+| M3 | Desktop app: screen arrangement, pairing, tray | next |
 | M4 | Clipboard hand-off | |
 | M5 | Drag and drop files between devices | |
 
