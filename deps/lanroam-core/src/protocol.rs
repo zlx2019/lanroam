@@ -10,6 +10,11 @@
 //!   only the latest value matters (pointer motion). A compact binary
 //!   [`Datagram`] codec; the first byte is the kind
 //!
+//! Hello declares what the connection is for ([`Purpose`]): a desk group
+//! member's link, a join through a PIN (see [`crate::group::join`]), or
+//! diagnostics. Members exchange their group documents with
+//! [`Control::Group`] right after the gate.
+//!
 //! An input session (M1): the acceptor reports its displays with
 //! [`Control::Screens`] right after the Hello gate; the dialer then takes
 //! and gives back control with [`Control::Enter`] / [`Control::Leave`], and
@@ -24,8 +29,10 @@ use lan_kit::frame::Framing;
 use lanroam_input::{MouseButton, Rect};
 use serde::{Deserialize, Serialize};
 
+use crate::group::GroupDoc;
+
 /// Protocol version (major.minor), checked by the Hello gate
-pub const PROTOCOL_VERSION: &str = "1.0";
+pub const PROTOCOL_VERSION: &str = "2.0";
 
 /// ALPN of the QUIC connections; a client speaking anything else is refused
 /// during the TLS handshake
@@ -39,6 +46,9 @@ pub const FRAMING: Framing = Framing::new(64 * 1024);
 /// incompatible node before dialing it
 pub const PROP_PROTOCOL: &str = "pv";
 
+/// Discovery prop advertising the desk group ID of a grouped node
+pub const PROP_GROUP: &str = "g";
+
 /// Structured rejection codes: the dialer renders them in its own language
 pub mod reason_code {
     /// The identity declared in Hello does not match the TLS certificate
@@ -47,6 +57,36 @@ pub mod reason_code {
     pub const UNSUPPORTED_VERSION: &str = "unsupported_version";
     /// The first message was not a Hello
     pub const PROTOCOL_VIOLATION: &str = "protocol_violation";
+    /// The dialer is not a member of the acceptor's desk group
+    pub const NOT_A_MEMBER: &str = "not_a_member";
+    /// The dialer was removed from the acceptor's desk group
+    pub const REMOVED: &str = "removed";
+}
+
+/// Why a join was turned down ([`Control::JoinDenied`])
+pub mod join_denied {
+    /// Another join is in progress on the sponsor
+    pub const BUSY: &str = "busy";
+    /// The sponsor pauses joins after a PIN was used up
+    pub const COOLDOWN: &str = "cooldown";
+    /// The PIN was wrong too many times
+    pub const WRONG_PIN: &str = "wrong_pin";
+    /// The joiner took too long to answer
+    pub const TIMEOUT: &str = "timeout";
+    /// The sponsor failed on its side
+    pub const INTERNAL: &str = "internal";
+}
+
+/// What a connection is for, declared in Hello
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Purpose {
+    /// A desk group member's link: group sync and input
+    Member,
+    /// Joining the acceptor's desk group with a PIN
+    Join,
+    /// Round-trip measurement only
+    Diag,
 }
 
 /// Control stream message
@@ -59,6 +99,8 @@ pub enum Control {
         version: String,
         /// Dialer's device info
         info: PeerInfo,
+        /// What the connection is for
+        purpose: Purpose,
     },
     /// Accepts the Hello (acceptor → dialer)
     HelloAck {
@@ -128,6 +170,43 @@ pub enum Control {
         /// Vertical amount; positive scrolls up
         dy: i32,
     },
+    /// The sender's copy of the group document (members, after the gate and
+    /// on every change)
+    Group {
+        /// The document
+        doc: GroupDoc,
+    },
+    /// One PIN attempt begins (sponsor → joiner): the sponsor's SPAKE2
+    /// message
+    JoinChallenge {
+        /// SPAKE2 message
+        #[serde(with = "hex::serde")]
+        pake: Vec<u8>,
+        /// Attempts left for this PIN, this one included
+        attempts_left: u32,
+    },
+    /// The joiner's side of the attempt (joiner → sponsor)
+    JoinAnswer {
+        /// SPAKE2 message
+        #[serde(with = "hex::serde")]
+        pake: Vec<u8>,
+        /// Proof that the joiner derived the same key
+        #[serde(with = "hex::serde")]
+        confirm: Vec<u8>,
+    },
+    /// The joiner is in (sponsor → joiner)
+    JoinAccepted {
+        /// Proof that the sponsor derived the same key
+        #[serde(with = "hex::serde")]
+        confirm: Vec<u8>,
+        /// The group document, the joiner included
+        doc: GroupDoc,
+    },
+    /// The join is over without success (sponsor → joiner)
+    JoinDenied {
+        /// Structured reason (see [`join_denied`])
+        reason_code: String,
+    },
 }
 
 impl Control {
@@ -145,6 +224,11 @@ impl Control {
             Self::Key { .. } => "key",
             Self::Button { .. } => "button",
             Self::Wheel { .. } => "wheel",
+            Self::Group { .. } => "group",
+            Self::JoinChallenge { .. } => "join_challenge",
+            Self::JoinAnswer { .. } => "join_answer",
+            Self::JoinAccepted { .. } => "join_accepted",
+            Self::JoinDenied { .. } => "join_denied",
         }
     }
 }
@@ -298,6 +382,7 @@ mod tests {
             Control::Hello {
                 version: PROTOCOL_VERSION.into(),
                 info: info(),
+                purpose: Purpose::Join,
             },
             Control::HelloAck {
                 version: PROTOCOL_VERSION.into(),
@@ -330,6 +415,24 @@ mod tests {
                 y: 7,
             },
             Control::Wheel { dx: 0, dy: -120 },
+            Control::Group {
+                doc: GroupDoc::new(&info()),
+            },
+            Control::JoinChallenge {
+                pake: vec![0, 1, 0xfe],
+                attempts_left: 3,
+            },
+            Control::JoinAnswer {
+                pake: vec![7; 33],
+                confirm: vec![9; 32],
+            },
+            Control::JoinAccepted {
+                confirm: vec![],
+                doc: GroupDoc::new(&info()),
+            },
+            Control::JoinDenied {
+                reason_code: join_denied::WRONG_PIN.into(),
+            },
         ];
         let (mut a, mut b) = tokio::io::duplex(64 * 1024);
         for msg in &samples {
@@ -342,9 +445,9 @@ mod tests {
     /// Same major is compatible, a different one is not
     #[test]
     fn version_compat() {
-        assert!(version_compatible("1.0"));
-        assert!(version_compatible("1.9"));
-        assert!(!version_compatible("2.0"));
+        assert!(version_compatible("2.0"));
+        assert!(version_compatible("2.9"));
+        assert!(!version_compatible("1.0"));
         assert!(!version_compatible("garbage"));
     }
 

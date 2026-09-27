@@ -1,12 +1,13 @@
 //! lanroam-cli: protocol integration and verification tool.
 //!
-//! Exercises discovery, the QUIC handshake, link latency and input sessions
-//! between two machines, or between two instances on one machine (give each
-//! its own `--data-dir` and pass `--port 0`).
+//! Exercises discovery, the QUIC handshake, desk groups, link latency and
+//! input sessions between two machines, or between two instances on one
+//! machine (give each its own `--data-dir` and pass `--port 0`).
 
 mod commands;
 mod dryrun;
 mod output;
+mod run;
 
 use std::path::PathBuf;
 
@@ -56,6 +57,16 @@ enum Command {
         /// Seconds to listen
         #[arg(long = "wait", value_name = "SECONDS", default_value_t = 6)]
         wait_secs: u64,
+    },
+    /// Run this device in its desk group, with a console to join, kick
+    /// and leave
+    Run {
+        /// QUIC port (UDP; 0 picks a free one)
+        #[arg(long, value_name = "PORT", default_value_t = DEFAULT_PORT)]
+        port: u16,
+        /// Display name for this run only
+        #[arg(long, value_name = "NAME")]
+        name: Option<String>,
     },
     /// Run a node: advertise, accept connections, replay the input of
     /// nodes sharing their keyboard and mouse, answer pings
@@ -123,6 +134,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Id => commands::cmd_id(&common),
         Command::Scan { wait_secs } => commands::cmd_scan(&common, wait_secs).await,
+        Command::Run { port, name } => run::cmd_run(&common, port, name).await,
         Command::Listen {
             port,
             name,

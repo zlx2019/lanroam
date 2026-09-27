@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use lan_kit::{DeviceIdentity, Peer, PeerInfo};
 
 use crate::PROFILE;
+use crate::protocol::Purpose;
 use crate::transport::{Link, Transport, TransportError};
 
 /// Disambiguates temp directories within one process
@@ -69,7 +70,7 @@ impl TestNode {
         let info = self.info.clone();
         tokio::spawn(async move {
             let incoming = transport.accept().await.unwrap();
-            incoming.handshake(&info).await
+            incoming.handshake(&info, |_, _| Ok(())).await
         })
     }
 
@@ -77,7 +78,11 @@ impl TestNode {
     pub(crate) async fn link_pair() -> (TestNode, TestNode, Link, Link) {
         let (a, b) = (TestNode::new(), TestNode::new());
         let server = b.accept_one();
-        let client = a.transport.connect(&b.as_peer(), &a.info).await.unwrap();
+        let client = a
+            .transport
+            .connect(&b.as_peer(), &a.info, Purpose::Member)
+            .await
+            .unwrap();
         let server = server.await.unwrap().unwrap();
         (a, b, client, server)
     }

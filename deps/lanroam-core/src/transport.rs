@@ -4,8 +4,9 @@
 //!
 //! Trust at this layer is purely cryptographic: a [`Link`] proves that the
 //! remote holds the private key of the fingerprint it declares. Whether that
-//! fingerprint may control this machine is the desk group's decision (M2),
-//! made by the caller after the handshake.
+//! fingerprint may connect for the [`Purpose`] it declares is the desk
+//! group's decision, which the acceptor makes through the admission check
+//! it passes to [`Incoming::handshake`].
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -18,7 +19,9 @@ use rustls_pki_types::CertificateDer;
 use thiserror::Error;
 
 use crate::PROFILE;
-use crate::protocol::{ALPN, Control, FRAMING, PROTOCOL_VERSION, reason_code, version_compatible};
+use crate::protocol::{
+    ALPN, Control, FRAMING, PROTOCOL_VERSION, Purpose, reason_code, version_compatible,
+};
 
 /// Budget per candidate address for the QUIC + TLS handshake
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -51,6 +54,8 @@ pub mod close_code {
     pub const REJECTED: VarInt = VarInt::from_u32(2);
     /// An identity probe is done (no session was ever intended)
     pub const PROBE: VarInt = VarInt::from_u32(3);
+    /// Another link to the same peer is kept instead of this one
+    pub const DUPLICATE: VarInt = VarInt::from_u32(4);
 }
 
 /// Transport errors
@@ -84,6 +89,10 @@ pub enum TransportError {
     /// The peer refused the connection (a [`reason_code`])
     #[error("rejected by peer: {0}")]
     Rejected(String),
+    /// This side refused the peer in the admission check (a
+    /// [`reason_code`])
+    #[error("refused the peer: {0}")]
+    Refused(&'static str),
     /// The protocol major versions differ
     #[error("incompatible protocol version: peer {peer}, local {PROTOCOL_VERSION}")]
     Version {
@@ -172,9 +181,14 @@ impl Transport {
         &self.identity
     }
 
-    /// Dial a discovered peer: try each candidate address with TLS pinned to
-    /// the peer's fingerprint, then pass the Hello gate
-    pub async fn connect(&self, peer: &Peer, local: &PeerInfo) -> Result<Link, TransportError> {
+    /// Dial a discovered peer for `purpose`: try each candidate address with
+    /// TLS pinned to the peer's fingerprint, then pass the Hello gate
+    pub async fn connect(
+        &self,
+        peer: &Peer,
+        local: &PeerInfo,
+        purpose: Purpose,
+    ) -> Result<Link, TransportError> {
         let config = client_config(
             &self.identity,
             Some(peer.info.fingerprint.clone()),
@@ -184,7 +198,7 @@ impl Transport {
             .dial_any(&config, peer.socket_addrs())
             .await
             .ok_or(TransportError::Unreachable)?;
-        hello_out(conn, local, Some(&peer.info.fingerprint)).await
+        hello_out(conn, local, purpose, Some(&peer.info.fingerprint)).await
     }
 
     /// Dial an address directly, accepting whatever certificate it presents
@@ -196,12 +210,13 @@ impl Transport {
         &self,
         addr: SocketAddr,
         local: &PeerInfo,
+        purpose: Purpose,
     ) -> Result<Link, TransportError> {
         let conn = self
             .dial_any(&self.unpinned, std::iter::once(addr))
             .await
             .ok_or(TransportError::Unreachable)?;
-        hello_out(conn, local, None).await
+        hello_out(conn, local, purpose, None).await
     }
 
     /// Try addresses in order; the first completed QUIC handshake wins
@@ -310,6 +325,7 @@ fn cert_fingerprint(conn: &quinn::Connection) -> Option<String> {
 async fn hello_out(
     conn: quinn::Connection,
     local: &PeerInfo,
+    purpose: Purpose,
     expected: Option<&str>,
 ) -> Result<Link, TransportError> {
     let gate = async {
@@ -321,6 +337,7 @@ async fn hello_out(
                 &Control::Hello {
                     version: PROTOCOL_VERSION.to_string(),
                     info: local.clone(),
+                    purpose,
                 },
             )
             .await?;
@@ -345,6 +362,7 @@ async fn hello_out(
     match tokio::time::timeout(HELLO_TIMEOUT, gate).await {
         Ok(Ok((send, recv, remote))) => Ok(Link {
             remote,
+            purpose,
             conn,
             control_tx: send,
             control_rx: recv,
@@ -377,16 +395,23 @@ impl Incoming {
     ///
     /// The declared identity must match the client certificate, which is
     /// what blocks impersonation: a node can only claim the fingerprint whose
-    /// private key it holds.
-    pub async fn handshake(self, local: &PeerInfo) -> Result<Link, TransportError> {
+    /// private key it holds. `admit` then decides whether that verified
+    /// identity may connect for the purpose it declares; a refusal is a
+    /// [`reason_code`] the dialer gets to see.
+    pub async fn handshake(
+        self,
+        local: &PeerInfo,
+        admit: impl FnOnce(&PeerInfo, Purpose) -> Result<(), &'static str>,
+    ) -> Result<Link, TransportError> {
         let gate = async {
             let conn = self.inner.await?;
-            let result = hello_in(&conn, local).await;
+            let result = hello_in(&conn, local, admit).await;
             if result.is_err() {
                 conn.close(close_code::PROTOCOL, b"hello failed");
             }
-            result.map(|(send, recv, remote)| Link {
+            result.map(|(send, recv, remote, purpose)| Link {
                 remote,
+                purpose,
                 conn,
                 control_tx: send,
                 control_rx: recv,
@@ -402,11 +427,16 @@ impl Incoming {
 async fn hello_in(
     conn: &quinn::Connection,
     local: &PeerInfo,
-) -> Result<(quinn::SendStream, quinn::RecvStream, PeerInfo), TransportError> {
+    admit: impl FnOnce(&PeerInfo, Purpose) -> Result<(), &'static str>,
+) -> Result<(quinn::SendStream, quinn::RecvStream, PeerInfo, Purpose), TransportError> {
     let cert_fp = cert_fingerprint(conn).ok_or(TransportError::IdentityMismatch)?;
     let (mut send, mut recv) = conn.accept_bi().await?;
-    let (version, info) = match FRAMING.read(&mut recv).await? {
-        Control::Hello { version, info } => (version, info),
+    let (version, info, purpose) = match FRAMING.read(&mut recv).await? {
+        Control::Hello {
+            version,
+            info,
+            purpose,
+        } => (version, info, purpose),
         other => {
             reject(conn, &mut send, reason_code::PROTOCOL_VIOLATION).await;
             return Err(TransportError::Unexpected {
@@ -423,6 +453,10 @@ async fn hello_in(
         reject(conn, &mut send, reason_code::IDENTITY_MISMATCH).await;
         return Err(TransportError::IdentityMismatch);
     }
+    if let Err(code) = admit(&info, purpose) {
+        reject(conn, &mut send, code).await;
+        return Err(TransportError::Refused(code));
+    }
     FRAMING
         .write(
             &mut send,
@@ -432,7 +466,7 @@ async fn hello_in(
             },
         )
         .await?;
-    Ok((send, recv, info))
+    Ok((send, recv, info, purpose))
 }
 
 /// Tell the dialer why it is refused, give the message a moment to arrive,
@@ -455,6 +489,8 @@ pub struct Link {
     /// The remote's device info, as declared in the Hello gate and bound to
     /// its certificate
     remote: PeerInfo,
+    /// What the connection is for
+    purpose: Purpose,
     /// The QUIC connection
     conn: quinn::Connection,
     /// Sending half of the control stream
@@ -467,6 +503,11 @@ impl Link {
     /// The remote's device info (its fingerprint is verified)
     pub fn remote(&self) -> &PeerInfo {
         &self.remote
+    }
+
+    /// What the connection is for, as the dialer declared it
+    pub fn purpose(&self) -> Purpose {
+        self.purpose
     }
 
     /// The remote's current address
@@ -504,6 +545,15 @@ impl Link {
         self.conn.close(close_code::NORMAL, b"bye");
     }
 
+    /// Close once the messages already sent have reached the peer (bounded
+    /// wait), so a final message is not discarded by the close
+    pub async fn close_after_flush(mut self) {
+        if self.control_tx.finish().is_ok() {
+            let _ = tokio::time::timeout(REJECT_LINGER, self.control_tx.stopped()).await;
+        }
+        self.close();
+    }
+
     /// Split into the remote info, the connection and the two control stream
     /// halves, so reading and writing can live in different tasks
     pub fn into_parts(
@@ -531,7 +581,11 @@ mod tests {
     async fn pinned_handshake_and_control() {
         let (a, b) = (TestNode::new(), TestNode::new());
         let server = b.accept_one();
-        let mut client_link = a.transport.connect(&b.as_peer(), &a.info).await.unwrap();
+        let mut client_link = a
+            .transport
+            .connect(&b.as_peer(), &a.info, Purpose::Member)
+            .await
+            .unwrap();
         let mut server_link = server.await.unwrap().unwrap();
 
         assert_eq!(client_link.remote().fingerprint, b.info.fingerprint);
@@ -560,7 +614,11 @@ mod tests {
     async fn datagrams_flow() {
         let (a, b) = (TestNode::new(), TestNode::new());
         let server = b.accept_one();
-        let client_link = a.transport.connect(&b.as_peer(), &a.info).await.unwrap();
+        let client_link = a
+            .transport
+            .connect(&b.as_peer(), &a.info, Purpose::Member)
+            .await
+            .unwrap();
         let server_link = server.await.unwrap().unwrap();
 
         let payload = crate::protocol::Datagram::Ping { seq: 5, sent_us: 6 }.encode();
@@ -588,7 +646,7 @@ mod tests {
         let mut peer = b.as_peer();
         peer.info.fingerprint = c.info.fingerprint.clone();
         assert!(matches!(
-            a.transport.connect(&peer, &a.info).await,
+            a.transport.connect(&peer, &a.info, Purpose::Member).await,
             Err(TransportError::Unreachable)
         ));
     }
@@ -602,7 +660,10 @@ mod tests {
         // a holds its own key but claims to be c
         let mut forged = a.info.clone();
         forged.fingerprint = c.info.fingerprint.clone();
-        let result = a.transport.connect(&b.as_peer(), &forged).await;
+        let result = a
+            .transport
+            .connect(&b.as_peer(), &forged, Purpose::Member)
+            .await;
         assert!(
             matches!(&result, Err(TransportError::Rejected(code)) if code == reason_code::IDENTITY_MISMATCH),
             "got {:?}",
@@ -621,7 +682,11 @@ mod tests {
         let (a, b) = (TestNode::new(), TestNode::new());
         let server = b.accept_one();
         let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, b.transport.local_port()));
-        let link = a.transport.connect_direct(addr, &a.info).await.unwrap();
+        let link = a
+            .transport
+            .connect_direct(addr, &a.info, Purpose::Diag)
+            .await
+            .unwrap();
         assert_eq!(link.remote().fingerprint, b.info.fingerprint);
         server.await.unwrap().unwrap();
     }

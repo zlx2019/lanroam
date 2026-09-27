@@ -11,7 +11,7 @@ use thiserror::Error;
 use tokio::sync::mpsc;
 
 use crate::PROFILE;
-use crate::protocol::{PROP_PROTOCOL, PROTOCOL_VERSION};
+use crate::protocol::{PROP_PROTOCOL, PROTOCOL_VERSION, Purpose};
 use crate::transport::{Link, Transport, TransportError};
 
 /// Node startup errors
@@ -116,9 +116,9 @@ impl Node {
         &self.discovery
     }
 
-    /// Dial a discovered peer
-    pub async fn connect(&self, peer: &Peer) -> Result<Link, TransportError> {
-        self.transport.connect(peer, &self.info).await
+    /// Dial a discovered peer for `purpose`
+    pub async fn connect(&self, peer: &Peer, purpose: Purpose) -> Result<Link, TransportError> {
+        self.transport.connect(peer, &self.info, purpose).await
     }
 
     /// Say goodbye on the LAN, close every connection and wait until peers

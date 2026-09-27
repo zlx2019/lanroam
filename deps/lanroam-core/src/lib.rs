@@ -4,14 +4,16 @@
 //! integration tests) and the desktop app. Layering, see `docs/design.md`:
 //!
 //! ```text
-//! ┌─ node      ─ wiring: identity + transport + discovery        (M0)
+//! ┌─ engine    ─ a device in its desk group: member links,
+//! │              group sync, joins                               (M2)
+//! ├─ node      ─ wiring: identity + transport + discovery        (M0)
 //! ├─ transport ─ QUIC per peer: fingerprint-pinned mutual TLS 1.3,
 //! │              the Hello gate, identity probes for discovery  (M0)
 //! ├─ protocol  ─ control messages and datagram codec            (M0)
 //! ├─ diag      ─ round-trip measurement on both paths            (M0)
 //! ├─ session   ─ input sessions: source forwards, target replays  (M1)
 //! │              control arbitration                             (M2)
-//! ├─ group     ─ desk group: signed membership, join / kick       (M2)
+//! ├─ group     ─ desk group: membership document, PIN joins      (M2)
 //! ├─ layout    ─ monitor arrangement shared by the group         (M2)
 //! ├─ clipboard ─ clipboard hand-off on entering a device          (M4)
 //! └─ dnd       ─ cross-device file drag and drop                  (M5)
@@ -26,6 +28,8 @@ use std::net::Ipv4Addr;
 use lan_kit::AppProfile;
 
 pub mod diag;
+pub mod engine;
+pub mod group;
 pub mod node;
 pub mod protocol;
 pub mod session;

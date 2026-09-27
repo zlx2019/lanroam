@@ -6,12 +6,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
+use lanroam_core::group::GroupStore;
 use lanroam_core::lan_kit::discovery::DiscoveryOptions;
 use lanroam_core::lan_kit::{DeviceIdentity, DiscoveryService, Peer, PeerEvent, PeerInfo};
 use lanroam_core::lanroam_input::inject::Injector;
 use lanroam_core::lanroam_input::switch::Switch;
 use lanroam_core::lanroam_input::{Desktop, Edge, platform};
 use lanroam_core::node::{Node, NodeConfig};
+use lanroam_core::protocol::Purpose;
 use lanroam_core::session::{self, SourceNotice, TargetNotice};
 use lanroam_core::transport::{Link, Transport};
 use lanroam_core::{PROFILE, diag};
@@ -39,6 +41,15 @@ pub(crate) fn cmd_id(common: &CommonArgs) -> Result<()> {
         info.platform,
         info.os_version.as_deref().unwrap_or("unknown")
     );
+    match GroupStore::new(&common.data_dir).load() {
+        Ok(Some(doc)) => println!(
+            "group        {} ({} members)",
+            doc.id,
+            doc.members().count()
+        ),
+        Ok(None) => println!("group        none"),
+        Err(e) => println!("group        unreadable: {e}"),
+    }
     println!("data dir     {}", common.data_dir.display());
     Ok(())
 }
@@ -151,7 +162,8 @@ async fn accept_loop(transport: Arc<Transport>, local: PeerInfo, replay: Replay)
         let local = local.clone();
         tokio::spawn(async move {
             let from = incoming.remote_address();
-            match incoming.handshake(&local).await {
+            // The M1 prototype has no desk group: anyone may connect
+            match incoming.handshake(&local, |_, _| Ok(())).await {
                 Ok(link) => {
                     let who = describe(link.remote());
                     println!("linked   {who} from {from}");
@@ -210,8 +222,14 @@ pub(crate) async fn cmd_ping(
     let (node, mut events) = Node::start(config)
         .await
         .context("failed to start the node")?;
-    let mut link =
-        connect_target(&node, &mut events, target, Duration::from_secs(wait_secs)).await?;
+    let mut link = connect_target(
+        &node,
+        &mut events,
+        target,
+        Duration::from_secs(wait_secs),
+        Purpose::Diag,
+    )
+    .await?;
 
     let stream = diag::ping_stream(&mut link, count).await?;
     print_stats("control stream", &stream);
@@ -246,8 +264,14 @@ pub(crate) async fn cmd_share(
     let (node, mut events) = Node::start(config)
         .await
         .context("failed to start the node")?;
-    let mut link =
-        connect_target(&node, &mut events, target, Duration::from_secs(wait_secs)).await?;
+    let mut link = connect_target(
+        &node,
+        &mut events,
+        target,
+        Duration::from_secs(wait_secs),
+        Purpose::Member,
+    )
+    .await?;
     let screens = session::recv_screens(&mut link).await?;
     let name = link.remote().name.clone();
     println!("local    {}", describe_screens(&local));
@@ -294,19 +318,21 @@ pub(crate) async fn cmd_share(
     Ok(())
 }
 
-/// Connect to `target`: an `ip:port` directly, printing the fingerprint to
-/// verify by hand; anything else through discovery, fingerprint pinned
+/// Connect to `target` for `purpose`: an `ip:port` directly, printing the
+/// fingerprint to verify by hand; anything else through discovery,
+/// fingerprint pinned
 async fn connect_target(
     node: &Node,
     events: &mut mpsc::Receiver<PeerEvent>,
     target: &str,
     wait: Duration,
+    purpose: Purpose,
 ) -> Result<Link> {
     if let Ok(addr) = target.parse::<SocketAddr>() {
         let started = Instant::now();
         let link = node
             .transport()
-            .connect_direct(addr, node.info())
+            .connect_direct(addr, node.info(), purpose)
             .await
             .with_context(|| format!("failed to connect to {addr}"))?;
         report_link(&link, started.elapsed());
@@ -319,7 +345,7 @@ async fn connect_target(
     let peer = find_target(node, events, target, wait).await?;
     let started = Instant::now();
     let link = node
-        .connect(&peer)
+        .connect(&peer, purpose)
         .await
         .with_context(|| format!("failed to connect to {}", peer.info.name))?;
     report_link(&link, started.elapsed());
@@ -375,22 +401,47 @@ async fn find_target(
     }
 }
 
-/// Resolve a target among discovered nodes
+/// Resolve a target among discovered nodes (see [`pick`]); `Err` lists the
+/// candidates of an ambiguous target
+pub(crate) fn match_target<'a>(
+    peers: &'a [Peer],
+    target: &str,
+) -> Result<Option<&'a Peer>, String> {
+    pick(peers, target, |p| {
+        (&p.info.device_id, &p.info.name, &p.info.fingerprint)
+    })
+    .map_err(|many| {
+        many.iter()
+            .map(|p| format!("  {}", describe_peer(p)))
+            .collect::<Vec<_>>()
+            .join("\n")
+    })
+}
+
+/// Resolve a target among devices, given each one's (device id, name,
+/// fingerprint)
 ///
 /// An exact device id or name (case-insensitive) wins; otherwise a
-/// fingerprint prefix of at least 4 hex digits. `Ok(None)` means no match
-/// yet, `Err` lists the candidates of an ambiguous target.
-fn match_target<'a>(peers: &'a [Peer], target: &str) -> Result<Option<&'a Peer>, String> {
-    let exact: Vec<&Peer> = peers
+/// fingerprint prefix of at least 4 hex digits. `Ok(None)` means no match,
+/// `Err` holds the candidates of an ambiguous target.
+pub(crate) fn pick<'a, T>(
+    items: &'a [T],
+    target: &str,
+    key: impl Fn(&T) -> (&str, &str, &str),
+) -> Result<Option<&'a T>, Vec<&'a T>> {
+    let exact: Vec<&T> = items
         .iter()
-        .filter(|p| p.info.device_id == target || p.info.name.eq_ignore_ascii_case(target))
+        .filter(|item| {
+            let (id, name, _) = key(item);
+            id == target || name.eq_ignore_ascii_case(target)
+        })
         .collect();
     let candidates =
         if exact.is_empty() && target.len() >= 4 && target.bytes().all(|b| b.is_ascii_hexdigit()) {
             let prefix = target.to_ascii_lowercase();
-            peers
+            items
                 .iter()
-                .filter(|p| p.info.fingerprint.starts_with(&prefix))
+                .filter(|item| key(item).2.starts_with(&prefix))
                 .collect()
         } else {
             exact
@@ -398,11 +449,7 @@ fn match_target<'a>(peers: &'a [Peer], target: &str) -> Result<Option<&'a Peer>,
     match candidates.as_slice() {
         [] => Ok(None),
         [one] => Ok(Some(one)),
-        many => Err(many
-            .iter()
-            .map(|p| format!("  {}", describe_peer(p)))
-            .collect::<Vec<_>>()
-            .join("\n")),
+        _ => Err(candidates),
     }
 }
 
