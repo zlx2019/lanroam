@@ -147,6 +147,8 @@ pub(super) enum Msg {
         /// The report
         reply: oneshot::Sender<Status>,
     },
+    /// Every online member, this one included, shows its number
+    Identify,
     /// This device got a new name (already persisted)
     Rename {
         /// The name
@@ -373,6 +375,12 @@ impl Mesh {
                 self.rename(name);
                 let _ = reply.send(());
             }
+            Msg::Identify => {
+                for entry in self.links.values() {
+                    let _ = entry.out.send(Control::Identify);
+                }
+                self.emit(EngineEvent::Identify);
+            }
             // Handled by the run loop
             Msg::Shutdown { .. } => {}
         }
@@ -594,6 +602,7 @@ impl Mesh {
         };
         match msg {
             Control::Group { doc } => self.on_doc(&fp, &doc),
+            Control::Identify => self.emit(EngineEvent::Identify),
             Control::Ping { seq, sent_us } => {
                 if let Some(entry) = self.links.get(&fp) {
                     let _ = entry.out.send(Control::Pong { seq, sent_us });

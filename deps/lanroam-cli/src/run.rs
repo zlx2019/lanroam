@@ -454,6 +454,10 @@ fn print_event(event: &EngineEvent, seen: &mut Option<Arc<GroupDoc>>) {
     match event {
         EngineEvent::Online(info) => println!("online   {}", describe(info)),
         EngineEvent::Offline { name, .. } => println!("offline  {name}"),
+        // The app shows the number on the screens; the layout lists them
+        EngineEvent::Identify => {
+            println!("identify a member asked every device to show its number")
+        }
         EngineEvent::Group(Some(doc)) => {
             let names = |doc: &GroupDoc| -> Vec<String> {
                 doc.members()

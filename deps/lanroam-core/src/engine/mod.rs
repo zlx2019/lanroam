@@ -112,6 +112,9 @@ pub enum EngineEvent {
     },
     /// Who controls what changed
     Control(ControlEvent),
+    /// Show this device's number in the layout on its screens for a moment
+    /// (some member asked, maybe this one)
+    Identify,
     /// That join is over (hide the PIN)
     JoinEnded {
         /// Who asked
@@ -390,6 +393,15 @@ impl Engine {
                 .map_err(|e| EngineError::Store(std::io::Error::other(e)))??;
         }
         self.ask(|reply| Msg::Rename { name, reply }).await
+    }
+
+    /// Have every online member, this one included, show its number in the
+    /// layout on its screens for a moment
+    pub fn identify(&self) -> Result<(), EngineError> {
+        self.inner
+            .inbox
+            .send(Msg::Identify)
+            .map_err(|_| EngineError::Stopped)
     }
 
     /// Carry out a request (pause, lock, jump) at this device's next input

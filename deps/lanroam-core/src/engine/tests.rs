@@ -760,3 +760,17 @@ async fn input_restarts_after_a_permission() {
     assert_eq!((status.capture, status.injection), (Ok(()), Ok(())));
     assert!(a.input.capture.lock().unwrap().is_some());
 }
+
+/// Identify reaches every online member, and the asker too
+#[tokio::test]
+async fn identify_reaches_every_member() {
+    let (mut a, mut b, mut c) = group_of_three().await;
+    a.engine.identify().unwrap();
+    for engine in [&mut a, &mut b, &mut c] {
+        engine
+            .expect("identify", |event| {
+                matches!(event, EngineEvent::Identify).then_some(())
+            })
+            .await;
+    }
+}

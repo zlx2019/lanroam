@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 use crate::group::GroupDoc;
 
 /// Protocol version (major.minor), checked by the Hello gate
-pub const PROTOCOL_VERSION: &str = "2.0";
+pub const PROTOCOL_VERSION: &str = "2.1";
 
 /// ALPN of the QUIC connections; a client speaking anything else is refused
 /// during the TLS handshake
@@ -189,6 +189,9 @@ pub enum Control {
         /// The document
         doc: GroupDoc,
     },
+    /// Show your number in the layout on your screens for a moment, so the
+    /// user can tell the devices apart (to every online member; since 2.1)
+    Identify,
     /// One PIN attempt begins (sponsor → joiner): the sponsor's SPAKE2
     /// message
     JoinChallenge {
@@ -238,6 +241,7 @@ impl Control {
             Self::Wheel { .. } => "wheel",
             Self::Released { .. } => "released",
             Self::Group { .. } => "group",
+            Self::Identify => "identify",
             Self::JoinChallenge { .. } => "join_challenge",
             Self::JoinAnswer { .. } => "join_answer",
             Self::JoinAccepted { .. } => "join_accepted",
