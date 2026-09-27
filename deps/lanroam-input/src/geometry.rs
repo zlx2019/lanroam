@@ -65,6 +65,11 @@ impl Rect {
         self.y + self.height
     }
 
+    /// The pixel in the middle
+    pub const fn centre(&self) -> Point {
+        Point::new(self.x + self.width / 2, self.y + self.height / 2)
+    }
+
     /// Whether the rectangle covers no pixel at all
     pub const fn is_empty(&self) -> bool {
         self.width <= 0 || self.height <= 0

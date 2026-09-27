@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::event::{InputEvent, MouseButton};
-use crate::geometry::{Desktop, Edge, Point, Step};
+use crate::geometry::{Desktop, Edge, Point, Rect, Step};
 use crate::keymap::usage;
 
 /// How far inside the edge the pointer lands after a crossing, so a
@@ -79,6 +79,18 @@ pub enum Emit {
         /// Vertical amount
         dy: i32,
     },
+}
+
+/// Where the local cursor reappears when control comes back
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Landing {
+    /// Just inside the shared edge, facing where the virtual cursor left:
+    /// the pointer simply carries on
+    Edge,
+    /// In the middle of that display: after the hotkey or a lost target the
+    /// user wants to stay here, and a pointer left at the edge would slip
+    /// straight back at the slightest motion
+    Centre,
 }
 
 /// Where a key or button press went
@@ -162,7 +174,8 @@ impl Switch {
         if std::mem::take(&mut self.release_requested)
             && let Some(at) = self.remote
         {
-            cursor = Some(self.leave(at, out));
+            tracing::debug!("control comes back on request");
+            cursor = Some(self.leave(at, Landing::Centre, out));
         }
         let verdict = match event {
             InputEvent::Motion { at, dx, dy } => self.motion(at, dx, dy, out, &mut cursor),
@@ -209,7 +222,7 @@ impl Switch {
             Step::Exit(stop) if self.holds_button(Owner::Remote) => {
                 self.remote = Some((f64::from(stop.x), f64::from(stop.y)));
             }
-            Step::Exit(_) => *cursor = Some(self.leave(from, out)),
+            Step::Exit(_) => *cursor = Some(self.leave(from, Landing::Edge, out)),
         }
         Verdict::Swallow
     }
@@ -230,8 +243,9 @@ impl Switch {
     }
 
     /// Give control back: tell the target, and work out where the local
-    /// cursor reappears (facing the virtual cursor's last position)
-    fn leave(&mut self, from: (f64, f64), out: &mut Vec<Emit>) -> CursorAction {
+    /// cursor reappears (on the display facing the virtual cursor's last
+    /// position)
+    fn leave(&mut self, from: (f64, f64), landing: Landing, out: &mut Vec<Emit>) -> CursorAction {
         self.remote = None;
         out.push(Emit::Leave);
         let last = Point::floor(from.0, from.1);
@@ -239,6 +253,10 @@ impl Switch {
             .target
             .map_across(last, self.edge.opposite(), &self.local, LANDING_INSET)
             .unwrap_or_else(|| self.local.clamp(last));
+        let back = match landing {
+            Landing::Edge => back,
+            Landing::Centre => self.local.display_at(back).map_or(back, Rect::centre),
+        };
         CursorAction::Release(back)
     }
 
@@ -276,6 +294,7 @@ impl Switch {
         out: &mut Vec<Emit>,
         cursor: &mut Option<CursorAction>,
     ) -> Verdict {
+        tracing::trace!(usage, down, remote = self.remote.is_some(), "key");
         if !down {
             let owner = self.keys.remove(&usage);
             return self.route(owner, Emit::Key { usage, down }, out);
@@ -309,8 +328,9 @@ impl Switch {
             self.keys.insert(usage::ESCAPE, Owner::Local);
             return Verdict::Pass;
         };
+        tracing::debug!("escape hotkey: taking control back");
         self.keys.insert(usage::ESCAPE, Owner::Dropped);
-        *cursor = Some(self.leave(at, out));
+        *cursor = Some(self.leave(at, Landing::Centre, out));
         Verdict::Swallow
     }
 
@@ -531,7 +551,11 @@ mod tests {
         feed(&mut sw, key(usage::RIGHT_ALT, true));
         let (decision, out) = feed(&mut sw, key(usage::ESCAPE, true));
         assert_eq!(decision.verdict, Verdict::Swallow);
-        assert!(matches!(decision.cursor, Some(CursorAction::Release(_))));
+        // Well away from the edge, so the hand on the mouse cannot slip back
+        assert_eq!(
+            decision.cursor,
+            Some(CursorAction::Release(Point::new(756, 491)))
+        );
         assert_eq!(out, [Emit::Leave]);
         // Its autorepeat and release, and the modifiers', stay swallowed
         for event in [
@@ -565,7 +589,10 @@ mod tests {
         sw.request_release();
         let (decision, out) = feed(&mut sw, motion(1511, 491, 3.0, 0.0));
         assert_eq!(out, [Emit::Leave]);
-        assert!(matches!(decision.cursor, Some(CursorAction::Release(_))));
+        assert_eq!(
+            decision.cursor,
+            Some(CursorAction::Release(Point::new(756, 491)))
+        );
         assert_eq!(decision.verdict, Verdict::Pass);
         assert!(!sw.is_remote());
     }
