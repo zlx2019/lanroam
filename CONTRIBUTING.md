@@ -42,6 +42,15 @@ cargo deny check
 typos
 ```
 
+Platform input code is compiled only on its own OS. `lanroam-input` has no C dependencies, so its Windows code can be linted from macOS or Linux as well:
+
+```bash
+rustup target add x86_64-pc-windows-msvc
+cargo clippy -p lanroam-input --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+```
+
+Tests that need OS permissions (posting input on macOS) are ignored by default; run them with `cargo nextest run --run-ignored only` from a terminal that has them.
+
 ## Commit Convention
 
 Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/):
