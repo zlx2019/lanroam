@@ -24,6 +24,7 @@ use std::time::Duration;
 use lan_kit::frame::FrameError;
 use lan_kit::{Peer, PeerEvent, PeerInfo};
 use lanroam_input::Rect;
+use lanroam_input::config::EdgeSettings;
 use lanroam_input::world::World;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{Instant, MissedTickBehavior};
@@ -127,6 +128,17 @@ pub(super) enum Msg {
     SetSwap {
         /// On
         on: bool,
+        /// Done
+        reply: oneshot::Sender<Result<(), EngineError>>,
+    },
+    /// Set the edge between two members
+    SetEdge {
+        /// One member
+        a: String,
+        /// The other
+        b: String,
+        /// The settings
+        settings: EdgeSettings,
         /// Done
         reply: oneshot::Sender<Result<(), EngineError>>,
     },
@@ -355,6 +367,14 @@ impl Mesh {
                     None => Err(EngineError::NoGroup),
                 };
                 let _ = reply.send(result);
+            }
+            Msg::SetEdge {
+                a,
+                b,
+                settings,
+                reply,
+            } => {
+                let _ = reply.send(self.set_edge(&a, &b, settings));
             }
             Msg::Adopt { doc, reply } => {
                 let _ = reply.send(self.adopt(doc));
@@ -707,6 +727,20 @@ impl Mesh {
         Ok(())
     }
 
+    /// Set the edge between members `a` and `b`, for the whole group
+    fn set_edge(&mut self, a: &str, b: &str, settings: EdgeSettings) -> Result<(), EngineError> {
+        let doc = self.doc.as_mut().ok_or(EngineError::NoGroup)?;
+        if let Some(stranger) = [a, b].into_iter().find(|fp| !doc.is_member(fp)) {
+            return Err(EngineError::NotAMember(stranger.to_string()));
+        }
+        if a == b || !settings.valid() {
+            return Err(EngineError::InvalidSettings);
+        }
+        doc.set_edge(a, b, settings, &self.info.fingerprint);
+        self.commit();
+        Ok(())
+    }
+
     /// This device's profile as it stands: settings and, until they are
     /// first read, displays as the document holds them
     fn own_profile(&self) -> Profile {
@@ -886,7 +920,7 @@ impl Mesh {
     /// and the members' names
     fn publish_world(&self) {
         let own = self.info.fingerprint.as_str();
-        let (world, swapped, names, numbered) = match &self.doc {
+        let (world, swapped, names, numbered, edges) = match &self.doc {
             Some(doc) => {
                 let online = |fp: &str| fp == own || self.links.contains_key(fp);
                 let placed = layout::world(doc);
@@ -911,15 +945,23 @@ impl Mesh {
                     .members()
                     .map(|(fp, record)| (fp.to_string(), record.profile.name.clone()))
                     .collect();
-                (World::new(devices), swapped, names, numbered)
+                let edges = doc.edge_settings().collect();
+                (World::new(devices), swapped, names, numbered, edges)
             }
-            None => (World::default(), HashSet::new(), HashMap::new(), Vec::new()),
+            None => (
+                World::default(),
+                HashSet::new(),
+                HashMap::new(),
+                Vec::new(),
+                HashMap::new(),
+            ),
         };
         let _ = self.wiring.input.send(InputMsg::World {
             world,
             swapped,
             names,
             numbered,
+            edges,
         });
     }
 

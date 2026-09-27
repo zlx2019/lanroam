@@ -914,3 +914,153 @@ async fn a_lost_link_is_reported() {
     })
     .await;
 }
+
+/// New input settings are saved and take effect: another pause hotkey
+/// pauses, the old one types; unusable settings are refused
+#[tokio::test]
+async fn input_settings_take_effect() {
+    use lanroam_input::config::{Chord, Hotkeys, Mods};
+    use lanroam_input::keymap::usage;
+
+    const KEY_P: u16 = 0x13;
+    let mut a = TestEngine::start();
+    let ctrl_shift = Mods {
+        ctrl: true,
+        shift: true,
+        ..Mods::default()
+    };
+    let settings = InputSettings {
+        hotkeys: Hotkeys {
+            pause: Chord::new(ctrl_shift, KEY_P),
+            ..Hotkeys::default()
+        },
+        ..InputSettings::default()
+    };
+    a.engine.set_input_settings(settings.clone()).await.unwrap();
+    assert_eq!(a.engine.input_settings(), settings);
+    assert_eq!(InputSettings::load(&a.dir.0), settings);
+
+    a.engine.input_status().await.unwrap();
+    a.input.key(usage::LEFT_CTRL, true);
+    a.input.key(usage::LEFT_SHIFT, true);
+    a.input.key(KEY_P, true);
+    a.expect_control(ControlEvent::Paused { on: true }).await;
+
+    let shift_only = InputSettings {
+        hotkeys: Hotkeys {
+            lock: Chord::new(
+                Mods {
+                    shift: true,
+                    ..Mods::default()
+                },
+                usage::KEY_L,
+            ),
+            ..Hotkeys::default()
+        },
+        ..InputSettings::default()
+    };
+    assert!(matches!(
+        a.engine.set_input_settings(shift_only).await,
+        Err(EngineError::InvalidSettings)
+    ));
+    assert_eq!(a.engine.input_settings(), settings);
+}
+
+/// A closed edge reaches the whole group, and the pointer no longer
+/// crosses it
+#[tokio::test]
+async fn edge_settings_reach_the_group() {
+    use lanroam_input::config::EdgeSettings;
+
+    let (a, mut b, _c) = row_of_three().await;
+    let closed = EdgeSettings {
+        crossable: false,
+        ..EdgeSettings::default()
+    };
+    a.engine.set_edge(&a.fp(), &b.fp(), closed).await.unwrap();
+    // Handled by a's input actor once this answers
+    a.engine.input_status().await.unwrap();
+    let decision = a.input.push((999, 500), 5.0, 0.0);
+    assert_eq!(decision.cursor, None, "crossed a closed edge");
+    let (a_fp, b_fp) = (a.fp(), b.fp());
+    b.expect("the edge", |event| match event {
+        EngineEvent::Group(Some(doc)) => (doc.edge(&a_fp, &b_fp) == closed).then_some(()),
+        _ => None,
+    })
+    .await;
+    assert!(matches!(
+        a.engine.set_edge(&a.fp(), &a.fp(), closed).await,
+        Err(EngineError::InvalidSettings)
+    ));
+}
+
+/// Recording takes the next combination from this device's keyboard, or
+/// from the controlling device's while controlled
+#[tokio::test]
+async fn recording_takes_either_keyboard() {
+    use lanroam_input::config::{Chord, Mods};
+    use lanroam_input::keymap::usage;
+
+    const SPACE: u16 = 0x2C;
+    let meta_space = Chord::new(
+        Mods {
+            meta: true,
+            ..Mods::default()
+        },
+        SPACE,
+    );
+    let (mut a, mut b, _c) = row_of_three().await;
+    let recorded = |event: &EngineEvent| match event {
+        EngineEvent::Recorded(chord) => Some(*chord),
+        _ => None,
+    };
+
+    a.engine.record(true).unwrap();
+    a.engine.input_status().await.unwrap();
+    a.input.key(usage::LEFT_META, true);
+    a.input.key(SPACE, true);
+    assert_eq!(a.expect("a recording", recorded).await, Some(meta_space));
+    a.input.key(SPACE, false);
+    a.input.key(usage::LEFT_META, false);
+
+    a.input.push((999, 500), 5.0, 0.0);
+    b.injected(&Injected::Move(Point::new(1, 500))).await;
+    b.engine.record(true).unwrap();
+    b.engine.input_status().await.unwrap();
+    a.input.key(usage::LEFT_META, true);
+    a.input.key(SPACE, true);
+    assert_eq!(b.expect("b recording", recorded).await, Some(meta_space));
+}
+
+/// A combination kept local, pressed while controlling another device,
+/// is pressed on this one: the other gets its modifier back up
+#[tokio::test]
+async fn kept_combinations_stay_here() {
+    use lanroam_input::config::{Chord, Mods};
+    use lanroam_input::keymap::usage;
+
+    const SPACE: u16 = 0x2C;
+    let (a, b, _c) = row_of_three().await;
+    let meta = Mods {
+        meta: true,
+        ..Mods::default()
+    };
+    let settings = InputSettings {
+        keep_local: vec![Chord::new(meta, SPACE)],
+        ..InputSettings::default()
+    };
+    a.engine.set_input_settings(settings).await.unwrap();
+    a.input.push((999, 500), 5.0, 0.0);
+    b.injected(&Injected::Move(Point::new(1, 500))).await;
+    a.input.key(usage::LEFT_META, true);
+    b.injected(&Injected::Key(usage::LEFT_META, true)).await;
+    a.input.key(SPACE, true);
+    b.injected(&Injected::Key(usage::LEFT_META, false)).await;
+    let here = a.injected(&Injected::Key(SPACE, true)).await;
+    assert!(
+        here.contains(&Injected::Key(usage::LEFT_META, true)),
+        "{here:?}"
+    );
+    let there = b.input.injected.lock().unwrap().clone();
+    assert!(!there.contains(&Injected::Key(SPACE, true)), "{there:?}");
+}

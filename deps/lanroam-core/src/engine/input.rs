@@ -17,6 +17,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, mpsc as std_mpsc};
 use std::time::{Duration, Instant};
 
+use lanroam_input::config::EdgeSettings;
 use lanroam_input::inject::{Injector, RemoteInput};
 use lanroam_input::platform::{self, EmitSink};
 use lanroam_input::switch::{self, Emit, Request, Switch};
@@ -26,6 +27,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use super::EngineEvent;
 use crate::protocol::{Control, Datagram, released};
+use crate::settings::InputSettings;
 
 /// Heartbeat period while another device is controlled
 const HEARTBEAT: Duration = Duration::from_secs(1);
@@ -222,9 +224,15 @@ pub(super) enum InputMsg {
         /// Every placed member, online or not, in reading order (the
         /// number hotkeys)
         numbered: Vec<String>,
+        /// Settings of edges between members
+        edges: HashMap<(String, String), EdgeSettings>,
     },
     /// Carry out the user's request at the next local event
     Request(Request),
+    /// The user's input settings changed
+    Settings(InputSettings),
+    /// Start or stop recording a key combination
+    Record(bool),
     /// Report whether capture and injection run
     Status(oneshot::Sender<InputStatus>),
     /// Start whichever of capture and injection does not run (the user
@@ -531,12 +539,21 @@ impl Input {
                 swapped,
                 names,
                 numbered,
+                edges,
             } => {
                 self.names = names;
                 let mut switch = switch::lock(&self.switch);
                 switch.set_world(world, swapped);
                 switch.set_numbering(numbered);
+                switch.set_edges(edges);
             }
+            InputMsg::Settings(settings) => {
+                let mut switch = switch::lock(&self.switch);
+                switch.set_hotkeys(settings.hotkeys);
+                switch.set_keep_local(settings.keep_local);
+                switch.set_switching(settings.switching);
+            }
+            InputMsg::Record(on) => switch::lock(&self.switch).record(on),
             InputMsg::Request(request) => match self.controller.clone() {
                 // The user works this device with its controller's keyboard
                 // and mouse: that is where pausing, locking and jumping act
@@ -610,6 +627,11 @@ impl Input {
                 },
             ),
             Emit::Wheel { device, dx, dy } => self.send(&device, Control::Wheel { dx, dy }),
+            // A combination kept local: pressed here in the real one's place
+            Emit::Local { usage, down } => self.replay(Op::Key(usage, down)),
+            Emit::Recorded(chord) => {
+                let _ = self.events.send(EngineEvent::Recorded(chord));
+            }
             Emit::Paused(on) => self.notify(ControlEvent::Paused { on }),
             Emit::Locked(on) => {
                 // The pointer is on the controlled device: tell it too, so
@@ -644,7 +666,19 @@ impl Input {
         match msg {
             Control::Enter { x, y } => self.on_enter(from, Point::new(x, y)),
             Control::Leave if controlled => self.free(from),
-            Control::Key { usage, down } if controlled => self.replay(Op::Key(usage, down)),
+            Control::Key { usage, down } if controlled => {
+                // Recording here with the controller's keyboard: the keys
+                // make the combination instead of typing
+                let mut switch = switch::lock(&self.switch);
+                if switch.is_recording() {
+                    if let Some(chord) = switch.record_key(usage, down) {
+                        let _ = self.events.send(EngineEvent::Recorded(chord));
+                    }
+                    return;
+                }
+                drop(switch);
+                self.replay(Op::Key(usage, down));
+            }
             Control::Button { button, down, x, y } if controlled => {
                 self.replay(Op::Button(button, down, Point::new(x, y)));
             }

@@ -19,6 +19,14 @@ pub mod usage {
     pub const DIGIT_9: u16 = 0x26;
     /// Escape
     pub const ESCAPE: u16 = 0x29;
+    /// F1 (F2 to F12 follow it)
+    pub const F1: u16 = 0x3A;
+    /// F12
+    pub const F12: u16 = 0x45;
+    /// F13 (F14 to F24 follow it)
+    pub const F13: u16 = 0x68;
+    /// F24
+    pub const F24: u16 = 0x73;
     /// Scroll Lock
     pub const SCROLL_LOCK: u16 = 0x47;
     /// Right arrow

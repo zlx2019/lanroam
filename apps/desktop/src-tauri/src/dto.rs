@@ -10,6 +10,7 @@ use lanroam_core::group::GroupDoc;
 use lanroam_core::group::join::JoinError;
 use lanroam_core::lan_kit::{Peer, PeerInfo};
 use lanroam_core::lanroam_input::Rect;
+use lanroam_core::lanroam_input::config::EdgeSettings;
 use lanroam_core::lanroam_input::world::Area;
 use lanroam_core::layout;
 use lanroam_core::protocol::{PROP_GROUP, join_denied};
@@ -64,6 +65,21 @@ pub struct GroupDto {
     pub id: String,
     /// Members: placed ones in reading order, then the rest by name
     pub devices: Vec<DeviceDto>,
+    /// Edges between members with settings of their own
+    pub edges: Vec<EdgeDto>,
+}
+
+/// The settings of the edge between two members
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EdgeDto {
+    /// One member's fingerprint
+    pub a: String,
+    /// The other's
+    pub b: String,
+    /// The settings
+    #[serde(flatten)]
+    pub settings: EdgeSettings,
 }
 
 /// A member of the group
@@ -182,9 +198,14 @@ impl GroupDto {
             (None, Some(_)) => std::cmp::Ordering::Greater,
             (None, None) => a.name.cmp(&b.name),
         });
+        let edges = doc
+            .edge_settings()
+            .map(|((a, b), settings)| EdgeDto { a, b, settings })
+            .collect();
         Self {
             id: doc.id.clone(),
             devices,
+            edges,
         }
     }
 }
@@ -415,6 +436,7 @@ impl From<EngineError> for CommandError {
             EngineError::NoGroup => "no_group",
             EngineError::NotAMember(_) => "not_a_member",
             EngineError::InvalidName => "invalid_name",
+            EngineError::InvalidSettings => "invalid_settings",
             EngineError::Layout(_) => "layout",
             EngineError::Stopped => "stopped",
             _ => "internal",

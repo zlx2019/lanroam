@@ -16,11 +16,6 @@
 
 use crate::geometry::{Desktop, Edge, Point, Rect};
 
-/// Width of the zone at each end of a display edge that never crosses, in
-/// canvas units: aiming for a screen corner must not throw the pointer to
-/// another device
-pub const CORNER_GUARD: f64 = 8.0;
-
 /// How far apart two edges may be and still touch, in canvas units; absorbs
 /// the rounding of scaled display sizes
 const TOUCH: f64 = 1.0;
@@ -183,24 +178,22 @@ impl World {
 
     /// Where a pointer pushed out of device `from` at `at` through `edge`
     /// lands: on the devices facing that side, at the same share of their
-    /// side as it left at, `inset` pixels inside. `None` at a wall or in a
-    /// corner guard
+    /// side as it left at, `inset` pixels inside. `None` at a wall. How
+    /// close to a corner it may cross is the caller's to decide (see
+    /// [`Self::corner_distance`])
     ///
     /// `at` must be on `from`'s outer boundary at `edge` (see
     /// [`Desktop::on_edge`]).
     pub fn cross(&self, from: &str, at: Point, edge: Edge, inset: i32) -> Option<(&Device, Point)> {
         let source = self.device(from)?;
         let display = source.desktop.display_at(at)?;
-        let (line, lo, hi) = source.area(display).side(edge);
+        let (line, _, _) = source.area(display).side(edge);
         // The pointer's pixel centre, projected on the canvas
         let (cx, cy) = source.to_canvas(f64::from(at.x) + 0.5, f64::from(at.y) + 0.5);
         let along = match edge {
             Edge::Left | Edge::Right => cy,
             Edge::Top | Edge::Bottom => cx,
         };
-        if along < lo + CORNER_GUARD || along > hi - CORNER_GUARD {
-            return None;
-        }
         let from_span = span_on(source, edge, line)?;
         let facing = edge.opposite();
         let targets: Vec<&Device> = self
@@ -230,6 +223,21 @@ impl World {
             .min_by(|x, y| x.2.total_cmp(&y.2))
             .map(|(d, e, _)| (d, e))?;
         Some((target, landing(target, entry, edge, mapped, inset)))
+    }
+
+    /// How far `at`, on device `from`'s side at `edge`, is from the nearer
+    /// end of its display's side, in canvas units: the corner guard keeps
+    /// the pointer from crossing that close to a screen corner
+    pub fn corner_distance(&self, from: &str, at: Point, edge: Edge) -> Option<f64> {
+        let source = self.device(from)?;
+        let display = source.desktop.display_at(at)?;
+        let (_, lo, hi) = source.area(display).side(edge);
+        let (cx, cy) = source.to_canvas(f64::from(at.x) + 0.5, f64::from(at.y) + 0.5);
+        let along = match edge {
+            Edge::Left | Edge::Right => cy,
+            Edge::Top | Edge::Bottom => cx,
+        };
+        Some((along - lo).min(hi - along))
     }
 
     /// The nearest device in `direction` from device `from`: devices lined
@@ -397,7 +405,8 @@ mod tests {
         assert_eq!(low, Point::new(1, 1609));
     }
 
-    /// Only a side nobody faces is a wall, and corners never cross
+    /// Only a side nobody faces is a wall; corners cross too, and how
+    /// close to one the pointer is decides the corner guard
     #[test]
     fn walls_and_corners() {
         let world = mac_and_pc();
@@ -418,18 +427,19 @@ mod tests {
                 .cross("pc", Point::new(500, 1619), Edge::Bottom, 1)
                 .is_none()
         );
-        // Corner guards at both ends of a display side
+        // Near both ends of a display side (canvas units: the PC's pixels
+        // are scaled)
         assert!(
             world
                 .cross("mac", Point::new(2559, 1435), Edge::Right, 1)
-                .is_none()
-        );
-        assert!(world.cross("pc", Point::new(0, 5), Edge::Left, 1).is_none());
-        assert!(
-            world
-                .cross("pc", Point::new(0, 20), Edge::Left, 1)
                 .is_some()
         );
+        let near = world.corner_distance("mac", Point::new(2559, 1435), Edge::Right);
+        assert_eq!(near, Some(4.5));
+        let top = world.corner_distance("pc", Point::new(0, 5), Edge::Left);
+        assert!(top.is_some_and(|d| d < 8.0), "{top:?}");
+        let lower = world.corner_distance("pc", Point::new(0, 20), Edge::Left);
+        assert!(lower.is_some_and(|d| d > 8.0), "{lower:?}");
         // Devices on the same line that do not overlap are not neighbours
         let apart = World::new([
             single("a", (0, 0), 1000, 1000, 1.0),

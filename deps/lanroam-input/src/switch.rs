@@ -12,7 +12,8 @@
 //! when control changes hands in the middle of a press.
 //!
 //! Hotkeys are recognised here too, from the physical keys, and never
-//! reach any device (Mac: Option for Alt):
+//! reach any device. By default (Mac: Option for Alt; see
+//! [`Hotkeys`] for changing them):
 //!
 //! | keys | action |
 //! |---|---|
@@ -21,12 +22,23 @@
 //! | Ctrl+Alt+L, Scroll Lock | lock the pointer to its device (toggle) |
 //! | Ctrl+Alt+Esc | come home and pause crossing; again to resume |
 //!
+//! Crossing an edge follows the user's [`Switching`] and the settings of
+//! that edge ([`EdgeSettings`]): it may be closed, guarded near corners,
+//! or need a modifier held or a dwell against it. Key combinations the
+//! user keeps local ([`Switch::set_keep_local`]) are pressed on this machine
+//! even while another device is controlled.
+//!
 //! The switch runs inside the capture callback, synchronously: it must
 //! decide before the OS delivers the event, and never blocks.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::fmt;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 
+use crate::config::{
+    Chord, EdgeSettings, Hotkeys, Mods, SwitchMode, Switching, edge_key, is_modifier,
+};
 use crate::event::{InputEvent, MouseButton};
 use crate::geometry::{Edge, Point, Rect, Step};
 use crate::keymap::{self, usage};
@@ -127,6 +139,17 @@ pub enum Emit {
     Paused(bool),
     /// The pointer was locked to its device (true) or unlocked
     Locked(bool),
+    /// Press or release a key on this machine itself: a combination kept
+    /// local, whose real event the capture swallowed
+    Local {
+        /// USB HID usage
+        usage: u16,
+        /// Pressed (true) or released
+        down: bool,
+    },
+    /// A key combination was recorded ([`Switch::record`]); `None` when
+    /// the user gave up (Esc alone)
+    Recorded(Option<Chord>),
 }
 
 /// A hotkey's action
@@ -186,6 +209,48 @@ enum Owner {
     Remote(String),
     /// Consumed by Lanroam itself (a hotkey)
     Dropped,
+    /// Pressed on this machine by Lanroam in its place (a combination kept
+    /// local); the release follows the same way
+    Replayed,
+}
+
+/// Where the time comes from; tests move it by hand
+#[derive(Clone)]
+pub struct Clock(Arc<dyn Fn() -> Instant + Send + Sync>);
+
+impl Clock {
+    /// A clock reading `now`
+    pub fn new(now: impl Fn() -> Instant + Send + Sync + 'static) -> Self {
+        Self(Arc::new(now))
+    }
+
+    /// The time
+    fn now(&self) -> Instant {
+        (self.0)()
+    }
+}
+
+impl Default for Clock {
+    fn default() -> Self {
+        Self::new(Instant::now)
+    }
+}
+
+impl fmt::Debug for Clock {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Clock")
+    }
+}
+
+/// The pointer pushing against an edge that crosses after a dwell
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Dwell {
+    /// The device it is on
+    from: String,
+    /// The edge
+    edge: Edge,
+    /// Since when
+    since: Instant,
 }
 
 /// The virtual cursor on another device
@@ -246,6 +311,21 @@ pub struct Switch {
     controlled: bool,
     /// Local pointer travel since control was taken
     local_travel: f64,
+    /// The hotkeys
+    hotkeys: Hotkeys,
+    /// Key combinations that stay on this machine while another device is
+    /// controlled
+    keep_local: Vec<Chord>,
+    /// How the pointer crosses edges
+    switching: Switching,
+    /// Settings of single edges, by [`edge_key`]
+    edges: HashMap<(String, String), EdgeSettings>,
+    /// The pointer pushing against an edge in dwell mode
+    dwell: Option<Dwell>,
+    /// The time
+    clock: Clock,
+    /// Recording a key combination: the modifiers held meanwhile
+    recorder: Option<HashSet<u16>>,
 }
 
 impl Switch {
@@ -270,6 +350,13 @@ impl Switch {
             swapped: HashSet::new(),
             controlled: false,
             local_travel: 0.0,
+            hotkeys: Hotkeys::default(),
+            keep_local: Vec::new(),
+            switching: Switching::default(),
+            edges: HashMap::new(),
+            dwell: None,
+            clock: Clock::default(),
+            recorder: None,
         }
     }
 
@@ -312,6 +399,75 @@ impl Switch {
     /// Set the devices the number hotkeys go to, in order
     pub fn set_numbering(&mut self, numbered: Vec<String>) {
         self.numbered = numbered;
+    }
+
+    /// Set the hotkeys
+    pub fn set_hotkeys(&mut self, hotkeys: Hotkeys) {
+        self.hotkeys = hotkeys;
+    }
+
+    /// Set the key combinations that stay on this machine while another
+    /// device is controlled
+    pub fn set_keep_local(&mut self, chords: Vec<Chord>) {
+        self.keep_local = chords;
+    }
+
+    /// Set how the pointer crosses edges
+    pub fn set_switching(&mut self, switching: Switching) {
+        self.switching = switching;
+        self.dwell = None;
+    }
+
+    /// Set the settings of single edges, by [`edge_key`]
+    pub fn set_edges(&mut self, edges: HashMap<(String, String), EdgeSettings>) {
+        self.edges = edges;
+    }
+
+    /// Replace the clock (tests)
+    pub fn set_clock(&mut self, clock: Clock) {
+        self.clock = clock;
+    }
+
+    /// Start recording a key combination, or stop: the next key pressed
+    /// with the modifiers held is reported ([`Emit::Recorded`]) instead of
+    /// going anywhere, and hotkeys wait meanwhile
+    pub fn record(&mut self, on: bool) {
+        self.recorder = on.then(|| {
+            self.keys
+                .keys()
+                .copied()
+                .filter(|key| is_modifier(*key))
+                .collect()
+        });
+    }
+
+    /// Whether a key combination is being recorded
+    pub fn is_recording(&self) -> bool {
+        self.recorder.is_some()
+    }
+
+    /// Record with a key that did not come through the capture (from the
+    /// device controlling this one); the outcome once a combination is
+    /// complete, as [`Emit::Recorded`] carries it
+    pub fn record_key(&mut self, key: u16, down: bool) -> Option<Option<Chord>> {
+        let held = self.recorder.as_mut()?;
+        if is_modifier(key) {
+            if down {
+                held.insert(key);
+            } else {
+                held.remove(&key);
+            }
+            return None;
+        }
+        if !down {
+            return None;
+        }
+        let mods = Mods::held(held.iter().copied());
+        self.recorder = None;
+        if key == usage::ESCAPE && mods == Mods::default() {
+            return Some(None);
+        }
+        Some(Some(Chord::new(mods, key)))
     }
 
     /// Hand control back to this machine at the next event, if `device`
@@ -411,17 +567,23 @@ impl Switch {
         let local_scale = self.world.device(&self.local).map_or(1.0, |d| d.scale);
         let k = target.scale / local_scale;
         let (x, y) = match target.desktop.step((remote.x, remote.y), dx * k, dy * k) {
-            Step::Inside(x, y) => (x, y),
+            Step::Inside(x, y) => {
+                self.dwell = None;
+                (x, y)
+            }
             // A held button keeps the pointer on the device: dragging across
             // devices is not supported yet
             Step::Blocked { x, y, .. } if self.holds_remote_button() || self.locked => (x, y),
             Step::Blocked { x, y, stop, edges } => {
-                let next = edges.into_iter().find_map(|edge| {
-                    self.world
-                        .cross(&remote.device, stop, edge, LANDING_INSET)
-                        .map(|(device, entry)| (device.key.clone(), entry))
-                });
-                match next {
+                let candidates = edges
+                    .into_iter()
+                    .filter_map(|edge| {
+                        self.world
+                            .cross(&remote.device, stop, edge, LANDING_INSET)
+                            .map(|(device, entry)| (edge, device.key.clone(), entry))
+                    })
+                    .collect();
+                match self.pass(&remote.device, stop, candidates) {
                     Some((device, entry)) if device == self.local => {
                         *cursor = Some(self.come_home(Landing::At(entry), out));
                         return Verdict::Swallow;
@@ -432,7 +594,8 @@ impl Switch {
                         self.enter(device, entry, out);
                         return Verdict::Swallow;
                     }
-                    // A wall: slide along it
+                    // A wall, or an edge that does not let it through yet:
+                    // slide along it
                     None => (x, y),
                 }
             }
@@ -451,17 +614,95 @@ impl Switch {
 
     /// Where this motion takes the local pointer when it pushes out of this
     /// machine: (device, entry point, departure point)
-    fn crossing(&self, at: Point, dx: f64, dy: f64) -> Option<(String, Point, Point)> {
+    fn crossing(&mut self, at: Point, dx: f64, dy: f64) -> Option<(String, Point, Point)> {
         if self.paused || self.locked || self.buttons.contains(&Some(Owner::Local)) {
+            self.dwell = None;
             return None;
         }
         let local = self.world.device(&self.local)?;
         let at = local.desktop.clamp(at);
-        Edge::ALL
+        let candidates = Edge::ALL
             .into_iter()
             .filter(|edge| edge.pushed_by(dx, dy) && local.desktop.on_edge(at, *edge))
-            .find_map(|edge| self.world.cross(&self.local, at, edge, LANDING_INSET))
-            .map(|(device, entry)| (device.key.clone(), entry, at))
+            .filter_map(|edge| {
+                self.world
+                    .cross(&self.local, at, edge, LANDING_INSET)
+                    .map(|(device, entry)| (edge, device.key.clone(), entry))
+            })
+            .collect();
+        let from = self.local.clone();
+        self.pass(&from, at, candidates)
+            .map(|(device, entry)| (device, entry, at))
+    }
+
+    /// The first of the crossings the pointer pushed at `at` on device
+    /// `from` could take, (edge, device, entry), that its edge lets through
+    /// now (see [`Self::may_cross`]); with none to try, a dwell starts over
+    fn pass(
+        &mut self,
+        from: &str,
+        at: Point,
+        candidates: Vec<(Edge, String, Point)>,
+    ) -> Option<(String, Point)> {
+        if candidates.is_empty() {
+            self.dwell = None;
+            return None;
+        }
+        for (edge, device, entry) in candidates {
+            if self.may_cross(from, &device, at, edge) {
+                self.dwell = None;
+                return Some((device, entry));
+            }
+        }
+        None
+    }
+
+    /// Whether the edge between `from` and `to` lets the pointer through at
+    /// `at` now: it is open, `at` is clear of its corner guard, and its
+    /// switching mode agrees (a modifier held, or a dwell long enough,
+    /// which the first push starts)
+    fn may_cross(&mut self, from: &str, to: &str, at: Point, edge: Edge) -> bool {
+        let settings = self
+            .edges
+            .get(&edge_key(from, to))
+            .copied()
+            .unwrap_or_default();
+        if !settings.crossable {
+            return false;
+        }
+        let corner = f64::from(settings.corner_px.unwrap_or(self.switching.corner_px));
+        if self
+            .world
+            .corner_distance(from, at, edge)
+            .is_some_and(|distance| distance < corner)
+        {
+            return false;
+        }
+        match settings.mode.unwrap_or(self.switching.mode) {
+            SwitchMode::Direct => true,
+            SwitchMode::Modifier => self.switching.hold.held_in(self.mods()),
+            SwitchMode::Dwell => self.dwelt(from, edge),
+        }
+    }
+
+    /// Whether the pointer has pushed against `edge` of `from` for the
+    /// dwell time; the first push starts counting
+    fn dwelt(&mut self, from: &str, edge: Edge) -> bool {
+        let now = self.clock.now();
+        match &self.dwell {
+            Some(dwell) if dwell.from == from && dwell.edge == edge => {
+                let wait = Duration::from_millis(u64::from(self.switching.dwell_ms));
+                now.duration_since(dwell.since) >= wait
+            }
+            _ => {
+                self.dwell = Some(Dwell {
+                    from: from.to_string(),
+                    edge,
+                    since: now,
+                });
+                false
+            }
+        }
     }
 
     /// Take control of `device` with its cursor at `at`
@@ -541,24 +782,38 @@ impl Switch {
         cursor: &mut Option<CursorAction>,
     ) -> Verdict {
         tracing::trace!(key, down, remote = self.remote.is_some(), "key");
+        // A press completing a recording goes nowhere, nor its release
+        if let Some(recorded) = self.record_key(key, down) {
+            out.push(Emit::Recorded(recorded));
+            self.keys.insert(key, (Owner::Dropped, key));
+            return Verdict::Swallow;
+        }
         if !down {
             let (owner, sent) = match self.keys.remove(&key) {
                 Some((owner, sent)) => (Some(owner), sent),
                 None => (None, key),
             };
+            if owner == Some(Owner::Replayed) {
+                out.push(Emit::Local { usage: sent, down });
+                return Verdict::Swallow;
+            }
             return self.route(owner, out, |device| Emit::Key {
                 device,
                 usage: sent,
                 down,
             });
         }
+        let fresh = !self.keys.contains_key(&key);
         // A fresh press may complete a hotkey; its release is dropped too
-        if !self.keys.contains_key(&key)
+        if fresh
             && let Some(hotkey) = self.hotkey_for(key)
             && self.run_hotkey(hotkey, out, cursor)
         {
             self.keys.insert(key, (Owner::Dropped, key));
             return Verdict::Swallow;
+        }
+        if fresh && self.remote.is_some() && self.keeps_local(key) {
+            return self.keep_here(key, out);
         }
         let (owner, sent) = match self.keys.get(&key) {
             Some(held) => held.clone(),
@@ -574,6 +829,10 @@ impl Switch {
                 (side, sent)
             }
         };
+        if owner == Owner::Replayed {
+            out.push(Emit::Local { usage: sent, down });
+            return Verdict::Swallow;
+        }
         // Autorepeat of a key held down since before the crossing: the local
         // screen is not being looked at, so it must not type there
         if owner == Owner::Local && self.remote.is_some() {
@@ -586,34 +845,91 @@ impl Switch {
         })
     }
 
-    /// The hotkey `key` completes with the keys held now, if any
-    ///
-    /// Control plus Alt (Option) and a key; Scroll Lock alone. Digits,
-    /// arrows and L need the left Alt: Windows reports AltGr as Control +
-    /// right Alt, and AltGr with those keys types characters on many
-    /// layouts.
+    /// The modifiers held now
+    fn mods(&self) -> Mods {
+        Mods::held(self.keys.keys().copied())
+    }
+
+    /// The hotkey `key` completes with the keys held now, if any: exactly
+    /// its modifiers, with the left Alt where AltGr could be meant (see
+    /// [`Chord::needs_left_alt`]); Scroll Lock alone locks too
     fn hotkey_for(&self, key: u16) -> Option<Hotkey> {
         if key == usage::SCROLL_LOCK {
             return Some(Hotkey::Lock);
         }
-        let held = |k: u16| self.keys.contains_key(&k);
-        if !held(usage::LEFT_CTRL) && !held(usage::RIGHT_CTRL) {
-            return None;
+        let mods = self.mods();
+        let fits = |want: Mods| {
+            mods == want
+                && (!Chord::needs_left_alt(mods, key) || self.keys.contains_key(&usage::LEFT_ALT))
+        };
+        let hotkeys = &self.hotkeys;
+        if key == hotkeys.pause.key && fits(hotkeys.pause.mods) {
+            return Some(Hotkey::Pause);
         }
-        let left_alt = held(usage::LEFT_ALT);
-        match key {
-            usage::ESCAPE if left_alt || held(usage::RIGHT_ALT) => Some(Hotkey::Pause),
-            _ if !left_alt => None,
-            usage::KEY_L => Some(Hotkey::Lock),
-            usage::DIGIT_1..=usage::DIGIT_9 => {
-                Some(Hotkey::Number(usize::from(key - usage::DIGIT_1)))
+        if key == hotkeys.lock.key && fits(hotkeys.lock.mods) {
+            return Some(Hotkey::Lock);
+        }
+        let toward = match key {
+            usage::ARROW_RIGHT => Edge::Right,
+            usage::ARROW_LEFT => Edge::Left,
+            usage::ARROW_DOWN => Edge::Bottom,
+            usage::ARROW_UP => Edge::Top,
+            usage::DIGIT_1..=usage::DIGIT_9 if fits(hotkeys.jump) => {
+                return Some(Hotkey::Number(usize::from(key - usage::DIGIT_1)));
             }
-            usage::ARROW_RIGHT => Some(Hotkey::Toward(Edge::Right)),
-            usage::ARROW_LEFT => Some(Hotkey::Toward(Edge::Left)),
-            usage::ARROW_DOWN => Some(Hotkey::Toward(Edge::Bottom)),
-            usage::ARROW_UP => Some(Hotkey::Toward(Edge::Top)),
-            _ => None,
+            _ => return None,
+        };
+        fits(hotkeys.step).then_some(Hotkey::Toward(toward))
+    }
+
+    /// Whether the press of `key` with the modifiers held now is a
+    /// combination kept on this machine
+    fn keeps_local(&self, key: u16) -> bool {
+        let chord = Chord::new(self.mods(), key);
+        self.keep_local.contains(&chord)
+    }
+
+    /// Press a combination kept local here instead of on the device
+    /// controlled: that device gets the modifiers it holds lifted, and this
+    /// machine gets them pressed, then the key
+    fn keep_here(&mut self, key: u16, out: &mut Vec<Emit>) -> Verdict {
+        let mut modifiers: Vec<u16> = self
+            .keys
+            .keys()
+            .copied()
+            .filter(|k| is_modifier(*k))
+            .collect();
+        modifiers.sort_unstable();
+        for modifier in modifiers {
+            let Some((owner, sent)) = self.keys.get(&modifier).cloned() else {
+                continue;
+            };
+            match owner {
+                // Pressed here before the crossing: this machine has it
+                Owner::Local | Owner::Replayed => continue,
+                Owner::Remote(device) => {
+                    if self.target() == Some(device.as_str()) {
+                        out.push(Emit::Key {
+                            device,
+                            usage: sent,
+                            down: false,
+                        });
+                    }
+                }
+                Owner::Dropped => {}
+            }
+            out.push(Emit::Local {
+                usage: modifier,
+                down: true,
+            });
+            self.keys.insert(modifier, (Owner::Replayed, modifier));
         }
+        out.push(Emit::Local {
+            usage: key,
+            down: true,
+        });
+        self.keys.insert(key, (Owner::Replayed, key));
+        Verdict::Swallow
     }
 
     /// Carry out a hotkey; false if it has nothing to act on (no such
@@ -769,7 +1085,7 @@ impl Switch {
                 out.push(emit(device));
                 Verdict::Swallow
             }
-            (Some(Owner::Remote(_) | Owner::Dropped), _) => Verdict::Swallow,
+            (Some(Owner::Remote(_) | Owner::Dropped | Owner::Replayed), _) => Verdict::Swallow,
             // Pressed before the capture started
             (None, Some(_)) => Verdict::Swallow,
             (None, None) => Verdict::Pass,
@@ -1321,5 +1637,208 @@ mod tests {
                 dy: -120
             }]
         );
+    }
+
+    /// Hotkeys follow the settings and need exactly their modifiers; Scroll
+    /// Lock locks whatever they are
+    #[test]
+    fn custom_hotkeys() {
+        const KEY_P: u16 = 0x13;
+        let mut sw = switch();
+        // Shift on top is not the pause hotkey
+        feed(&mut sw, key(usage::LEFT_SHIFT, true));
+        let (d, out) = chord(&mut sw, usage::LEFT_ALT, usage::ESCAPE);
+        assert_eq!((d.verdict, out.len()), (Verdict::Pass, 0));
+        feed(&mut sw, key(usage::LEFT_SHIFT, false));
+
+        let meta_shift = Mods {
+            meta: true,
+            shift: true,
+            ..Mods::default()
+        };
+        sw.set_hotkeys(Hotkeys {
+            pause: Chord::new(meta_shift, KEY_P),
+            ..Hotkeys::default()
+        });
+        let (d, out) = chord(&mut sw, usage::LEFT_ALT, usage::ESCAPE);
+        assert_eq!((d.verdict, out.len()), (Verdict::Pass, 0));
+        feed(&mut sw, key(usage::LEFT_META, true));
+        feed(&mut sw, key(usage::RIGHT_SHIFT, true));
+        let (d, out) = feed(&mut sw, key(KEY_P, true));
+        assert_eq!(
+            (d.verdict, out),
+            (Verdict::Swallow, vec![Emit::Paused(true)])
+        );
+        // Its release is dropped too
+        assert_eq!(feed(&mut sw, key(KEY_P, false)).0.verdict, Verdict::Swallow);
+        feed(&mut sw, key(usage::RIGHT_SHIFT, false));
+        feed(&mut sw, key(usage::LEFT_META, false));
+
+        let (_, out) = feed(&mut sw, key(usage::SCROLL_LOCK, true));
+        assert_eq!(out, [Emit::Locked(true)]);
+    }
+
+    /// Recording reports the next combination instead of letting it
+    /// through, a hotkey's included; Esc alone gives up; keys from the
+    /// device controlling this one record too
+    #[test]
+    fn recording() {
+        const SPACE: u16 = 0x2C;
+        let mut sw = switch();
+        sw.record(true);
+        assert!(sw.is_recording());
+        let (d, out) = chord(&mut sw, usage::LEFT_ALT, usage::KEY_L);
+        assert_eq!(d.verdict, Verdict::Swallow);
+        assert_eq!(
+            out,
+            [Emit::Recorded(Some(Chord::new(
+                Mods::CTRL_ALT,
+                usage::KEY_L
+            )))]
+        );
+        assert!(!sw.is_recording());
+
+        sw.record(true);
+        let (_, out) = feed(&mut sw, key(usage::ESCAPE, true));
+        assert_eq!(out, [Emit::Recorded(None)]);
+
+        sw.record(true);
+        assert_eq!(sw.record_key(usage::LEFT_META, true), None);
+        let meta = Mods {
+            meta: true,
+            ..Mods::default()
+        };
+        assert_eq!(
+            sw.record_key(SPACE, true),
+            Some(Some(Chord::new(meta, SPACE)))
+        );
+    }
+
+    /// A combination kept local, pressed while controlling the PC: the PC
+    /// gets its modifier lifted, this machine the whole combination
+    #[test]
+    fn keeps_combinations_local() {
+        const SPACE: u16 = 0x2C;
+        let mut sw = switch();
+        let meta = Mods {
+            meta: true,
+            ..Mods::default()
+        };
+        sw.set_keep_local(vec![Chord::new(meta, SPACE)]);
+        cross_to_pc(&mut sw, 400);
+        let pc_key = |usage, down| Emit::Key {
+            device: "pc".into(),
+            usage,
+            down,
+        };
+        let (_, out) = feed(&mut sw, key(usage::LEFT_META, true));
+        assert_eq!(out, [pc_key(usage::LEFT_META, true)]);
+        let (d, out) = feed(&mut sw, key(SPACE, true));
+        assert_eq!(d.verdict, Verdict::Swallow);
+        assert_eq!(
+            out,
+            [
+                pc_key(usage::LEFT_META, false),
+                Emit::Local {
+                    usage: usage::LEFT_META,
+                    down: true
+                },
+                Emit::Local {
+                    usage: SPACE,
+                    down: true
+                },
+            ]
+        );
+        let (_, out) = feed(&mut sw, key(SPACE, false));
+        assert_eq!(
+            out,
+            [Emit::Local {
+                usage: SPACE,
+                down: false
+            }]
+        );
+        let (_, out) = feed(&mut sw, key(usage::LEFT_META, false));
+        assert_eq!(
+            out,
+            [Emit::Local {
+                usage: usage::LEFT_META,
+                down: false
+            }]
+        );
+        // Anything else still goes to the PC
+        let (_, out) = feed(&mut sw, key(0x04, true));
+        assert_eq!(out, [pc_key(0x04, true)]);
+    }
+
+    /// A closed edge is a wall; the corner guard follows the settings, an
+    /// edge's own first
+    #[test]
+    fn edge_settings() {
+        let crosses = |sw: &mut Switch, y| !cross_to_pc(sw, y).1.is_empty();
+        let mut sw = switch();
+        // 8 px by default: 4.5 from the top corner does not cross
+        assert!(!crosses(&mut sw, 4));
+        sw.set_switching(Switching {
+            corner_px: 0,
+            ..Switching::default()
+        });
+        assert!(crosses(&mut sw, 4));
+
+        let mut sw = switch();
+        let closed = EdgeSettings {
+            crossable: false,
+            ..EdgeSettings::default()
+        };
+        sw.set_edges(HashMap::from([(edge_key("pc", "mac"), closed)]));
+        assert!(!crosses(&mut sw, 400));
+        let unguarded = EdgeSettings {
+            corner_px: Some(0),
+            ..EdgeSettings::default()
+        };
+        sw.set_edges(HashMap::from([(edge_key("mac", "pc"), unguarded)]));
+        assert!(crosses(&mut sw, 4));
+    }
+
+    /// In modifier mode the pointer crosses only with the modifier held,
+    /// which stays on this machine
+    #[test]
+    fn modifier_mode() {
+        let mut sw = switch();
+        sw.set_switching(Switching {
+            mode: SwitchMode::Modifier,
+            ..Switching::default()
+        });
+        assert!(cross_to_pc(&mut sw, 400).1.is_empty());
+        feed(&mut sw, key(usage::RIGHT_SHIFT, true));
+        let (_, out) = cross_to_pc(&mut sw, 400);
+        assert!(matches!(&out[..], [Emit::Enter { device, .. }] if device == "pc"));
+        let (d, out) = feed(&mut sw, key(usage::RIGHT_SHIFT, false));
+        assert_eq!((d.verdict, out.len()), (Verdict::Pass, 0));
+    }
+
+    /// In dwell mode the pointer crosses once it has pushed against the
+    /// edge long enough; leaving the edge starts over
+    #[test]
+    fn dwell_mode() {
+        let mut sw = switch();
+        let start = Instant::now();
+        let elapsed = Arc::new(Mutex::new(Duration::ZERO));
+        let clock = Arc::clone(&elapsed);
+        sw.set_clock(Clock::new(move || start + *clock.lock().unwrap()));
+        sw.set_switching(Switching {
+            mode: SwitchMode::Dwell,
+            ..Switching::default()
+        });
+        let wait = |ms| *elapsed.lock().unwrap() += Duration::from_millis(ms);
+        assert!(cross_to_pc(&mut sw, 400).1.is_empty());
+        wait(200);
+        assert!(cross_to_pc(&mut sw, 400).1.is_empty());
+        feed(&mut sw, motion(1500, 400, -5.0, 0.0));
+        wait(200);
+        assert!(cross_to_pc(&mut sw, 400).1.is_empty());
+        wait(299);
+        assert!(cross_to_pc(&mut sw, 400).1.is_empty());
+        wait(1);
+        assert!(!cross_to_pc(&mut sw, 400).1.is_empty());
     }
 }

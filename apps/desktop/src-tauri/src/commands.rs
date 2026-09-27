@@ -2,10 +2,13 @@
 
 use std::sync::atomic::Ordering;
 
+use std::collections::BTreeMap;
+
 use lanroam_core::engine::{Request, Spot};
 use lanroam_core::group::join::normalize_pin;
-use lanroam_core::lanroam_input::Point;
-use lanroam_core::lanroam_input::platform;
+use lanroam_core::lanroam_input::config::EdgeSettings;
+use lanroam_core::lanroam_input::{Point, keymap, platform};
+use lanroam_core::settings::InputSettings;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_autostart::ManagerExt as _;
@@ -324,6 +327,44 @@ pub async fn save_settings(
     // The tray speaks the language just chosen
     bridge::refresh(&app).await;
     Ok(())
+}
+
+/// This device's input settings: hotkeys, keys kept local, switching
+#[tauri::command]
+pub fn get_input_settings(state: State<'_, AppState>) -> InputSettings {
+    state.engine.input_settings()
+}
+
+/// Use and save new input settings
+#[tauri::command]
+pub async fn save_input_settings(state: State<'_, AppState>, settings: InputSettings) -> Reply<()> {
+    Ok(state.engine.set_input_settings(settings).await?)
+}
+
+/// Start recording a key combination, or stop; it comes as the `recorded`
+/// event
+#[tauri::command]
+pub fn record_keys(state: State<'_, AppState>, on: bool) -> Reply<()> {
+    Ok(state.engine.record(on)?)
+}
+
+/// Set the edge between two members, for the whole group
+#[tauri::command]
+pub async fn set_edge(
+    state: State<'_, AppState>,
+    a: String,
+    b: String,
+    settings: EdgeSettings,
+) -> Reply<()> {
+    Ok(state.engine.set_edge(&a, &b, settings).await?)
+}
+
+/// The keys' names by HID usage (W3C `code` values), to show combinations
+#[tauri::command]
+pub fn key_names() -> BTreeMap<u16, &'static str> {
+    (0..=0xFF)
+        .filter_map(|usage| keymap::name(usage).map(|name| (usage, name)))
+        .collect()
 }
 
 /// Bring up the main window

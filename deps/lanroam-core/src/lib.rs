@@ -14,6 +14,7 @@
 //! ├─ diag      ─ round-trip measurement on both paths            (M0)
 //! ├─ group     ─ desk group: membership document, PIN joins      (M2)
 //! ├─ layout    ─ where members' desktops sit on the shared canvas (M2)
+//! ├─ settings  ─ this device's input settings (input.json)      (M3)
 //! ├─ clipboard ─ clipboard hand-off on entering a device          (M4)
 //! └─ dnd       ─ cross-device file drag and drop                  (M5)
 //! ```
@@ -32,6 +33,7 @@ pub mod group;
 pub mod layout;
 pub mod node;
 pub mod protocol;
+pub mod settings;
 pub mod transport;
 
 #[cfg(test)]

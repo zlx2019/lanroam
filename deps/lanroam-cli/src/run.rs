@@ -458,6 +458,8 @@ fn print_event(event: &EngineEvent, seen: &mut Option<Arc<GroupDoc>>) {
         EngineEvent::Identify => {
             println!("identify a member asked every device to show its number")
         }
+        // Only the app records key combinations (its settings)
+        EngineEvent::Recorded(_) => {}
         EngineEvent::Group(Some(doc)) => {
             let names = |doc: &GroupDoc| -> Vec<String> {
                 doc.members()

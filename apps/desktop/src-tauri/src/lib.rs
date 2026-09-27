@@ -88,6 +88,11 @@ pub fn run() {
             commands::relaunch,
             commands::get_settings,
             commands::save_settings,
+            commands::get_input_settings,
+            commands::save_input_settings,
+            commands::record_keys,
+            commands::set_edge,
+            commands::key_names,
             commands::show_main_window,
             commands::quit_app,
         ])

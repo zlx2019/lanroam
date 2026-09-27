@@ -3,6 +3,8 @@
 //! ```text
 //! ┌─ keymap   ─ physical keys as USB HID usages, with the macOS and
 //! │             Windows codes of each
+//! ├─ config   ─ what the user sets: hotkeys, keys kept local, switching
+//! │             modes, settings of single edges
 //! ├─ geometry ─ displays, desktop edges, where the pointer lands when it
 //! │             crosses from one desktop to another
 //! ├─ world    ─ every device's desktop on one shared canvas: crossing
@@ -21,6 +23,7 @@
 
 use thiserror::Error;
 
+pub mod config;
 pub mod event;
 pub mod geometry;
 pub mod inject;

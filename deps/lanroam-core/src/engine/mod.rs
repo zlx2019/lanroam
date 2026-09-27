@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 
 use lan_kit::identity::{self, IdentityError};
 use lan_kit::{Peer, PeerEvent, PeerInfo};
+use lanroam_input::config::{Chord, EdgeSettings};
 use lanroam_input::{Edge, Point};
 use thiserror::Error;
 use tokio::sync::{Notify, mpsc, oneshot, watch};
@@ -35,6 +36,7 @@ use crate::group::{GroupDoc, GroupStore, Standing};
 use crate::layout::LayoutError;
 use crate::node::{Node, NodeConfig, NodeError};
 use crate::protocol::{Purpose, join_denied, reason_code};
+use crate::settings::InputSettings;
 use crate::transport::{Incoming, Link, Transport, TransportError, closed_because};
 use input::{Input, InputMsg};
 use mesh::{Mesh, Msg, Wiring};
@@ -79,6 +81,13 @@ pub enum EngineError {
     /// A device name must not be blank or too long
     #[error("a device name needs 1 to {MAX_NAME_CHARS} characters")]
     InvalidName,
+    /// Settings with a hotkey that could take over typing, or a number out
+    /// of range
+    #[error("these settings cannot be used")]
+    InvalidSettings,
+    /// The input settings could not be saved
+    #[error("cannot save the input settings: {0}")]
+    SaveSettings(String),
     /// The engine has stopped
     #[error("the engine has stopped")]
     Stopped,
@@ -115,6 +124,9 @@ pub enum EngineEvent {
     /// Show this device's number in the layout on its screens for a moment
     /// (some member asked, maybe this one)
     Identify,
+    /// A key combination was recorded ([`Engine::record`]); `None` when the
+    /// user gave up
+    Recorded(Option<Chord>),
     /// That join is over (hide the PIN)
     JoinEnded {
         /// Who asked
@@ -165,8 +177,11 @@ struct Inner {
     transport: Arc<Transport>,
     /// This device's info, sent in handshakes; changes with its name
     info: watch::Receiver<PeerInfo>,
-    /// Where the device name is persisted (`None` in tests)
-    identity_dir: Option<PathBuf>,
+    /// The data directory, where the device name and the input settings
+    /// are saved (`None`: nothing is saved)
+    data_dir: Option<PathBuf>,
+    /// The input settings in use
+    input_settings: Mutex<InputSettings>,
     /// Wakes the join being sponsored, to turn it down
     reject: Arc<Notify>,
     /// The mesh's inbox
@@ -188,28 +203,20 @@ impl Engine {
         input: Arc<dyn InputBackend>,
     ) -> Result<(Self, mpsc::UnboundedReceiver<EngineEvent>), EngineError> {
         let store = GroupStore::new(&config.data_dir);
-        let identity_dir = Some(config.data_dir.clone());
+        let data_dir = Some(config.data_dir.clone());
         let (node, peer_events) = Node::start(config).await?;
         let node = Arc::new(node);
         let transport = Arc::clone(node.transport());
         let info = node.info().clone();
         let peers = Some(peer_events);
-        Self::launch(
-            store,
-            identity_dir,
-            transport,
-            info,
-            Some(node),
-            peers,
-            input,
-        )
+        Self::launch(store, data_dir, transport, info, Some(node), peers, input)
     }
 
     /// Wire the mesh, the input actor, the accept loop, the display poller
     /// and the discovery feed around a bound transport
     fn launch(
         store: GroupStore,
-        identity_dir: Option<PathBuf>,
+        data_dir: Option<PathBuf>,
         transport: Arc<Transport>,
         info: PeerInfo,
         node: Option<Arc<Node>>,
@@ -245,6 +252,11 @@ impl Engine {
             events_tx.clone(),
             input_tx.clone(),
         );
+        let input_settings = data_dir
+            .as_deref()
+            .map(InputSettings::load)
+            .unwrap_or_default();
+        let _ = input_tx.send(InputMsg::Settings(input_settings.clone()));
         let wiring = Wiring {
             published: doc_tx,
             local: local_tx,
@@ -283,7 +295,8 @@ impl Engine {
                 node,
                 transport,
                 info: local_rx,
-                identity_dir,
+                data_dir,
+                input_settings: Mutex::new(input_settings),
                 reject,
                 inbox: inbox_tx,
                 input: input_tx,
@@ -386,7 +399,7 @@ impl Engine {
         if name.is_empty() || name.chars().count() > MAX_NAME_CHARS {
             return Err(EngineError::InvalidName);
         }
-        if let Some(dir) = self.inner.identity_dir.clone() {
+        if let Some(dir) = self.inner.data_dir.clone() {
             let saved = name.clone();
             tokio::task::spawn_blocking(move || identity::persist_display_name(&dir, Some(&saved)))
                 .await
@@ -411,6 +424,66 @@ impl Engine {
             .input
             .send(InputMsg::Request(request))
             .map_err(|_| EngineError::Stopped)
+    }
+
+    /// The input settings in use
+    pub fn input_settings(&self) -> InputSettings {
+        self.inner
+            .input_settings
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Use and save new input settings
+    pub async fn set_input_settings(&self, settings: InputSettings) -> Result<(), EngineError> {
+        if !settings.valid() {
+            return Err(EngineError::InvalidSettings);
+        }
+        if let Some(dir) = self.inner.data_dir.clone() {
+            let saved = settings.clone();
+            tokio::task::spawn_blocking(move || saved.save(&dir))
+                .await
+                .map_err(|e| EngineError::SaveSettings(e.to_string()))?
+                .map_err(|e| EngineError::SaveSettings(e.to_string()))?;
+        }
+        *self
+            .inner
+            .input_settings
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = settings.clone();
+        self.inner
+            .input
+            .send(InputMsg::Settings(settings))
+            .map_err(|_| EngineError::Stopped)
+    }
+
+    /// Start recording a key combination, or stop: the next key pressed
+    /// with modifiers, on this device's keyboard or the controlling
+    /// device's, comes back as [`EngineEvent::Recorded`] instead of going
+    /// anywhere, and hotkeys wait meanwhile
+    pub fn record(&self, on: bool) -> Result<(), EngineError> {
+        self.inner
+            .input
+            .send(InputMsg::Record(on))
+            .map_err(|_| EngineError::Stopped)
+    }
+
+    /// Set the edge between members `a` and `b`, for the whole group
+    pub async fn set_edge(
+        &self,
+        a: &str,
+        b: &str,
+        settings: EdgeSettings,
+    ) -> Result<(), EngineError> {
+        let (a, b) = (a.to_string(), b.to_string());
+        self.ask(|reply| Msg::SetEdge {
+            a,
+            b,
+            settings,
+            reply,
+        })
+        .await?
     }
 
     /// Whether capture and injection run on this device

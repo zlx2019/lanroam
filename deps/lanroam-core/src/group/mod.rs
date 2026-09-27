@@ -15,6 +15,9 @@
 //! - **Placement** (where the device sits on the layout canvas) may be set
 //!   by any member; the latest write wins, ordered by a Lamport clock over
 //!   the document and the writer's fingerprint as tie-break
+//! - **Edges** (the settings of the edge between two devices: open, corner
+//!   guard, switching mode) may be set by any member, per pair of devices,
+//!   the latest write winning the same way
 //!
 //! Records are not signed: any member may add or remove devices anyway, so
 //! a signature would not stop a hostile member. Trust comes from the
@@ -28,6 +31,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use lan_kit::PeerInfo;
+use lanroam_input::config::{EdgeSettings, edge_key};
 use lanroam_input::{Point, Rect};
 use serde::{Deserialize, Serialize};
 
@@ -171,6 +175,16 @@ impl DeviceRecord {
     }
 }
 
+/// The settings of the edge between two devices, as last written
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EdgeRecord {
+    /// The settings
+    #[serde(flatten)]
+    pub settings: EdgeSettings,
+    /// When they were set
+    pub stamp: Stamp,
+}
+
 /// The document a desk group shares
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupDoc {
@@ -178,6 +192,17 @@ pub struct GroupDoc {
     pub id: String,
     /// Records by certificate fingerprint, removed devices included
     pub devices: BTreeMap<String, DeviceRecord>,
+    /// Settings of edges between devices, by [`edge_id`] (since protocol
+    /// 2.1; older members ignore them)
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub edges: BTreeMap<String, EdgeRecord>,
+}
+
+/// The document's key of the edge between devices `a` and `b`, the same
+/// either way
+pub fn edge_id(a: &str, b: &str) -> String {
+    let (first, second) = edge_key(a, b);
+    format!("{first}|{second}")
 }
 
 impl GroupDoc {
@@ -186,6 +211,7 @@ impl GroupDoc {
         let mut doc = Self {
             id: uuid::Uuid::new_v4().to_string(),
             devices: BTreeMap::new(),
+            edges: BTreeMap::new(),
         };
         doc.admit(founder);
         doc
@@ -285,6 +311,40 @@ impl GroupDoc {
         true
     }
 
+    /// Set the edge between devices `a` and `b`, as written by `by`
+    pub fn set_edge(&mut self, a: &str, b: &str, settings: EdgeSettings, by: &str) {
+        let clock = self
+            .edges
+            .values()
+            .map(|record| record.stamp.clock)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let stamp = Stamp {
+            clock,
+            by: by.to_string(),
+        };
+        self.edges
+            .insert(edge_id(a, b), EdgeRecord { settings, stamp });
+    }
+
+    /// The settings of the edge between devices `a` and `b`
+    pub fn edge(&self, a: &str, b: &str) -> EdgeSettings {
+        self.edges
+            .get(&edge_id(a, b))
+            .map(|record| record.settings)
+            .unwrap_or_default()
+    }
+
+    /// The edges set between current members, by
+    /// [`lanroam_input::config::edge_key`]
+    pub fn edge_settings(&self) -> impl Iterator<Item = ((String, String), EdgeSettings)> + '_ {
+        self.edges.iter().filter_map(|(id, record)| {
+            let (a, b) = id.split_once('|')?;
+            (self.is_member(a) && self.is_member(b)).then(|| (edge_key(a, b), record.settings))
+        })
+    }
+
     /// Merge another copy of this group's document; true if this copy
     /// changed. A document of another group is ignored
     pub fn merge(&mut self, other: &Self) -> bool {
@@ -299,6 +359,16 @@ impl GroupDoc {
                     self.devices.insert(fp.clone(), theirs.clone());
                     changed = true;
                 }
+            }
+        }
+        for (id, theirs) in &other.edges {
+            let newer = self
+                .edges
+                .get(id)
+                .is_none_or(|ours| theirs.stamp > ours.stamp);
+            if newer {
+                self.edges.insert(id.clone(), theirs.clone());
+                changed = true;
             }
         }
         changed
@@ -503,6 +573,40 @@ mod tests {
             old.devices["fp-b"].placement.as_ref().unwrap().at,
             Point::new(-1920, 0)
         );
+    }
+
+    /// An edge reads the same from either side; the later write wins in a
+    /// merge, and a document without edges still reads
+    #[test]
+    fn edges() {
+        let mut doc = GroupDoc::new(&info("a"));
+        doc.admit(&info("b"));
+        assert_eq!(doc.edge("fp-a", "fp-b"), EdgeSettings::default());
+        let closed = EdgeSettings {
+            crossable: false,
+            ..EdgeSettings::default()
+        };
+        doc.set_edge("fp-b", "fp-a", closed, "fp-b");
+        assert_eq!(doc.edge("fp-a", "fp-b"), closed);
+        let stale = doc.clone();
+        let guarded = EdgeSettings {
+            corner_px: Some(20),
+            ..EdgeSettings::default()
+        };
+        doc.set_edge("fp-a", "fp-b", guarded, "fp-a");
+        assert!(!doc.merge(&stale));
+        let mut old = stale;
+        assert!(old.merge(&doc));
+        assert_eq!(old.edge("fp-b", "fp-a"), guarded);
+        assert_eq!(
+            doc.edge_settings().collect::<Vec<_>>(),
+            [(edge_key("fp-a", "fp-b"), guarded)]
+        );
+
+        let mut json = serde_json::to_value(&doc).unwrap();
+        json.as_object_mut().unwrap().remove("edges");
+        let read: GroupDoc = serde_json::from_value(json).unwrap();
+        assert!(read.edges.is_empty());
     }
 
     /// Another group's document never mixes in

@@ -30,6 +30,9 @@ pub mod events {
     pub const JOINING_ENDED: &str = "joining-ended";
     /// Another member removed this device from the group; no payload
     pub const KICKED: &str = "kicked";
+    /// A key combination was recorded; payload: `Chord`, `null` when the
+    /// user gave up
+    pub const RECORDED: &str = "recorded";
 }
 
 /// Label of the window showing a join's PIN
@@ -93,6 +96,10 @@ async fn on_event(app: &AppHandle, event: EngineEvent) {
         EngineEvent::Kicked => emit(app, events::KICKED, ()),
         EngineEvent::Identify => {
             indicators::identify(app);
+            return;
+        }
+        EngineEvent::Recorded(chord) => {
+            emit(app, events::RECORDED, chord);
             return;
         }
         EngineEvent::JoinPin {
