@@ -21,10 +21,13 @@ labels: bug
 
 ## Environment Information
 
-- OS:
-- Rust Version:
-- Project Version / Commit:
+<!-- Most problems involve two devices: fill in each one -->
+
+- Devices (OS and version of each, e.g. macOS 15.3 and Windows 10 22H2):
+- Display resolution and scaling of each device (for pointer or layout problems):
+- Lanroam version / commit:
+- Network (Wi-Fi or wired, same subnet?):
 
 ## Additional Information
 
-<!-- Logs, screenshots, and other information that may help in troubleshooting the issue -->
+<!-- Logs from both devices (run with RUST_LOG=debug), the output of `layout`, screenshots, and anything else that may help -->

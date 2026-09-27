@@ -18,4 +18,5 @@ labels: enhancement
 <!-- What other implementation methods have you considered -->
 
 ## Additional Information
----
+
+<!-- Screenshots, links to similar tools, or anything else that helps explain the idea -->

@@ -3,6 +3,9 @@
 [![CI](https://github.com/zlx2019/lanroam/actions/workflows/ci.yml/badge.svg)](https://github.com/zlx2019/lanroam/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.96.0%2B-orange.svg)](https://www.rust-lang.org)
+![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-3ccfbe)
+
+**English** · [简体中文](./README.zh-CN.md)
 
 > Share one keyboard and mouse across the computers on your LAN.
 
@@ -67,6 +70,10 @@ irm "https://raw.githubusercontent.com/zlx2019/lanroam/main/scripts/windows/upda
 ```
 
 The first time, run it from an elevated PowerShell with `-Firewall` to allow inbound traffic (see the script header).
+
+## Contributing
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for the layout of the workspace, the checks CI runs and the conventions. Please report security issues privately as described in [SECURITY.md](./SECURITY.md).
 
 ## License
 
