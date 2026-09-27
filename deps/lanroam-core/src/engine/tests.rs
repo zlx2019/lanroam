@@ -599,3 +599,35 @@ async fn lost_controller_is_released() {
     b.injected(&Injected::Key(0x04, false)).await;
     b.expect_control(ControlEvent::Freed { name: a_name }).await;
 }
+
+/// Hotkeys act on the whole group: number 3 jumps straight to c (mid
+/// display), and pausing is reported
+#[tokio::test]
+async fn hotkeys_jump_across_the_group() {
+    use lanroam_input::keymap::usage;
+
+    let (mut a, _b, mut c) = row_of_three().await;
+    let (a_name, c_name) = (a.name(), c.name());
+    let chord = |k: u16| {
+        a.input.key(usage::LEFT_CTRL, true);
+        a.input.key(usage::LEFT_ALT, true);
+        a.input.key(k, true);
+        a.input.key(k, false);
+        a.input.key(usage::LEFT_ALT, false);
+        a.input.key(usage::LEFT_CTRL, false);
+    };
+    chord(usage::DIGIT_1 + 2);
+    c.injected(&Injected::Move(Point::new(500, 500))).await;
+    chord(usage::ESCAPE);
+    a.expect_control(ControlEvent::Controlling { name: c_name })
+        .await;
+    a.expect_control(ControlEvent::Paused { on: true }).await;
+    // c saw the modifiers (pressed while it was controlled) come and go,
+    // never the hotkey's own key
+    c.expect_control(ControlEvent::Freed { name: a_name }).await;
+    let injected = c.injected(&Injected::Key(usage::LEFT_CTRL, false)).await;
+    assert!(
+        !injected.contains(&Injected::Key(usage::ESCAPE, true)),
+        "{injected:?}"
+    );
+}

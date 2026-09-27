@@ -111,6 +111,17 @@ pub enum ControlEvent {
         /// The device
         name: String,
     },
+    /// Crossing edges was paused (Ctrl+Alt+Esc) or resumed
+    Paused {
+        /// Paused
+        on: bool,
+    },
+    /// The pointer was locked to its device (Ctrl+Alt+L, Scroll Lock) or
+    /// unlocked
+    Locked {
+        /// Locked
+        on: bool,
+    },
     /// Capture or injection is not available on this device
     Unavailable {
         /// Which one
@@ -160,6 +171,9 @@ pub(super) enum InputMsg {
         swapped: HashSet<String>,
         /// Member names by fingerprint
         names: HashMap<String, String>,
+        /// Every placed member, online or not, in reading order (the
+        /// number hotkeys)
+        numbered: Vec<String>,
     },
     /// Give everything back and stop
     Shutdown(oneshot::Sender<()>),
@@ -361,9 +375,12 @@ impl Input {
                 world,
                 swapped,
                 names,
+                numbered,
             } => {
                 self.names = names;
-                switch::lock(&self.switch).set_world(world, swapped);
+                let mut switch = switch::lock(&self.switch);
+                switch.set_world(world, swapped);
+                switch.set_numbering(numbered);
             }
             // Handled by the run loop
             InputMsg::Shutdown(_) => {}
@@ -421,6 +438,8 @@ impl Input {
                 },
             ),
             Emit::Wheel { device, dx, dy } => self.send(&device, Control::Wheel { dx, dy }),
+            Emit::Paused(on) => self.notify(ControlEvent::Paused { on }),
+            Emit::Locked(on) => self.notify(ControlEvent::Locked { on }),
             Emit::Takeover => {
                 if let Some(controller) = self.controller.take() {
                     self.replay(Op::ReleaseAll);

@@ -11,8 +11,24 @@
 
 /// HID usages the engine refers to by name
 pub mod usage {
+    /// L
+    pub const KEY_L: u16 = 0x0F;
+    /// 1 on the main block (2 to 9 follow it)
+    pub const DIGIT_1: u16 = 0x1E;
+    /// 9 on the main block
+    pub const DIGIT_9: u16 = 0x26;
     /// Escape
     pub const ESCAPE: u16 = 0x29;
+    /// Scroll Lock
+    pub const SCROLL_LOCK: u16 = 0x47;
+    /// Right arrow
+    pub const ARROW_RIGHT: u16 = 0x4F;
+    /// Left arrow
+    pub const ARROW_LEFT: u16 = 0x50;
+    /// Down arrow
+    pub const ARROW_DOWN: u16 = 0x51;
+    /// Up arrow
+    pub const ARROW_UP: u16 = 0x52;
     /// Caps Lock
     pub const CAPS_LOCK: u16 = 0x39;
     /// Pause / Break

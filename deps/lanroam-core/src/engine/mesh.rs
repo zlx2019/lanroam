@@ -850,10 +850,12 @@ impl Mesh {
     /// and the members' names
     fn publish_world(&self) {
         let own = self.info.fingerprint.as_str();
-        let (world, swapped, names) = match &self.doc {
+        let (world, swapped, names, numbered) = match &self.doc {
             Some(doc) => {
                 let online = |fp: &str| fp == own || self.links.contains_key(fp);
-                let devices = layout::world(doc)
+                let placed = layout::world(doc);
+                let numbered = placed.ordered().iter().map(|d| d.key.clone()).collect();
+                let devices = placed
                     .devices()
                     .iter()
                     .filter(|d| online(&d.key))
@@ -873,14 +875,15 @@ impl Mesh {
                     .members()
                     .map(|(fp, record)| (fp.to_string(), record.profile.name.clone()))
                     .collect();
-                (World::new(devices), swapped, names)
+                (World::new(devices), swapped, names, numbered)
             }
-            None => (World::default(), HashSet::new(), HashMap::new()),
+            None => (World::default(), HashSet::new(), HashMap::new(), Vec::new()),
         };
         let _ = self.wiring.input.send(InputMsg::World {
             world,
             swapped,
             names,
+            numbered,
         });
     }
 

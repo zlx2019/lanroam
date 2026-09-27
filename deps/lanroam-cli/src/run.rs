@@ -41,6 +41,14 @@ const HELP: &str = "commands:
   help             this list
   quit             stop (Ctrl-C and Ctrl-D work too)";
 
+/// How to move between devices
+const HOTKEYS: &str = "Push the pointer off an edge shared with another member to control it.
+hotkeys (Option for Alt on a Mac; the digits, arrows and L need the left Alt):
+  Ctrl+Alt+1..9          jump to device n (numbers as `layout` shows them)
+  Ctrl+Alt+arrow         jump to the neighbour that way
+  Ctrl+Alt+L, ScrollLock lock the pointer to its device, or unlock
+  Ctrl+Alt+Esc           back to this device and pause crossing, or resume";
+
 /// A running join asks for a PIN: the sponsor's name, the attempts left,
 /// where to send the PIN (`None` cancels)
 type PinRequest = (String, u32, oneshot::Sender<Option<String>>);
@@ -80,10 +88,7 @@ pub(crate) async fn cmd_run(
         crate::VERSION
     );
     print_group(&engine.status().await?, engine.info());
-    println!(
-        "type `help` for commands. Push the pointer off an edge shared with another member \
-         to control it; Ctrl+Alt+Esc (Ctrl+Option+Esc on a Mac) takes control back at once"
-    );
+    println!("type `help` for commands. {HOTKEYS}");
 
     let mut lines = stdin_lines();
     let (asks_tx, mut asks) = mpsc::unbounded_channel::<PinRequest>();
@@ -149,7 +154,7 @@ async fn handle(
     let arg = words.collect::<Vec<_>>().join(" ");
     let result = match (command, arg.is_empty()) {
         ("help" | "?", _) => {
-            println!("{HELP}");
+            println!("{HELP}\n{HOTKEYS}");
             Ok(())
         }
         ("quit" | "exit", _) => return Flow::Quit,
@@ -509,6 +514,14 @@ fn print_control(event: &ControlEvent) {
         ControlEvent::Unresponsive { name } => {
             println!("warning  {name} stopped answering; back here at the next input");
         }
+        ControlEvent::Paused { on: true } => {
+            println!("control  crossing paused; Ctrl+Alt+Esc resumes it");
+        }
+        ControlEvent::Paused { on: false } => println!("control  crossing resumed"),
+        ControlEvent::Locked { on: true } => {
+            println!("control  pointer locked to its device; Ctrl+Alt+L unlocks it");
+        }
+        ControlEvent::Locked { on: false } => println!("control  pointer unlocked"),
         ControlEvent::Unavailable { what, reason } => {
             println!("warning  {what} is unavailable: {reason}");
         }

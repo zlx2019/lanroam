@@ -11,6 +11,16 @@
 //! release follows it there. That single rule keeps keys from getting stuck
 //! when control changes hands in the middle of a press.
 //!
+//! Hotkeys are recognised here too, from the physical keys, and never
+//! reach any device (Mac: Option for Alt):
+//!
+//! | keys | action |
+//! |---|---|
+//! | Ctrl+Alt+1..9 | jump to the n-th device of the layout |
+//! | Ctrl+Alt+arrow | jump to the neighbour in that direction |
+//! | Ctrl+Alt+L, Scroll Lock | lock the pointer to its device (toggle) |
+//! | Ctrl+Alt+Esc | come home and pause crossing; again to resume |
+//!
 //! The switch runs inside the capture callback, synchronously: it must
 //! decide before the OS delivers the event, and never blocks.
 
@@ -113,6 +123,23 @@ pub enum Emit {
     /// Someone used this machine's own mouse or keyboard while another
     /// device controlled it: that device must let go
     Takeover,
+    /// Crossing edges was paused (true) or resumed
+    Paused(bool),
+    /// The pointer was locked to its device (true) or unlocked
+    Locked(bool),
+}
+
+/// A hotkey's action
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Hotkey {
+    /// Come home and pause crossing, or resume
+    Pause,
+    /// Lock the pointer to its device, or unlock
+    Lock,
+    /// Jump to the device with this index in the layout's reading order
+    Number(usize),
+    /// Jump to the neighbour in this direction
+    Toward(Edge),
 }
 
 /// Where the local cursor reappears when control comes back
@@ -167,6 +194,17 @@ pub struct Switch {
     remote: Option<Remote>,
     /// Where the local cursor left this machine, for coming back to it
     departed: Point,
+    /// Where the local cursor is, as last seen
+    local_at: Point,
+    /// Where the cursor last was on each device left
+    last: HashMap<String, Point>,
+    /// Every placed device, online or not, in reading order: the numbers
+    /// of the Ctrl+Alt+n hotkeys
+    numbered: Vec<String>,
+    /// Crossing edges is paused
+    paused: bool,
+    /// The pointer stays on its device
+    locked: bool,
     /// Keys currently pressed (by physical usage): where each press went,
     /// and the usage it was sent as
     keys: HashMap<u16, (Owner, u16)>,
@@ -191,6 +229,11 @@ impl Switch {
             local: local.into(),
             remote: None,
             departed: Point::default(),
+            local_at: Point::default(),
+            last: HashMap::new(),
+            numbered: Vec::new(),
+            paused: false,
+            locked: false,
             keys: HashMap::new(),
             buttons: std::array::from_fn(|_| None),
             release_requested: false,
@@ -229,6 +272,11 @@ impl Switch {
         }
         self.world = world;
         self.swapped = swapped;
+    }
+
+    /// Set the devices the number hotkeys go to, in order
+    pub fn set_numbering(&mut self, numbered: Vec<String>) {
+        self.numbered = numbered;
     }
 
     /// Hand control back to this machine at the next event, if `device`
@@ -296,6 +344,7 @@ impl Switch {
         cursor: &mut Option<CursorAction>,
     ) -> Verdict {
         let Some(remote) = self.remote.clone() else {
+            self.local_at = at;
             // No crossing right after a forced release, or a motion that
             // arrives with it would take control straight back
             if cursor.is_none()
@@ -320,7 +369,7 @@ impl Switch {
             Step::Inside(x, y) => (x, y),
             // A held button keeps the pointer on the device: dragging across
             // devices is not supported yet
-            Step::Blocked { x, y, .. } if self.holds_remote_button() => (x, y),
+            Step::Blocked { x, y, .. } if self.holds_remote_button() || self.locked => (x, y),
             Step::Blocked { x, y, stop, edges } => {
                 let next = edges.into_iter().find_map(|edge| {
                     self.world
@@ -333,9 +382,8 @@ impl Switch {
                         return Verdict::Swallow;
                     }
                     Some((device, entry)) => {
-                        out.push(Emit::Leave {
-                            device: remote.device,
-                        });
+                        self.remote = Some(Remote { x, y, ..remote });
+                        self.leave_remote(out);
                         self.enter(device, entry, out);
                         return Verdict::Swallow;
                     }
@@ -359,7 +407,7 @@ impl Switch {
     /// Where this motion takes the local pointer when it pushes out of this
     /// machine: (device, entry point, departure point)
     fn crossing(&self, at: Point, dx: f64, dy: f64) -> Option<(String, Point, Point)> {
-        if self.buttons.contains(&Some(Owner::Local)) {
+        if self.paused || self.locked || self.buttons.contains(&Some(Owner::Local)) {
             return None;
         }
         let local = self.world.device(&self.local)?;
@@ -388,11 +436,7 @@ impl Switch {
     /// Give control back to this machine: tell the device, and work out
     /// where the local cursor reappears
     fn come_home(&mut self, landing: Landing, out: &mut Vec<Emit>) -> CursorAction {
-        if let Some(remote) = self.remote.take() {
-            out.push(Emit::Leave {
-                device: remote.device,
-            });
-        }
+        self.leave_remote(out);
         let local = self.world.device(&self.local).map(|d| &d.desktop);
         let back = match landing {
             Landing::At(entry) => entry,
@@ -459,11 +503,16 @@ impl Switch {
                 down,
             });
         }
+        // A fresh press may complete a hotkey; its release is dropped too
+        if !self.keys.contains_key(&key)
+            && let Some(hotkey) = self.hotkey_for(key)
+            && self.run_hotkey(hotkey, out, cursor)
+        {
+            self.keys.insert(key, (Owner::Dropped, key));
+            return Verdict::Swallow;
+        }
         let (owner, sent) = match self.keys.get(&key) {
             Some(held) => held.clone(),
-            None if key == usage::ESCAPE && self.hotkey_modifiers_held() => {
-                return self.hotkey(out, cursor);
-            }
             None => {
                 let side = self.side();
                 let sent = match &side {
@@ -488,28 +537,134 @@ impl Switch {
         })
     }
 
-    /// Ctrl+Alt+Esc (Ctrl+Option+Esc on macOS): take control back at once
+    /// The hotkey `key` completes with the keys held now, if any
     ///
-    /// Handled here, before anything else, so it works whatever state the
-    /// other device or the network is in.
-    fn hotkey(&mut self, out: &mut Vec<Emit>, cursor: &mut Option<CursorAction>) -> Verdict {
-        if self.remote.is_none() {
-            // Nothing to take back: an ordinary key press
-            self.keys
-                .insert(usage::ESCAPE, (Owner::Local, usage::ESCAPE));
-            return Verdict::Pass;
+    /// Control plus Alt (Option) and a key; Scroll Lock alone. Digits,
+    /// arrows and L need the left Alt: Windows reports AltGr as Control +
+    /// right Alt, and AltGr with those keys types characters on many
+    /// layouts.
+    fn hotkey_for(&self, key: u16) -> Option<Hotkey> {
+        if key == usage::SCROLL_LOCK {
+            return Some(Hotkey::Lock);
         }
-        tracing::debug!("escape hotkey: taking control back");
-        self.keys
-            .insert(usage::ESCAPE, (Owner::Dropped, usage::ESCAPE));
-        *cursor = Some(self.come_home(Landing::Centre, out));
-        Verdict::Swallow
+        let held = |k: u16| self.keys.contains_key(&k);
+        if !held(usage::LEFT_CTRL) && !held(usage::RIGHT_CTRL) {
+            return None;
+        }
+        let left_alt = held(usage::LEFT_ALT);
+        match key {
+            usage::ESCAPE if left_alt || held(usage::RIGHT_ALT) => Some(Hotkey::Pause),
+            _ if !left_alt => None,
+            usage::KEY_L => Some(Hotkey::Lock),
+            usage::DIGIT_1..=usage::DIGIT_9 => {
+                Some(Hotkey::Number(usize::from(key - usage::DIGIT_1)))
+            }
+            usage::ARROW_RIGHT => Some(Hotkey::Toward(Edge::Right)),
+            usage::ARROW_LEFT => Some(Hotkey::Toward(Edge::Left)),
+            usage::ARROW_DOWN => Some(Hotkey::Toward(Edge::Bottom)),
+            usage::ARROW_UP => Some(Hotkey::Toward(Edge::Top)),
+            _ => None,
+        }
     }
 
-    /// Whether a Control and an Alt key are both held (either side)
-    fn hotkey_modifiers_held(&self) -> bool {
-        let held = |a: u16, b: u16| self.keys.contains_key(&a) || self.keys.contains_key(&b);
-        held(usage::LEFT_CTRL, usage::RIGHT_CTRL) && held(usage::LEFT_ALT, usage::RIGHT_ALT)
+    /// Carry out a hotkey; false if it has nothing to act on (no such
+    /// device), so the key goes on as an ordinary one
+    ///
+    /// Handled here, in the capture callback, so they work whatever state
+    /// the other devices or the network are in.
+    fn run_hotkey(
+        &mut self,
+        hotkey: Hotkey,
+        out: &mut Vec<Emit>,
+        cursor: &mut Option<CursorAction>,
+    ) -> bool {
+        match hotkey {
+            Hotkey::Pause => {
+                if self.remote.is_some() {
+                    tracing::debug!("pause hotkey: taking control back");
+                    *cursor = Some(self.come_home(Landing::Centre, out));
+                    self.paused = true;
+                } else {
+                    self.paused = !self.paused;
+                }
+                out.push(Emit::Paused(self.paused));
+            }
+            Hotkey::Lock => {
+                self.locked = !self.locked;
+                out.push(Emit::Locked(self.locked));
+            }
+            Hotkey::Number(n) => {
+                let Some(device) = self.numbered.get(n).cloned() else {
+                    return false;
+                };
+                if self.world.device(&device).is_none() {
+                    // Offline: taken, but nowhere to go
+                    return true;
+                }
+                self.jump(device, out, cursor);
+            }
+            Hotkey::Toward(edge) => {
+                let here = self.target().unwrap_or(&self.local).to_string();
+                let Some(device) = self.world.neighbour(&here, edge) else {
+                    return false;
+                };
+                let device = device.key.clone();
+                self.jump(device, out, cursor);
+            }
+        }
+        true
+    }
+
+    /// Move control straight to `device`, landing mid-display (see
+    /// [`Self::landing_on`]); a jump resumes a paused switch
+    fn jump(&mut self, device: String, out: &mut Vec<Emit>, cursor: &mut Option<CursorAction>) {
+        if std::mem::take(&mut self.paused) {
+            out.push(Emit::Paused(false));
+        }
+        let here = self.target().unwrap_or(&self.local);
+        if device == here {
+            return;
+        }
+        if device == self.local {
+            *cursor = Some(self.come_home(Landing::Centre, out));
+            return;
+        }
+        let Some(at) = self.landing_on(&device) else {
+            return;
+        };
+        match self.leave_remote(out) {
+            Some(_) => {}
+            None => {
+                self.departed = self.local_at;
+                *cursor = Some(CursorAction::Park);
+            }
+        }
+        self.enter(device, at, out);
+    }
+
+    /// Where a jump lands on `device`: the middle of the display its cursor
+    /// was last on, or of its primary display. The middle, so that the next
+    /// motion does not push it straight over an edge
+    fn landing_on(&self, device: &str) -> Option<Point> {
+        let desktop = &self.world.device(device)?.desktop;
+        let display = self
+            .last
+            .get(device)
+            .and_then(|p| desktop.display_at(*p))
+            .or_else(|| desktop.display_at(Point::new(0, 0)))
+            .or_else(|| desktop.displays().first())?;
+        Some(display.centre())
+    }
+
+    /// Stop controlling the current device, remembering where its cursor
+    /// was; returns it
+    fn leave_remote(&mut self, out: &mut Vec<Emit>) -> Option<String> {
+        let remote = self.remote.take()?;
+        self.last.insert(remote.device.clone(), remote.pixel());
+        out.push(Emit::Leave {
+            device: remote.device.clone(),
+        });
+        Some(remote.device)
     }
 
     /// Where new presses go right now
@@ -801,19 +956,83 @@ mod tests {
         );
     }
 
-    /// Ctrl+Alt+Esc brings control back to the middle of the display the
-    /// cursor left from; locally it is an ordinary key
-    #[test]
-    fn escape_hotkey() {
+    /// Ctrl + `alt` + `key`, pressed and released; what the press of
+    /// `key` did
+    fn chord(sw: &mut Switch, alt: u16, k: u16) -> (Decision, Vec<Emit>) {
+        feed(sw, key(usage::LEFT_CTRL, true));
+        feed(sw, key(alt, true));
+        let pressed = feed(sw, key(k, true));
+        feed(sw, key(k, false));
+        feed(sw, key(alt, false));
+        feed(sw, key(usage::LEFT_CTRL, false));
+        pressed
+    }
+
+    /// The switch with its devices numbered in reading order
+    fn numbered() -> Switch {
         let mut sw = switch();
-        feed(&mut sw, key(usage::LEFT_CTRL, true));
-        feed(&mut sw, key(usage::LEFT_ALT, true));
-        let (d, _) = feed(&mut sw, key(usage::ESCAPE, true));
-        assert_eq!(d.verdict, Verdict::Pass);
-        feed(&mut sw, key(usage::ESCAPE, false));
+        sw.set_numbering(vec!["mac".into(), "pc".into(), "tv".into()]);
+        sw
+    }
+
+    /// Ctrl+Alt+Esc comes home to the middle of the display the cursor
+    /// left from and pauses crossing; again, it resumes
+    #[test]
+    fn pause_toggles() {
+        let mut sw = switch();
         cross_to_pc(&mut sw, 400);
-        let (d, out) = feed(&mut sw, key(usage::ESCAPE, true));
+        let (d, out) = chord(&mut sw, usage::LEFT_ALT, usage::ESCAPE);
         assert_eq!(d.verdict, Verdict::Swallow);
+        assert_eq!(d.cursor, Some(CursorAction::Release(Point::new(756, 540))));
+        assert_eq!(
+            out,
+            [
+                Emit::Leave {
+                    device: "pc".into()
+                },
+                Emit::Paused(true)
+            ]
+        );
+        let (d, out) = cross_to_pc(&mut sw, 400);
+        assert_eq!((d.verdict, out.len()), (Verdict::Pass, 0));
+
+        // Right Alt works for this one; locally it just toggles
+        let (d, out) = chord(&mut sw, usage::RIGHT_ALT, usage::ESCAPE);
+        assert_eq!(
+            (d.verdict, out),
+            (Verdict::Swallow, vec![Emit::Paused(false)])
+        );
+        assert!(cross_to_pc(&mut sw, 400).0.cursor.is_some());
+    }
+
+    /// Ctrl+Alt+n jumps to the n-th device, mid-display; a number without
+    /// a device is an ordinary key
+    #[test]
+    fn number_jumps() {
+        let mut sw = numbered();
+        let (d, out) = chord(&mut sw, usage::LEFT_ALT, usage::DIGIT_1 + 2);
+        assert_eq!(d.cursor, Some(CursorAction::Park));
+        assert_eq!(
+            out,
+            [Emit::Enter {
+                device: "tv".into(),
+                at: Point::new(960, 540)
+            }]
+        );
+        let (_, out) = chord(&mut sw, usage::LEFT_ALT, usage::DIGIT_1 + 1);
+        assert_eq!(
+            out,
+            [
+                Emit::Leave {
+                    device: "tv".into()
+                },
+                Emit::Enter {
+                    device: "pc".into(),
+                    at: Point::new(960, 540)
+                }
+            ]
+        );
+        let (d, out) = chord(&mut sw, usage::LEFT_ALT, usage::DIGIT_1);
         assert_eq!(d.cursor, Some(CursorAction::Release(Point::new(756, 540))));
         assert_eq!(
             out,
@@ -821,8 +1040,83 @@ mod tests {
                 device: "pc".into()
             }]
         );
-        let (d, _) = feed(&mut sw, key(usage::ESCAPE, false));
-        assert_eq!(d.verdict, Verdict::Swallow);
+
+        let (d, out) = chord(&mut sw, usage::LEFT_ALT, usage::DIGIT_1 + 4);
+        assert_eq!((d.verdict, out.len()), (Verdict::Pass, 0));
+    }
+
+    /// Ctrl+Alt+arrows walk to the neighbours; with none that way the
+    /// arrow is an ordinary key
+    #[test]
+    fn arrow_jumps() {
+        let mut sw = numbered();
+        chord(&mut sw, usage::LEFT_ALT, usage::ARROW_RIGHT);
+        assert_eq!(sw.target(), Some("pc"));
+        chord(&mut sw, usage::LEFT_ALT, usage::ARROW_RIGHT);
+        assert_eq!(sw.target(), Some("tv"));
+        let (_, out) = chord(&mut sw, usage::LEFT_ALT, usage::ARROW_RIGHT);
+        assert_eq!(
+            out,
+            [Emit::Key {
+                device: "tv".into(),
+                usage: usage::ARROW_RIGHT,
+                down: true
+            }]
+        );
+        chord(&mut sw, usage::LEFT_ALT, usage::ARROW_LEFT);
+        let (d, _) = chord(&mut sw, usage::LEFT_ALT, usage::ARROW_LEFT);
+        assert!(matches!(d.cursor, Some(CursorAction::Release(_))));
+        assert!(!sw.is_remote());
+    }
+
+    /// Ctrl+Alt+L (or Scroll Lock) keeps the pointer on its device; hotkeys
+    /// still move it
+    #[test]
+    fn lock_holds_the_pointer() {
+        let mut sw = numbered();
+        let (_, out) = chord(&mut sw, usage::LEFT_ALT, usage::KEY_L);
+        assert_eq!(out, [Emit::Locked(true)]);
+        assert_eq!(cross_to_pc(&mut sw, 400).0.verdict, Verdict::Pass);
+
+        chord(&mut sw, usage::LEFT_ALT, usage::ARROW_RIGHT);
+        let (d, out) = feed(&mut sw, motion(0, 0, 5000.0, 0.0));
+        assert_eq!(d.cursor, None);
+        assert_eq!(
+            out,
+            [Emit::Motion {
+                device: "pc".into(),
+                at: Point::new(1919, 540)
+            }]
+        );
+
+        let (d, out) = feed(&mut sw, key(usage::SCROLL_LOCK, true));
+        assert_eq!(
+            (d.verdict, out),
+            (Verdict::Swallow, vec![Emit::Locked(false)])
+        );
+        feed(&mut sw, key(usage::SCROLL_LOCK, false));
+        feed(&mut sw, motion(0, 0, 5.0, 0.0));
+        assert_eq!(sw.target(), Some("tv"));
+    }
+
+    /// AltGr (Control + right Alt on Windows) with a digit types a
+    /// character on many layouts: not a hotkey
+    #[test]
+    fn altgr_is_not_a_hotkey() {
+        let mut sw = numbered();
+        let (d, out) = chord(&mut sw, usage::RIGHT_ALT, usage::DIGIT_1 + 1);
+        assert_eq!((d.verdict, out.len()), (Verdict::Pass, 0));
+        assert!(!sw.is_remote());
+    }
+
+    /// Jumping resumes a paused switch
+    #[test]
+    fn jumping_resumes() {
+        let mut sw = numbered();
+        chord(&mut sw, usage::LEFT_ALT, usage::ESCAPE);
+        let (_, out) = chord(&mut sw, usage::LEFT_ALT, usage::ARROW_RIGHT);
+        assert_eq!(out[0], Emit::Paused(false));
+        assert!(matches!(&out[1], Emit::Enter { device, .. } if device == "pc"));
     }
 
     /// Requested releases apply to the device named (or any), at the next
