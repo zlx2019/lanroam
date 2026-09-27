@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use lan_kit::frame::FrameError;
 use lan_kit::{Peer, PeerEvent, PeerInfo};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{Instant, MissedTickBehavior};
@@ -424,8 +425,7 @@ impl Mesh {
         }
         if let Some(existing) = self.links.get(&fp) {
             let raced = existing.since.elapsed() < RACE_WINDOW;
-            let keep_new =
-                !raced || existing.dialed == dialed || dialed == self.dials_first(&fp);
+            let keep_new = !raced || existing.dialed == dialed || dialed == self.dials_first(&fp);
             if !keep_new {
                 link.connection()
                     .close(close_code::DUPLICATE, b"duplicate link");
@@ -665,15 +665,27 @@ impl Mesh {
 }
 
 /// Read a link's control stream into the mesh's inbox until it ends
+///
+/// A frame that does not decode is skipped: it was read whole, so the stream
+/// stays in step, and it is most likely a message from a newer minor
+/// version that this one may ignore.
 async fn read_link(
     id: u64,
     mut recv: quinn::RecvStream,
     conn: quinn::Connection,
     inbox: mpsc::UnboundedSender<Msg>,
 ) {
-    while let Ok(msg) = FRAMING.read::<_, Control>(&mut recv).await {
-        if inbox.send(Msg::Received { id, msg }).is_err() {
-            return;
+    loop {
+        match FRAMING.read::<_, Control>(&mut recv).await {
+            Ok(msg) => {
+                if inbox.send(Msg::Received { id, msg }).is_err() {
+                    return;
+                }
+            }
+            Err(FrameError::Codec(e)) => {
+                tracing::debug!("skipping a control message this version cannot read: {e}");
+            }
+            Err(_) => break,
         }
     }
     let duplicate = matches!(
@@ -700,4 +712,38 @@ async fn write_link(
         let _ = tokio::time::timeout(LINGER, send.stopped()).await;
     }
     conn.close(close_code::NORMAL, b"bye");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_util::TestNode;
+
+    /// An unknown message is skipped and the link keeps working
+    #[tokio::test]
+    async fn unknown_messages_are_skipped() {
+        let (_a, _b, client, server) = TestNode::link_pair().await;
+        let (_, conn, _send, recv) = server.into_parts();
+        let (inbox, mut received) = mpsc::unbounded_channel();
+        tokio::spawn(read_link(7, recv, conn, inbox));
+
+        let (_, _conn, mut send, _recv) = client.into_parts();
+        let unknown = serde_json::json!({ "type": "from_the_future", "x": 1 });
+        FRAMING.write(&mut send, &unknown).await.unwrap();
+        FRAMING
+            .write(&mut send, &Control::Ping { seq: 1, sent_us: 2 })
+            .await
+            .unwrap();
+        let next = tokio::time::timeout(Duration::from_secs(5), received.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            next,
+            Msg::Received {
+                id: 7,
+                msg: Control::Ping { seq: 1, .. }
+            }
+        ));
+    }
 }

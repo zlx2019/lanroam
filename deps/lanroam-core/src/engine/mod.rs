@@ -1,7 +1,7 @@
 //! The engine: one device running in its desk group.
 //!
 //! It owns the node (identity, QUIC endpoint, discovery) and one actor task,
-//! the mesh (see [`mesh`]), which holds the group document and a link to
+//! the mesh, which holds the group document and a link to
 //! every online member. Everything that changes group state goes through the
 //! mesh's inbox, so there are no locks around the document; the rest of the
 //! engine reads the latest copy from a watch channel.
