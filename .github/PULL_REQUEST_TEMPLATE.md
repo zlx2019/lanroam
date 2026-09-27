@@ -1,20 +1,20 @@
-## 变更说明
+## Change Log
 
-<!-- 简要描述本次 PR 的目的与内容 -->
+<!-- Briefly describe the purpose and content of this PR -->
 
-## 变更类型
+## Change Type
 
-- [ ] feat: 新功能
-- [ ] fix: 缺陷修复
-- [ ] docs: 文档
-- [ ] refactor: 重构
-- [ ] perf: 性能优化
-- [ ] test: 测试
-- [ ] chore: 构建 / 杂项
+- [ ] feat: New feature
+- [ ] fix: Bug fix
+- [ ] docs: Documentation
+- [ ] refactor: Refactoring
+- [ ] perf: Performance optimization
+- [ ] test: Testing
+- [ ] chore: Build / Miscellaneous
 
-## 检查清单
+## Checklist
 
-- [ ] 已通过 `cargo fmt` 与 `cargo clippy`
-- [ ] 已通过 `cargo nextest run`
-- [ ] 提交信息符合 Conventional Commits 规范
-- [ ] 已更新相关文档（如有必要）
+- [ ] Passed `cargo fmt` and `cargo clippy`
+- [ ] Passed `cargo nextest run`
+- [ ] Commit message conforms to Conventional Commits specification
+- [ ] Relevant documentation updated (if necessary)

@@ -1,20 +1,21 @@
 ---
-name: 功能请求
-about: 为这个项目提出一个新想法
+name: Feature Request
+about: Propose a new idea for this project
 title: "[Feature] "
 labels: enhancement
 ---
 
-## 需求背景
+## Background
 
-<!-- 这个功能要解决什么问题 -->
+<!-- What problem does this feature solve -->
 
-## 期望方案
+## Desired Solution
 
-<!-- 你希望如何实现 -->
+<!-- How do you want it to be implemented -->
 
-## 替代方案
+## Alternative Solutions
 
-<!-- 你考虑过的其他实现方式 -->
+<!-- What other implementation methods have you considered -->
 
-## 补充信息
+## Additional Information
+---

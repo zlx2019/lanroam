@@ -1,9 +1,5 @@
 name: Release
 
-# 推送 v* 标签时：
-#   1. 生成 Changelog 并创建 GitHub Release
-#   2. 构建多平台二进制并附加到 Release（library 项目自动跳过）
-#   3. 发布到 crates.io（预发布版本跳过）
 on:
   push:
     tags:
@@ -13,7 +9,6 @@ permissions:
   contents: write
 
 jobs:
-  # 生成 Changelog 并创建 GitHub Release
   changelog:
     name: Changelog
     runs-on: ubuntu-latest
@@ -22,27 +17,22 @@ jobs:
         with:
           fetch-depth: 0
 
-      # 依据 cliff.toml 生成本次发布的 Changelog
       - name: Generate changelog
         uses: orhun/git-cliff-action@v4
         with:
           config: cliff.toml
-          # 预发布标签（含 "-"，如 v1.0.0-rc.1）尚未入 cliff 的 tag 序列，用 --unreleased 生成
           args: ${{ contains(github.ref_name, '-') && format('--unreleased --tag {0}', github.ref_name) || '--latest' }} --strip header
         env:
           OUTPUT: CHANGES.md
           GITHUB_REPO: ${{ github.repository }}
 
-      # 创建 GitHub Release，正文取自上一步生成的 Changelog
       - name: Create release
         uses: softprops/action-gh-release@v3
         with:
           body_path: CHANGES.md
           token: ${{ secrets.GITHUB_TOKEN }}
-          # SemVer 预发布版本（含 "-"）自动标记为 Pre-release
           prerelease: ${{ contains(github.ref_name, '-') }}
 
-  # 解析包元数据：包名 + 是否含二进制 target（决定是否执行二进制打包）。
   meta:
     name: Resolve package metadata
     if: github.repository != 'zlx2019/rust-template'
@@ -59,7 +49,6 @@ jobs:
           echo "bin=$(jq -r '.packages[0].name' <<< "$meta")" >> "$GITHUB_OUTPUT"
           echo "has_bin=$(jq -r '[.packages[0].targets[] | select(.kind[] == "bin")] | length > 0' <<< "$meta")" >> "$GITHUB_OUTPUT"
 
-  # 构建多平台二进制并附加到 Release（仅 application 项目）
   build:
     name: Build ${{ matrix.target }}
     needs: [changelog, meta]
@@ -86,13 +75,11 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           target: ${{ matrix.target }}
-      # Linux 交叉编译目标（aarch64 / musl）需要对应的链接器与 C 工具链
       - name: Setup cross toolchain
         if: runner.os == 'Linux'
         uses: taiki-e/setup-cross-toolchain-action@v1
         with:
           target: ${{ matrix.target }}
-      # 编译并打包（Unix → tar.gz，Windows → zip），附加到 Release
       - name: Build and upload
         uses: taiki-e/upload-rust-binary-action@v1
         with:
@@ -101,16 +88,12 @@ jobs:
           archive: $bin-$tag-$target
           include: README.md,LICENSE
           leading-dir: true
-          # 每个产物附带 sha256 校验和文件，供下载方验证完整性
           checksum: sha256
           token: ${{ secrets.GITHUB_TOKEN }}
 
-  # 发布到 crates.io：需在仓库 Settings → Secrets 配置 CARGO_REGISTRY_TOKEN；
   publish:
     name: Publish to crates.io
     needs: [meta, build]
-    # library 项目 build 被跳过时仍需发布，因此不能依赖默认的 needs 成功语义；
-    # 预发布版本（含 "-"）不发布
     if: ${{ !failure() && !cancelled() && needs.meta.result == 'success' && !contains(github.ref_name, '-') }}
     runs-on: ubuntu-latest
     env:
@@ -123,7 +106,6 @@ jobs:
         if: env.CARGO_REGISTRY_TOKEN != ''
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         if: env.CARGO_REGISTRY_TOKEN != ''
-      # tag 与 Cargo.toml 版本不一致时中止，防止发出与 tag 不符的版本
       - name: Verify tag matches package version
         if: env.CARGO_REGISTRY_TOKEN != ''
         run: |

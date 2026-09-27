@@ -14,7 +14,6 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # 格式化、Clippy 静态检查与文档构建检查
   lint:
     name: Format & Clippy & Doc
     if: github.repository != 'zlx2019/rust-template'
@@ -60,9 +59,6 @@ jobs:
           }
           if ($failed) { exit 1 }
 
-  # 单元测试与集成测试（使用 nextest）
-  # Runs on every v1 platform: sockets, multicast and file permissions behave
-  # differently on each
   test:
     name: Test (${{ matrix.os }})
     if: github.repository != 'zlx2019/rust-template'
@@ -80,7 +76,6 @@ jobs:
       - name: cargo nextest
         run: cargo nextest run --workspace --all-features --no-tests pass
 
-  # 依赖的安全公告与许可证审计
   deny:
     name: Cargo Deny
     if: github.repository != 'zlx2019/rust-template'
@@ -89,12 +84,10 @@ jobs:
       - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2
 
-  # 拼写检查
   typos:
     name: Typos
     if: github.repository != 'zlx2019/rust-template'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # 锁定版本，避免上游 master 变更导致 CI 意外失败（dependabot 会定期升级）
       - uses: crate-ci/typos@v1.48.0

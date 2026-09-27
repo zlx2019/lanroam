@@ -1,7 +1,3 @@
-# Clippy 配置
-
-
-# 允许在单元测试 | 集成测试中使用 unwrap、expect、panic、dbg、print
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-dbg-in-tests = true

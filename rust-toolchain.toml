@@ -1,4 +1,3 @@
-# 锁定项目使用的 Rust 工具链版本，保证本地开发与 CI 环境一致
 [toolchain]
 channel = "1.96.0"
 components = ["rustfmt", "clippy"]
