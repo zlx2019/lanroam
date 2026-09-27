@@ -9,6 +9,10 @@ devUrl = "http://localhost:1420"
 beforeBuildCommand = "pnpm build"
 frontendDist = "../dist"
 
+[app]
+# Transparent windows on macOS (the on-screen overlays)
+macOSPrivateApi = true
+
 [app.security]
 csp = "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' data:; style-src 'self' 'unsafe-inline'"
 

@@ -12,6 +12,7 @@ mod bridge;
 mod commands;
 mod dto;
 mod locale;
+mod overlay;
 mod settings;
 mod state;
 mod tray;
@@ -66,6 +67,9 @@ pub fn run() {
             commands::reject_join,
             commands::leave_group,
             commands::kick,
+            commands::place,
+            commands::identify,
+            commands::get_overlay,
             commands::rename,
             commands::set_swap,
             commands::request_action,

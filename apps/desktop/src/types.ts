@@ -38,9 +38,17 @@ export interface DeviceDto {
   /** Display scale in percent */
   scale: number;
   swap: boolean;
-  /** Where it sits on the layout canvas (logical pixels) */
+  /** Where it sits on the layout canvas (logical pixels): its displays' bounds */
   rect: RectDto | null;
+  /** Its origin on the canvas, which placing moves */
+  origin: PointDto | null;
   screens: RectDto[];
+}
+
+/** A point on the layout canvas */
+export interface PointDto {
+  x: number;
+  y: number;
 }
 
 /** A rectangle on the layout canvas */
@@ -130,6 +138,9 @@ export interface SettingsDto {
   theme: "system" | "dark" | "light";
   autostart: boolean;
 }
+
+/** What the on-screen overlays show */
+export type OverlayDto = { kind: "identify"; number: number | null; name: string };
 
 /** What the window asks the keyboard and mouse to do */
 export type Action =

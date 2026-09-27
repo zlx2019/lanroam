@@ -90,10 +90,23 @@ pub struct DeviceDto {
     pub scale: u32,
     /// Command and Control are swapped for input from the other platform
     pub swap: bool,
-    /// Where the device sits on the layout canvas (logical pixels)
+    /// Where the device sits on the layout canvas (logical pixels): the
+    /// bounds of its displays
     pub rect: Option<RectDto>,
+    /// Its origin on the canvas, which placing moves (the bounds start
+    /// elsewhere when a display lies left of or above the primary one)
+    pub origin: Option<PointDto>,
     /// Its displays on the canvas
     pub screens: Vec<RectDto>,
+}
+
+/// A point on the layout canvas
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct PointDto {
+    /// Horizontal
+    pub x: i32,
+    /// Vertical
+    pub y: i32,
 }
 
 /// A rectangle on the layout canvas
@@ -147,6 +160,10 @@ impl GroupDto {
                     scale: profile.scale,
                     swap: profile.swap_cmd_ctrl,
                     rect: placed.and_then(|d| d.bounds()).map(RectDto::from),
+                    origin: record.placement.as_ref().map(|p| PointDto {
+                        x: p.at.x,
+                        y: p.at.y,
+                    }),
                     screens: placed
                         .map(|d| {
                             d.desktop

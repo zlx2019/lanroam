@@ -2,8 +2,9 @@
 
 use std::sync::atomic::Ordering;
 
-use lanroam_core::engine::Request;
+use lanroam_core::engine::{Request, Spot};
 use lanroam_core::group::join::normalize_pin;
+use lanroam_core::lanroam_input::Point;
 use lanroam_core::lanroam_input::platform;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
@@ -15,6 +16,7 @@ use crate::dto::{
     CommandError, InputDto, JoinAnswerDto, JoinPromptDto, JoinStartDto, JoiningEndedDto, NearbyDto,
     PermissionsDto, Snapshot,
 };
+use crate::overlay::{self, OverlayDto};
 use crate::settings::Settings;
 use crate::state::{AppState, lock};
 use crate::tray;
@@ -144,6 +146,25 @@ pub async fn leave_group(state: State<'_, AppState>) -> Reply<()> {
 #[tauri::command]
 pub async fn kick(state: State<'_, AppState>, fingerprint: String) -> Reply<()> {
     Ok(state.engine.kick(&fingerprint).await?)
+}
+
+/// Move a member on the layout canvas: its origin to (`x`, `y`)
+#[tauri::command]
+pub async fn place(state: State<'_, AppState>, fingerprint: String, x: i32, y: i32) -> Reply<()> {
+    let spot = Spot::At(Point::new(x, y));
+    Ok(state.engine.place(&fingerprint, spot).await?)
+}
+
+/// Have every online member show its number on its screens
+#[tauri::command]
+pub fn identify(state: State<'_, AppState>) -> Reply<()> {
+    Ok(state.engine.identify()?)
+}
+
+/// What the overlays show right now (for an overlay page that just loaded)
+#[tauri::command]
+pub fn get_overlay(app: AppHandle) -> Option<OverlayDto> {
+    overlay::current(&app)
 }
 
 /// Rename this device

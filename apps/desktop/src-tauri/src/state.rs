@@ -7,6 +7,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use lanroam_core::engine::{Engine, Joining};
 
 use crate::dto::{ControlDto, JoinPromptDto};
+use crate::overlay::OverlayDto;
 use crate::settings::Settings;
 
 /// Everything the app keeps while it runs
@@ -25,6 +26,8 @@ pub struct AppState {
     pub join_seq: AtomicU64,
     /// The join this device sponsors, while its PIN is shown
     pub prompt: Mutex<Option<JoinPromptDto>>,
+    /// What the overlays show right now
+    pub overlay: Mutex<Option<OverlayDto>>,
 }
 
 /// Lock a mutex; a panic while it was held leaves plain data behind, so a

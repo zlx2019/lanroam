@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Core IPC, hiding and dragging windows (close = hide to the tray; the header is the macOS title bar), following the theme",
-  "windows": ["main", "join"],
+  "windows": ["main", "join", "overlay-*"],
   "permissions": [
     "core:default",
     "core:window:allow-hide",

@@ -446,6 +446,64 @@ footer code,
   background: var(--accent);
   box-shadow: 0 0 6px var(--accent);
 }
+.legend i.wall {
+  background: var(--line2);
+  box-shadow: none;
+}
+.tools {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  gap: 6px;
+  z-index: 6;
+}
+.ebar {
+  position: absolute;
+  border-radius: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--accent);
+  pointer-events: none;
+  z-index: 2;
+  transition: opacity 0.2s;
+}
+.ebar.off {
+  background: repeating-linear-gradient(45deg, var(--faint) 0 4px, transparent 4px 7px);
+  box-shadow: none;
+}
+.ebar.dim {
+  opacity: 0.25;
+}
+.jn {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border-radius: 50%;
+  z-index: 4;
+  pointer-events: none;
+  background: var(--panel);
+  border: 2px solid var(--accent);
+}
+.jn.off {
+  border-color: var(--faint);
+}
+.warnbox {
+  display: flex;
+  gap: 8px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  padding: 8px 10px;
+  border-radius: 8px;
+}
+.warnbox svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  margin-top: 1px;
+}
 .hint {
   position: absolute;
   left: 50%;
@@ -488,6 +546,7 @@ footer code,
 }
 .dev {
   position: absolute;
+  touch-action: none;
   border-radius: 7px;
   border: 1.5px solid var(--line2);
   background: linear-gradient(160deg, var(--scr-a), var(--scr-b));
@@ -505,7 +564,7 @@ footer code,
     box-shadow 0.2s,
     border-color 0.2s;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
-  cursor: pointer;
+  cursor: grab;
 }
 .dev:hover {
   border-color: var(--faint);
@@ -519,6 +578,16 @@ footer code,
 .dev.offline {
   opacity: 0.5;
   border-style: dashed;
+}
+.dev.dragging {
+  transition: none;
+  cursor: grabbing;
+  z-index: 3;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.4);
+}
+.dev.bad {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 25%, transparent);
 }
 .dev .plat {
   color: var(--mist);
@@ -670,6 +739,10 @@ footer code,
   color: var(--mist);
   font-size: 11.5px;
   line-height: 1.5;
+}
+.tip b {
+  color: var(--mist);
+  font-weight: 500;
 }
 .tip {
   margin-top: auto;
@@ -1092,4 +1165,40 @@ footer code,
 .bigpin span {
   color: var(--faint);
   padding: 0 0.15em;
+}
+
+/* ---------- On-screen overlays ---------- */
+
+[data-overlay],
+[data-overlay] body {
+  background: transparent;
+}
+.overlay {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+.identify {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 28px 56px 24px;
+  border-radius: 28px;
+  background: rgba(14, 19, 34, 0.82);
+  backdrop-filter: blur(20px);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+  color: #fff;
+  animation: rise 0.25s;
+}
+.identify-num {
+  font-size: 150px;
+  font-weight: 700;
+  line-height: 1;
+  color: #3ccfbe;
+}
+.identify-name {
+  font-size: 22px;
+  font-weight: 600;
 }

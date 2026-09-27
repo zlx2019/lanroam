@@ -59,6 +59,8 @@ pnpm install
 pnpm tauri dev
 ```
 
+To work on the interface without a backend, run `pnpm dev` and open `http://localhost:1420/mock.html` in a browser: the app on a fake group (`src/dev/mock.ts`), which is never part of the build.
+
 The app and the CLI share `~/.lanroam`: they are the same device and cannot run at the same time. To run a second identity next to them, set `LANROAM_DATA_DIR` to another directory and `LANROAM_PORT=0`, as `--data-dir` and `--port 0` do for the CLI.
 
 ## Local Checks

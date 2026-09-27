@@ -143,3 +143,13 @@ export function KeyboardIcon() {
     </svg>
   );
 }
+
+/** A screen: identify */
+export function ScreenIcon() {
+  return (
+    <svg viewBox="0 0 16 16">
+      <rect x="1.5" y="2.5" width="13" height="9" rx="1.5" stroke="currentColor" strokeWidth="1.5" fill="none" />
+      <path d="M5.5 14h5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}

@@ -14,9 +14,14 @@ const App = lazy(() => import("./App"));
 const JoinWindow = lazy(() =>
   import("./components/JoinWindow").then((m) => ({ default: m.JoinWindow })),
 );
+const Overlay = lazy(() => import("./components/Overlay").then((m) => ({ default: m.Overlay })));
 
 /** This window's label */
 const label = getCurrentWindow().label;
+
+/** An on-screen overlay: a transparent page over a whole display */
+const isOverlay = label.startsWith("overlay-");
+if (isOverlay) document.documentElement.dataset.overlay = "1";
 
 /** Loads the preferences, then the window's content in their language */
 function Root() {
@@ -46,7 +51,13 @@ function Root() {
   return (
     <I18nProvider lang={resolveLang(settings.language)}>
       <Suspense fallback={null}>
-        {label === "join" ? <JoinWindow /> : <App settings={settings} onSettings={save} />}
+        {isOverlay ? (
+          <Overlay />
+        ) : label === "join" ? (
+          <JoinWindow />
+        ) : (
+          <App settings={settings} onSettings={save} />
+        )}
       </Suspense>
     </I18nProvider>
   );

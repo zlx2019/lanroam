@@ -8,6 +8,7 @@ import type {
   JoinPromptDto,
   JoinStartDto,
   NearbyDto,
+  OverlayDto,
   PermissionsDto,
   SettingsDto,
   Snapshot,
@@ -32,6 +33,13 @@ export const api = {
   leaveGroup: () => invoke<void>("leave_group"),
   /** Remove a member */
   kick: (fingerprint: string) => invoke<void>("kick", { fingerprint }),
+  /** Move a member: its origin to (x, y) on the canvas */
+  place: (fingerprint: string, x: number, y: number) =>
+    invoke<void>("place", { fingerprint, x, y }),
+  /** Every online member shows its number on its screens */
+  identify: () => invoke<void>("identify"),
+  /** What the overlays show right now */
+  getOverlay: () => invoke<OverlayDto | null>("get_overlay"),
   /** Rename this device */
   rename: (name: string) => invoke<void>("rename", { name }),
   /** Swap Command and Control for input into this device */

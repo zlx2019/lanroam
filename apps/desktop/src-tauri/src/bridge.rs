@@ -13,6 +13,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::mpsc;
 
 use crate::dto::{GroupDto, InputDto, JoinEndedDto, JoinPromptDto, SelfDto, Snapshot};
+use crate::overlay::{self, OverlayDto};
 use crate::settings::Settings;
 use crate::state::{AppState, lock};
 use crate::tray;
@@ -71,6 +72,7 @@ pub async fn start(
         joining: tokio::sync::Mutex::new(None),
         join_seq: std::sync::atomic::AtomicU64::new(0),
         prompt: std::sync::Mutex::new(None),
+        overlay: std::sync::Mutex::new(None),
     };
     Ok((state, events))
 }
@@ -90,6 +92,22 @@ async fn on_event(app: &AppHandle, event: EngineEvent) {
     match event {
         EngineEvent::Online(_) | EngineEvent::Offline { .. } | EngineEvent::Group(_) => {}
         EngineEvent::Kicked => emit(app, events::KICKED, ()),
+        EngineEvent::Identify => {
+            let info = state.engine.info();
+            let number = state.engine.group().and_then(|doc| {
+                let numbered = lanroam_core::layout::numbered(&doc);
+                numbered
+                    .iter()
+                    .position(|fp| *fp == info.fingerprint)
+                    .map(|i| i + 1)
+            });
+            let what = OverlayDto::Identify {
+                number,
+                name: info.name,
+            };
+            overlay::show(app, what, overlay::IDENTIFY_TIME);
+            return;
+        }
         EngineEvent::JoinPin {
             joiner,
             pin,
