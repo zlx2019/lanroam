@@ -43,6 +43,13 @@ pub fn displays() -> Result<Vec<Rect>, InputError> {
     imp::displays()
 }
 
+/// Device units per logical pixel on this machine, in percent: 100 for
+/// macOS points, the primary monitor's DPI scale for Windows' physical
+/// pixels (150 at 144 DPI)
+pub fn scale() -> Result<u32, InputError> {
+    imp::scale()
+}
+
 /// Start capturing local input, deciding each event with `switch`
 ///
 /// Fails with [`InputError::PermissionDenied`] when the OS withholds the

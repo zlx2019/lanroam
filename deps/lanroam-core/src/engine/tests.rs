@@ -270,3 +270,58 @@ async fn strangers_and_grouped_devices() {
         Err(EngineError::Grouped)
     ));
 }
+
+impl TestEngine {
+    /// Report one display of `width`x`height` at `scale` percent
+    fn screens(&self, width: i32, height: i32, scale: u32) {
+        let displays = vec![lanroam_input::Rect::new(0, 0, width, height)];
+        let msg = Msg::Screens { displays, scale };
+        self.engine.inner.inbox.send(msg).unwrap();
+    }
+}
+
+/// Displays and placements spread through the group: the joiner lands
+/// right of its sponsor, and moving it shows up everywhere
+#[tokio::test]
+async fn layout_syncs() {
+    let (mut a, b) = (TestEngine::start(), TestEngine::start());
+    a.sees(&[&b]);
+    b.sees(&[&a]);
+    a.screens(2560, 1440, 100);
+    b.screens(2880, 1620, 150);
+    join(&b, &mut a).await;
+    let (fa, fb) = (a.fp(), b.fp());
+    let placed = |status: &Status, fp: &str, at: Point| {
+        status.doc.as_ref().is_some_and(|doc| {
+            doc.devices[fp].placement.as_ref().map(|p| p.at) == Some(at)
+                && !doc.devices[fp].profile.displays.is_empty()
+        })
+    };
+    for engine in [&a, &b] {
+        engine
+            .until("both placed side by side", |s| {
+                placed(s, &fa, Point::new(0, 0)) && placed(s, &fb, Point::new(2560, 0))
+            })
+            .await;
+    }
+    let edges = crate::layout::world(&a.engine.group().unwrap()).shared_edges();
+    assert_eq!(edges.len(), 1);
+    assert_eq!((edges[0].from, edges[0].to), (0.0, 1080.0));
+
+    // b moves itself below a; a sees it
+    let below = Spot::Beside {
+        side: Edge::Bottom,
+        anchor: fa.clone(),
+        offset: 100,
+    };
+    b.engine.place(&fb, below).await.unwrap();
+    a.until("b below a", |s| placed(s, &fb, Point::new(100, 1440)))
+        .await;
+
+    // Overlapping spots are refused
+    let refused = a.engine.place(&fb, Spot::At(Point::new(10, 10))).await;
+    assert!(
+        matches!(refused, Err(EngineError::Layout(LayoutError::Overlap(..)))),
+        "{refused:?}"
+    );
+}

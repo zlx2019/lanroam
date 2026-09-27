@@ -5,6 +5,8 @@
 //! │             Windows codes of each
 //! ├─ geometry ─ displays, desktop edges, where the pointer lands when it
 //! │             crosses from one desktop to another
+//! ├─ world    ─ every device's desktop on one shared canvas: crossing
+//! │             between devices, neighbours, reading order
 //! ├─ switch   ─ source side: event by event, keep input local or send it
 //! │             to the target
 //! ├─ inject   ─ target side: replay a source's input and release whatever
@@ -25,6 +27,7 @@ pub mod inject;
 pub mod keymap;
 pub mod platform;
 pub mod switch;
+pub mod world;
 
 pub use event::{InputEvent, MouseButton};
 pub use geometry::{Desktop, Edge, Point, Rect};

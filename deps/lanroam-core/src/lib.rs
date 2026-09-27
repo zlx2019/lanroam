@@ -14,7 +14,7 @@
 //! ├─ session   ─ input sessions: source forwards, target replays  (M1)
 //! │              control arbitration                             (M2)
 //! ├─ group     ─ desk group: membership document, PIN joins      (M2)
-//! ├─ layout    ─ monitor arrangement shared by the group         (M2)
+//! ├─ layout    ─ where members' desktops sit on the shared canvas (M2)
 //! ├─ clipboard ─ clipboard hand-off on entering a device          (M4)
 //! └─ dnd       ─ cross-device file drag and drop                  (M5)
 //! ```
@@ -30,6 +30,7 @@ use lan_kit::AppProfile;
 pub mod diag;
 pub mod engine;
 pub mod group;
+pub mod layout;
 pub mod node;
 pub mod protocol;
 pub mod session;

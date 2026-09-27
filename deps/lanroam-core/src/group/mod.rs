@@ -10,8 +10,11 @@
 //!   the higher epoch wins, and at equal epochs the removal wins. Kicking
 //!   (or leaving) bumps the epoch and sets `removed`, a tombstone an old
 //!   copy cannot undo; joining again bumps the epoch once more
-//! - **Profile** (name, platform) is written by the device itself only and
-//!   ordered by its own revision counter
+//! - **Profile** (name, platform, displays) is written by the device itself
+//!   only and ordered by its own revision counter
+//! - **Placement** (where the device sits on the layout canvas) may be set
+//!   by any member; the latest write wins, ordered by a Lamport clock over
+//!   the document and the writer's fingerprint as tie-break
 //!
 //! Records are not signed: any member may add or remove devices anyway, so
 //! a signature would not stop a hostile member. Trust comes from the
@@ -25,6 +28,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use lan_kit::PeerInfo;
+use lanroam_input::{Point, Rect};
 use serde::{Deserialize, Serialize};
 
 /// File holding the group document in the data directory
@@ -52,13 +56,70 @@ pub struct Profile {
     pub name: String,
     /// Platform tag (macos / windows / linux)
     pub platform: String,
+    /// Displays in the device's own coordinates; empty until it reports
+    /// them
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub displays: Vec<Rect>,
+    /// Device units per logical pixel, in percent (see
+    /// [`lanroam_input::platform::scale`])
+    #[serde(default = "full_scale")]
+    pub scale: u32,
+}
+
+/// Scale of devices that report none: device units are logical pixels
+fn full_scale() -> u32 {
+    100
 }
 
 impl Profile {
-    /// Whether this profile already says what `info` says
-    fn describes(&self, info: &PeerInfo) -> bool {
-        self.device_id == info.device_id && self.name == info.name && self.platform == info.platform
+    /// A first revision from device info, displays not known yet
+    pub fn new(info: &PeerInfo) -> Self {
+        Self {
+            rev: 1,
+            device_id: info.device_id.clone(),
+            name: info.name.clone(),
+            platform: info.platform.clone(),
+            displays: Vec::new(),
+            scale: full_scale(),
+        }
     }
+
+    /// Whether both say the same, revisions aside
+    fn same_as(&self, other: &Self) -> bool {
+        (
+            &self.device_id,
+            &self.name,
+            &self.platform,
+            &self.displays,
+            self.scale,
+        ) == (
+            &other.device_id,
+            &other.name,
+            &other.platform,
+            &other.displays,
+            other.scale,
+        )
+    }
+}
+
+/// Order of placement writes: the higher clock wins, then the writer's
+/// fingerprint
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct Stamp {
+    /// Lamport clock: above every stamp the writer had seen
+    pub clock: u64,
+    /// Fingerprint of the writer
+    pub by: String,
+}
+
+/// Where a device sits on the layout canvas
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Placement {
+    /// Canvas position of the device's origin (its primary display's
+    /// top-left corner), in logical pixels
+    pub at: Point,
+    /// When it was set
+    pub stamp: Stamp,
 }
 
 /// One device in the group document
@@ -71,6 +132,9 @@ pub struct DeviceRecord {
     pub removed: bool,
     /// The device's own description
     pub profile: Profile,
+    /// Where it sits on the layout canvas; `None` until placed
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<Placement>,
 }
 
 impl DeviceRecord {
@@ -90,6 +154,15 @@ impl DeviceRecord {
         }
         if other.profile.rev > self.profile.rev {
             self.profile = other.profile.clone();
+            changed = true;
+        }
+        let newer = match (&self.placement, &other.placement) {
+            (_, None) => false,
+            (None, Some(_)) => true,
+            (Some(ours), Some(theirs)) => theirs.stamp > ours.stamp,
+        };
+        if newer {
+            self.placement = other.placement.clone();
             changed = true;
         }
         changed
@@ -150,12 +223,8 @@ impl GroupDoc {
                 let record = DeviceRecord {
                     epoch: 1,
                     removed: false,
-                    profile: Profile {
-                        rev: 1,
-                        device_id: info.device_id.clone(),
-                        name: info.name.clone(),
-                        platform: info.platform.clone(),
-                    },
+                    profile: Profile::new(info),
+                    placement: None,
                 };
                 self.devices.insert(info.fingerprint.clone(), record);
             }
@@ -175,22 +244,42 @@ impl GroupDoc {
         }
     }
 
-    /// Bring the record of `info`'s device up to date with it; only the
-    /// device itself calls this. False if nothing changed (or it has no
-    /// record)
-    pub fn update_profile(&mut self, info: &PeerInfo) -> bool {
-        let Some(record) = self.devices.get_mut(&info.fingerprint) else {
+    /// Replace the profile of device `fingerprint` with a new revision of
+    /// `profile` (its `rev` is ignored); only the device itself calls this.
+    /// False if nothing changed (or it has no record)
+    pub fn update_profile(&mut self, fingerprint: &str, mut profile: Profile) -> bool {
+        let Some(record) = self.devices.get_mut(fingerprint) else {
             return false;
         };
-        if record.profile.describes(info) {
+        if record.profile.same_as(&profile) {
             return false;
         }
-        record.profile = Profile {
-            rev: record.profile.rev + 1,
-            device_id: info.device_id.clone(),
-            name: info.name.clone(),
-            platform: info.platform.clone(),
+        profile.rev = record.profile.rev + 1;
+        record.profile = profile;
+        true
+    }
+
+    /// Place device `fingerprint` at `at` on the canvas, as written by
+    /// `by`; false if it has no record
+    pub fn place(&mut self, fingerprint: &str, at: Point, by: &str) -> bool {
+        let clock = self
+            .devices
+            .values()
+            .filter_map(|record| record.placement.as_ref())
+            .map(|placement| placement.stamp.clock)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let Some(record) = self.devices.get_mut(fingerprint) else {
+            return false;
         };
+        record.placement = Some(Placement {
+            at,
+            stamp: Stamp {
+                clock,
+                by: by.to_string(),
+            },
+        });
         true
     }
 
@@ -357,9 +446,11 @@ mod tests {
         let mut c = a.clone();
         a.admit(&info("c"));
         b.remove("fp-a");
-        let mut renamed = info("b");
+        let mut renamed = Profile::new(&info("b"));
         renamed.name = "Desk".into();
-        c.update_profile(&renamed);
+        c.update_profile("fp-b", renamed);
+        a.place("fp-a", Point::new(0, 0), "fp-a");
+        b.place("fp-a", Point::new(5, 5), "fp-b");
 
         let abc = merged(&merged(&a, &b), &c);
         let cba = merged(&merged(&c, &b), &a);
@@ -368,18 +459,48 @@ mod tests {
         assert_eq!(abc.standing("fp-a"), Standing::Removed);
         assert!(abc.is_member("fp-c"));
         assert_eq!(abc.devices["fp-b"].profile.name, "Desk");
+        // Same clock: the larger writer fingerprint wins
+        assert_eq!(
+            abc.devices["fp-a"].placement.as_ref().unwrap().at,
+            Point::new(5, 5)
+        );
     }
 
     /// Profiles only change when the device says something new
     #[test]
     fn profile_updates() {
         let mut doc = GroupDoc::new(&info("a"));
-        assert!(!doc.update_profile(&info("a")));
-        assert!(!doc.update_profile(&info("stranger")));
-        let mut renamed = info("a");
-        renamed.name = "Studio".into();
-        assert!(doc.update_profile(&renamed));
+        assert!(!doc.update_profile("fp-a", Profile::new(&info("a"))));
+        assert!(!doc.update_profile("fp-stranger", Profile::new(&info("stranger"))));
+        let mut changed = Profile::new(&info("a"));
+        changed.displays = vec![Rect::new(0, 0, 1920, 1080)];
+        changed.scale = 150;
+        assert!(doc.update_profile("fp-a", changed.clone()));
         assert_eq!(doc.devices["fp-a"].profile.rev, 2);
+        assert!(!doc.update_profile("fp-a", changed));
+    }
+
+    /// Later placements win; each write moves the clock past all others
+    #[test]
+    fn placements() {
+        let mut doc = GroupDoc::new(&info("a"));
+        doc.admit(&info("b"));
+        assert!(doc.place("fp-a", Point::new(0, 0), "fp-a"));
+        assert!(doc.place("fp-b", Point::new(1920, 0), "fp-a"));
+        assert!(!doc.place("fp-c", Point::new(0, 0), "fp-a"));
+        let stale = doc.clone();
+        assert!(doc.place("fp-b", Point::new(-1920, 0), "fp-b"));
+        assert_eq!(
+            doc.devices["fp-b"].placement.as_ref().unwrap().stamp.clock,
+            3
+        );
+        assert!(!doc.merge(&stale));
+        let mut old = stale;
+        assert!(old.merge(&doc));
+        assert_eq!(
+            old.devices["fp-b"].placement.as_ref().unwrap().at,
+            Point::new(-1920, 0)
+        );
     }
 
     /// Another group's document never mixes in

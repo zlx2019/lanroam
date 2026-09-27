@@ -15,6 +15,11 @@ pub(super) fn displays() -> Result<Vec<Rect>, InputError> {
 }
 
 /// Not available
+pub(super) fn scale() -> Result<u32, InputError> {
+    Err(InputError::Unsupported("reading the display scale"))
+}
+
+/// Not available
 pub(super) fn start_capture(
     _switch: Arc<Mutex<Switch>>,
     _sink: EmitSink,

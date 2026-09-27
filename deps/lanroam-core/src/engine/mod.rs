@@ -13,9 +13,10 @@
 mod mesh;
 
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use lan_kit::{Peer, PeerEvent, PeerInfo};
+use lanroam_input::{Edge, Point, platform};
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
@@ -23,10 +24,15 @@ use tokio::task::JoinHandle;
 use crate::diag;
 use crate::group::join::{self, Challenge, JoinError, JoinGate, Verdict};
 use crate::group::{GroupDoc, GroupStore, Standing};
+use crate::layout::LayoutError;
 use crate::node::{Node, NodeConfig, NodeError};
 use crate::protocol::{Purpose, join_denied, reason_code};
 use crate::transport::{Incoming, Link, Transport, TransportError};
 use mesh::{Mesh, Msg, Wiring};
+
+/// How often this device's displays are read, to notice a display being
+/// plugged in, removed or rearranged
+const SCREEN_POLL: Duration = Duration::from_secs(2);
 
 /// Engine errors
 #[derive(Debug, Error)]
@@ -43,6 +49,9 @@ pub enum EngineError {
     /// Joining failed
     #[error(transparent)]
     Join(#[from] JoinError),
+    /// A layout change was refused
+    #[error(transparent)]
+    Layout(#[from] LayoutError),
     /// This device is in a group already (leave it first)
     #[error("this device is in a desk group already; leave it first")]
     Grouped,
@@ -89,6 +98,23 @@ pub enum EngineEvent {
     },
 }
 
+/// Where to put a device on the layout canvas
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Spot {
+    /// Its origin at this canvas position
+    At(Point),
+    /// On `side` of the device `anchor`, shifted `offset` logical pixels
+    /// along the shared edge
+    Beside {
+        /// Which side of the anchor
+        side: Edge,
+        /// Fingerprint of the anchor
+        anchor: String,
+        /// Shift along the edge (right or down)
+        offset: i32,
+    },
+}
+
 /// Group state at a glance
 #[derive(Debug, Clone)]
 pub struct Status {
@@ -132,7 +158,10 @@ impl Engine {
         let node = Arc::new(node);
         let transport = Arc::clone(node.transport());
         let info = node.info().clone();
-        Self::launch(store, transport, info, Some(node), Some(peer_events))
+        let (engine, events) = Self::launch(store, transport, info, Some(node), Some(peer_events))?;
+        let poller = tokio::spawn(poll_screens(engine.inner.inbox.clone()));
+        engine.lock_tasks().push(poller);
+        Ok((engine, events))
     }
 
     /// Wire the mesh, the accept loop and the discovery feed around a bound
@@ -251,6 +280,17 @@ impl Engine {
         })
     }
 
+    /// Move a member on the layout canvas
+    pub async fn place(&self, fingerprint: &str, spot: Spot) -> Result<(), EngineError> {
+        let fingerprint = fingerprint.to_string();
+        self.ask(|reply| Msg::Place {
+            fingerprint,
+            spot,
+            reply,
+        })
+        .await?
+    }
+
     /// Remove a member from the group
     pub async fn kick(&self, fingerprint: &str) -> Result<(), EngineError> {
         let fingerprint = fingerprint.to_string();
@@ -268,13 +308,7 @@ impl Engine {
         if self.inner.inbox.send(Msg::Shutdown { reply }).is_ok() {
             let _ = done.await;
         }
-        let tasks = std::mem::take(
-            &mut *self
-                .inner
-                .tasks
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner),
-        );
+        let tasks = std::mem::take(&mut *self.lock_tasks());
         for task in tasks {
             task.abort();
         }
@@ -285,6 +319,14 @@ impl Engine {
                 self.inner.transport.wait_idle().await;
             }
         }
+    }
+
+    /// The background tasks
+    fn lock_tasks(&self) -> std::sync::MutexGuard<'_, Vec<JoinHandle<()>>> {
+        self.inner
+            .tasks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Send the mesh a request and wait for its reply
@@ -335,6 +377,36 @@ impl Joining {
                 Ok(Some(shared))
             }
         }
+    }
+}
+
+/// Read this device's displays every [`SCREEN_POLL`] and report changes to
+/// the mesh
+async fn poll_screens(inbox: mpsc::UnboundedSender<Msg>) {
+    let mut last = None;
+    let mut warned = false;
+    loop {
+        let read = tokio::task::spawn_blocking(|| Ok((platform::displays()?, platform::scale()?)))
+            .await
+            .unwrap_or_else(|e| Err(lanroam_input::InputError::Os(e.to_string())));
+        match read {
+            Ok(screens) if last.as_ref() != Some(&screens) => {
+                let (displays, scale) = screens.clone();
+                last = Some(screens);
+                if inbox.send(Msg::Screens { displays, scale }).is_err() {
+                    return;
+                }
+            }
+            Ok(_) => {}
+            Err(e) if !warned => {
+                warned = true;
+                tracing::warn!(
+                    "cannot read the displays, the layout will not show this device: {e}"
+                );
+            }
+            Err(_) => {}
+        }
+        tokio::time::sleep(SCREEN_POLL).await;
     }
 }
 

@@ -28,10 +28,12 @@ use std::sync::{Arc, Mutex, Once};
 
 use windows_sys::Win32::Foundation::{LPARAM, LRESULT, POINT, RECT, TRUE, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
-    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
+    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTOPRIMARY, MONITORINFO,
+    MonitorFromPoint,
 };
 use windows_sys::Win32::UI::HiDpi::{
-    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForMonitor, MDT_EFFECTIVE_DPI,
+    SetProcessDpiAwarenessContext,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBD_EVENT_FLAGS, KEYBDINPUT,
@@ -81,6 +83,22 @@ fn dpi_aware() {
             tracing::debug!("DPI awareness was already set for this process");
         }
     });
+}
+
+/// The primary monitor's DPI scale in percent (physical pixels per logical
+/// pixel)
+pub(super) fn scale() -> Result<u32, InputError> {
+    dpi_aware();
+    // SAFETY: plain call; with MONITOR_DEFAULTTOPRIMARY it always returns a
+    // monitor
+    let primary = unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) };
+    let (mut dpi_x, mut dpi_y) = (0u32, 0u32);
+    // SAFETY: both out-pointers are valid for the call
+    let hr = unsafe { GetDpiForMonitor(primary, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) };
+    if hr < 0 || dpi_x == 0 {
+        return Err(InputError::Os(format!("GetDpiForMonitor failed ({hr:#x})")));
+    }
+    Ok(dpi_x * 100 / 96)
 }
 
 /// Monitor rectangles, in physical pixels

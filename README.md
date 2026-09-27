@@ -10,7 +10,7 @@ Move the pointer past the edge of one screen and it lands on the next computer, 
 
 ## Status
 
-**Early development, not usable yet.** Peer discovery, device identity and a QUIC transport pinned to certificate fingerprints are done. The keyboard and mouse prototype works from the command line between a Mac and a Windows PC, in both directions. Desk groups (joining with a PIN, kicking, leaving) are in progress; a screen layout, multi-device switching and the desktop app come next.
+**Early development, not usable yet.** Peer discovery, device identity and a QUIC transport pinned to certificate fingerprints are done. The keyboard and mouse prototype works from the command line between a Mac and a Windows PC, in both directions. Desk groups (joining with a PIN, kicking, leaving) and a shared screen layout work from the command line; switching between any devices of a group and the desktop app come next.
 
 | Milestone | Scope | |
 |---|---|---|
@@ -36,14 +36,14 @@ Rust is pinned by `rust-toolchain.toml`; see [CONTRIBUTING.md](./CONTRIBUTING.md
 
 ```bash
 cargo nextest run --workspace          # tests
-cargo run -p lanroam-cli -- run        # run this device in its desk group (console: join, kick, leave)
+cargo run -p lanroam-cli -- run        # run this device in its desk group (console: join, layout, place, ...)
 cargo run -p lanroam-cli -- listen     # run a node for the input prototype
 cargo run -p lanroam-cli -- scan       # list nodes on the LAN
 cargo run -p lanroam-cli -- ping <name | fingerprint prefix | ip:port>
 cargo run -p lanroam-cli -- share <target> --edge right   # control <target> from here
 ```
 
-In `run`, `join <device>` asks a nearby device to let this one into its group (founding a group when neither has one); that device shows a 6-digit PIN to type here. The PIN is checked with a password-authenticated key exchange bound to both TLS certificates, so a device impersonating the one you picked learns nothing it could use.
+In `run`, `join <device>` asks a nearby device to let this one into its group (founding a group when neither has one); that device shows a 6-digit PIN to type here. The PIN is checked with a password-authenticated key exchange bound to both TLS certificates, so a device impersonating the one you picked learns nothing it could use. `layout` shows where every member's screens sit on a shared canvas (in logical pixels, so a 150% Windows display lines up with a Mac's) and which edges they share; `place <member> right-of <member> [offset]` (or `left-of`, `above`, `below`) rearranges them, for the whole group.
 
 Two instances on one machine need their own identities: pass a different `--data-dir` to each and `--port 0`; `listen --dry-run` prints the input it receives instead of injecting it.
 

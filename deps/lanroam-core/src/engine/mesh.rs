@@ -20,11 +20,13 @@ use std::time::Duration;
 
 use lan_kit::frame::FrameError;
 use lan_kit::{Peer, PeerEvent, PeerInfo};
+use lanroam_input::Rect;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{Instant, MissedTickBehavior};
 
-use super::{EngineError, EngineEvent, Status};
-use crate::group::{GroupDoc, GroupStore};
+use super::{EngineError, EngineEvent, Spot, Status};
+use crate::group::{GroupDoc, GroupStore, Profile};
+use crate::layout;
 use crate::protocol::{Control, FRAMING, Purpose, reason_code};
 use crate::transport::{Link, Transport, TransportError, close_code};
 
@@ -95,6 +97,22 @@ pub(super) enum Msg {
     Adopt {
         /// The document
         doc: GroupDoc,
+        /// Done
+        reply: oneshot::Sender<Result<(), EngineError>>,
+    },
+    /// This device's displays, as last read
+    Screens {
+        /// Display rectangles, in device coordinates
+        displays: Vec<Rect>,
+        /// Device units per logical pixel, in percent
+        scale: u32,
+    },
+    /// Move a member on the layout canvas
+    Place {
+        /// The member
+        fingerprint: String,
+        /// Where to
+        spot: Spot,
         /// Done
         reply: oneshot::Sender<Result<(), EngineError>>,
     },
@@ -173,6 +191,9 @@ pub(super) struct Mesh {
     store: GroupStore,
     /// The document; `None` outside a group
     doc: Option<GroupDoc>,
+    /// This device's displays (device coordinates) and scale (percent);
+    /// `None` until first read
+    screens: Option<(Vec<Rect>, u32)>,
     /// Channels
     wiring: Wiring,
     /// Group ID currently advertised
@@ -204,6 +225,7 @@ impl Mesh {
             transport,
             store,
             doc,
+            screens: None,
             wiring,
             advertised: None,
             peers: HashMap::new(),
@@ -259,12 +281,24 @@ impl Mesh {
             Msg::Received { id, msg } => self.on_received(id, msg),
             Msg::LinkDown { id, duplicate } => self.on_link_down(id, duplicate),
             Msg::Admit { joiner, reply } => {
-                let doc = self.doc.get_or_insert_with(|| GroupDoc::new(&self.info));
-                doc.admit(&joiner);
-                self.commit();
+                self.admit(&joiner);
                 if let Some(doc) = &self.doc {
                     let _ = reply.send(doc.clone());
                 }
+            }
+            Msg::Screens { displays, scale } => {
+                let screens = Some((displays, scale));
+                if screens != self.screens {
+                    self.screens = screens;
+                    self.commit();
+                }
+            }
+            Msg::Place {
+                fingerprint,
+                spot,
+                reply,
+            } => {
+                let _ = reply.send(self.place(&fingerprint, spot));
             }
             Msg::Adopt { doc, reply } => {
                 let _ = reply.send(self.adopt(doc));
@@ -534,6 +568,59 @@ impl Mesh {
         self.commit();
     }
 
+    /// Let a verified joiner in (founding a group if there is none) and
+    /// give it a place right of everyone, level with this device
+    fn admit(&mut self, joiner: &PeerInfo) {
+        let own = self.info.fingerprint.clone();
+        if self.doc.is_none() {
+            self.doc = Some(GroupDoc::new(&self.info));
+            // Place ourselves first, so the joiner lands beside us
+            self.commit();
+        }
+        let Some(doc) = self.doc.as_mut() else {
+            return;
+        };
+        doc.admit(joiner);
+        let fp = &joiner.fingerprint;
+        if doc.devices.get(fp).is_some_and(|r| r.placement.is_none()) {
+            let at = layout::newcomer_spot(doc, &own);
+            doc.place(fp, at, &own);
+        }
+        self.commit();
+    }
+
+    /// Move a member on the canvas, refusing spots that overlap others
+    fn place(&mut self, fp: &str, spot: Spot) -> Result<(), EngineError> {
+        let doc = self.doc.as_mut().ok_or(EngineError::NoGroup)?;
+        let at = match spot {
+            Spot::At(at) => at,
+            Spot::Beside {
+                side,
+                anchor,
+                offset,
+            } => layout::spot_beside(doc, fp, side, &anchor, offset)?,
+        };
+        layout::check(doc, fp, at)?;
+        doc.place(fp, at, &self.info.fingerprint);
+        self.commit();
+        Ok(())
+    }
+
+    /// This device's profile as it stands; until the displays are first
+    /// read, those the document already holds
+    fn own_profile(&self) -> Profile {
+        let mut profile = Profile::new(&self.info);
+        let known = self.doc.as_ref().and_then(|doc| {
+            let record = doc.devices.get(&self.info.fingerprint)?;
+            Some((record.profile.displays.clone(), record.profile.scale))
+        });
+        if let Some((displays, scale)) = self.screens.clone().or(known) {
+            profile.displays = displays;
+            profile.scale = scale;
+        }
+        profile
+    }
+
     /// Take a sponsor's document after joining
     fn adopt(&mut self, doc: GroupDoc) -> Result<(), EngineError> {
         if self.doc.is_some() {
@@ -577,10 +664,16 @@ impl Mesh {
     /// every member, drop links to devices no longer in the group, dial new
     /// members
     fn commit(&mut self) {
+        let profile = self.own_profile();
+        let own = self.info.fingerprint.as_str();
         let Some(doc) = self.doc.as_mut() else {
             return;
         };
-        doc.update_profile(&self.info);
+        doc.update_profile(own, profile);
+        if doc.devices.get(own).is_some_and(|r| r.placement.is_none()) {
+            let at = layout::newcomer_spot(doc, own);
+            doc.place(own, at, own);
+        }
         let doc = doc.clone();
         self.save();
         let shared = Arc::new(doc.clone());

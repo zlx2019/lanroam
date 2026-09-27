@@ -7,10 +7,12 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail};
-use lanroam_core::engine::{Engine, EngineEvent, Status};
+use lanroam_core::engine::{Engine, EngineEvent, Spot, Status};
 use lanroam_core::group::GroupDoc;
 use lanroam_core::group::join::normalize_pin;
 use lanroam_core::lan_kit::{Peer, PeerInfo};
+use lanroam_core::lanroam_input::Edge;
+use lanroam_core::layout;
 use lanroam_core::node::NodeConfig;
 use lanroam_core::protocol::PROP_GROUP;
 use tokio::sync::{mpsc, oneshot};
@@ -27,6 +29,10 @@ const HELP: &str = "commands:
   join <device>    join the group of a nearby device (it shows a PIN)
   kick <member>    remove a member from the group
   leave            leave the group
+  layout           where the members' screens sit, and the edges they share
+  place <member> <left-of|right-of|above|below> <member> [offset]
+                   move a member beside another, shifted `offset` logical
+                   pixels along the edge (down or right)
   help             this list
   quit             stop (Ctrl-C and Ctrl-D work too)";
 
@@ -65,6 +71,7 @@ pub(crate) async fn cmd_run(common: &CommonArgs, port: u16, name: Option<String>
     let (asks_tx, mut asks) = mpsc::unbounded_channel::<PinRequest>();
     let mut pin_reply: Option<oneshot::Sender<Option<String>>> = None;
     let mut joining: Option<JoinHandle<()>> = None;
+    let mut seen = engine.group();
     loop {
         tokio::select! {
             line = lines.recv() => {
@@ -80,7 +87,7 @@ pub(crate) async fn cmd_run(common: &CommonArgs, port: u16, name: Option<String>
                 println!("enter the PIN {sponsor} shows ({left} attempts left, empty line cancels):");
                 pin_reply = Some(reply);
             }
-            Some(event) = events.recv() => print_event(&event),
+            Some(event) = events.recv() => print_event(&event, &mut seen),
             _ = tokio::signal::ctrl_c() => break,
         }
     }
@@ -139,12 +146,17 @@ async fn handle(
             .map_err(anyhow::Error::from),
         ("join", false) => start_join(engine, &arg, asks, joining),
         ("kick", false) => kick(engine, &arg).await,
+        ("layout", _) => {
+            print_layout(engine);
+            Ok(())
+        }
+        ("place", false) => place(engine, &arg).await,
         ("leave", _) => engine
             .leave()
             .await
             .map(|()| println!("group    left the group"))
             .map_err(anyhow::Error::from),
-        ("join" | "kick", true) => Err(anyhow!("`{command}` needs a device; see `help`")),
+        ("join" | "kick" | "place", true) => Err(anyhow!("`{command}` needs a device; see `help`")),
         _ => Err(anyhow!("unknown command {command:?}; see `help`")),
     };
     if let Err(e) = result {
@@ -209,9 +221,9 @@ async fn join(
     }
 }
 
-/// Remove the member `target` from the group
-async fn kick(engine: &Engine, target: &str) -> Result<()> {
-    let doc = engine.group().context("this device is in no group")?;
+/// Resolve a member by name, device id or fingerprint prefix: (fingerprint,
+/// name)
+fn find_member(doc: &GroupDoc, target: &str) -> Result<(String, String)> {
     let members: Vec<(&str, &str, &str)> = doc
         .members()
         .map(|(fp, record)| {
@@ -222,20 +234,131 @@ async fn kick(engine: &Engine, target: &str) -> Result<()> {
             )
         })
         .collect();
-    let (_, name, fp) = match pick(&members, target, |m| *m) {
-        Ok(Some(member)) => *member,
+    match pick(&members, target, |m| *m) {
+        Ok(Some((_, name, fp))) => Ok((fp.to_string(), name.to_string())),
         Ok(None) => bail!("no member matches {target:?}; see `group`"),
         Err(many) => {
             let names: Vec<&str> = many.iter().map(|m| m.1).collect();
             bail!("{target:?} is ambiguous: {}", names.join(", "));
         }
-    };
+    }
+}
+
+/// Remove the member `target` from the group
+async fn kick(engine: &Engine, target: &str) -> Result<()> {
+    let doc = engine.group().context("this device is in no group")?;
+    let (fp, name) = find_member(&doc, target)?;
     if fp == engine.info().fingerprint {
         bail!("that is this device; use `leave`");
     }
-    engine.kick(fp).await?;
+    engine.kick(&fp).await?;
     println!("group    removed {name}");
     Ok(())
+}
+
+/// `place <member> <left-of|right-of|above|below> <member> [offset]`
+async fn place(engine: &Engine, args: &str) -> Result<()> {
+    let words: Vec<&str> = args.split_whitespace().collect();
+    let (target, relation, anchor, offset) = match words.as_slice() {
+        [target, relation, anchor] => (*target, *relation, *anchor, 0),
+        [target, relation, anchor, offset] => {
+            let offset = offset
+                .parse()
+                .with_context(|| format!("{offset:?} is not an offset in pixels"))?;
+            (*target, *relation, *anchor, offset)
+        }
+        _ => bail!("usage: place <member> <left-of|right-of|above|below> <member> [offset]"),
+    };
+    let side = match relation {
+        "left-of" => Edge::Left,
+        "right-of" => Edge::Right,
+        "above" => Edge::Top,
+        "below" => Edge::Bottom,
+        _ => bail!("{relation:?} is not one of left-of, right-of, above, below"),
+    };
+    let doc = engine.group().context("this device is in no group")?;
+    let (fp, name) = find_member(&doc, target)?;
+    let (anchor, anchor_name) = find_member(&doc, anchor)?;
+    if fp == anchor {
+        bail!("a device cannot sit beside itself");
+    }
+    let spot = Spot::Beside {
+        side,
+        anchor,
+        offset,
+    };
+    engine.place(&fp, spot).await?;
+    println!("layout   {name} is {relation} {anchor_name} now");
+    Ok(())
+}
+
+/// Print the layout: each member's place and size, the shared edges, and
+/// problems
+fn print_layout(engine: &Engine) {
+    let Some(doc) = engine.group() else {
+        println!("layout   this device is in no group");
+        return;
+    };
+    let world = layout::world(&doc);
+    let name = |fp: &str| {
+        doc.devices
+            .get(fp)
+            .map_or_else(|| short_fp(fp).to_string(), |r| r.profile.name.clone())
+    };
+    println!("layout   canvas in logical pixels; numbers are for the Ctrl+Alt+N hotkeys");
+    for (n, device) in world.ordered().iter().enumerate() {
+        let (Some(record), Some(area)) = (doc.devices.get(&device.key), device.bounds()) else {
+            continue;
+        };
+        let scale = match record.profile.scale {
+            100 => String::new(),
+            pct => format!(" at {pct}%"),
+        };
+        println!(
+            "  {}. {:<20} at ({:.0}, {:.0})  {:.0}x{:.0}  {} display(s){scale}",
+            n + 1,
+            record.profile.name,
+            area.left,
+            area.top,
+            area.right - area.left,
+            area.bottom - area.top,
+            device.desktop.displays().len(),
+        );
+    }
+    for (fp, record) in doc.members() {
+        if world.device(fp).is_none() {
+            let why = if record.profile.displays.is_empty() {
+                "displays not reported yet"
+            } else {
+                "not placed yet"
+            };
+            println!("  -  {:<20} {why}", record.profile.name);
+        }
+    }
+    let edges = world.shared_edges();
+    if edges.is_empty() && world.devices().len() > 1 {
+        println!("edges    none: no two devices touch; move one with `place`");
+    }
+    for edge in &edges {
+        let (from_side, to_side, axis) = match edge.edge {
+            Edge::Right => ("right", "left", "y"),
+            _ => ("bottom", "top", "x"),
+        };
+        println!(
+            "edge     {} {from_side} | {} {to_side}   {axis} {:.0}..{:.0}",
+            name(&edge.first),
+            name(&edge.second),
+            edge.from,
+            edge.to
+        );
+    }
+    if let Some((a, b)) = world.overlapping() {
+        println!(
+            "warning  {} and {} overlap; move one with `place`",
+            name(a),
+            name(b)
+        );
+    }
 }
 
 /// Print the devices discovery sees and how they relate to our group
@@ -288,18 +411,33 @@ fn print_group(status: &Status, own: &PeerInfo) {
 }
 
 /// Print an engine event
-fn print_event(event: &EngineEvent) {
+///
+/// Group documents are compared with the last one `seen`, to say what
+/// changed rather than repeat the whole group.
+fn print_event(event: &EngineEvent, seen: &mut Option<Arc<GroupDoc>>) {
     match event {
         EngineEvent::Online(info) => println!("online   {}", describe(info)),
         EngineEvent::Offline { name, .. } => println!("offline  {name}"),
         EngineEvent::Group(Some(doc)) => {
-            let names: Vec<&str> = doc
-                .members()
-                .map(|(_, record)| record.profile.name.as_str())
-                .collect();
-            println!("group    {} members: {}", names.len(), names.join(", "));
+            let names = |doc: &GroupDoc| -> Vec<String> {
+                doc.members()
+                    .map(|(_, record)| record.profile.name.clone())
+                    .collect()
+            };
+            let world = |doc: &GroupDoc| layout::world(doc);
+            let before = seen.as_deref();
+            if before.map(names) != Some(names(doc)) {
+                let names = names(doc);
+                println!("group    {} members: {}", names.len(), names.join(", "));
+            } else if before.map(world) != Some(world(doc)) {
+                println!("layout   changed; `layout` shows it");
+            }
+            *seen = Some(Arc::clone(doc));
         }
-        EngineEvent::Group(None) => println!("group    this device is in no group now"),
+        EngineEvent::Group(None) => {
+            *seen = None;
+            println!("group    this device is in no group now");
+        }
         EngineEvent::Kicked => {
             println!("group    another member removed this device from the group")
         }

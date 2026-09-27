@@ -148,6 +148,12 @@ const CAPS_LOCK_CODE: u16 = 0x39;
 const MODIFIER_FLAGS: u64 =
     flag::SHIFT | flag::CONTROL | flag::ALTERNATE | flag::COMMAND | 0x0001_0000 | 0xFFFF;
 
+/// Device units per logical pixel, in percent
+pub(super) fn scale() -> Result<u32, InputError> {
+    // Display bounds are in points, which are logical pixels already
+    Ok(100)
+}
+
 /// Bounds of the active displays, in points
 pub(super) fn displays() -> Result<Vec<Rect>, InputError> {
     let mut ids = [CGDirectDisplayID::default(); MAX_DISPLAYS as usize];
