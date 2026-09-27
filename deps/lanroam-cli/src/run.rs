@@ -510,14 +510,14 @@ fn print_event(event: &EngineEvent, seen: &mut Option<Arc<GroupDoc>>) {
 /// Print a change of who controls what
 fn print_control(event: &ControlEvent) {
     match event {
-        ControlEvent::Controlling { name } => println!("control  now controlling {name}"),
-        ControlEvent::Home => println!("control  back on this device"),
-        ControlEvent::ControlledBy { name } => println!("control  {name} controls this device"),
-        ControlEvent::Freed { name } => println!("control  {name} gave this device back"),
-        ControlEvent::TookBack { name } => {
+        ControlEvent::Controlling { name, .. } => println!("control  now controlling {name}"),
+        ControlEvent::Home { .. } => println!("control  back on this device"),
+        ControlEvent::ControlledBy { name, .. } => println!("control  {name} controls this device"),
+        ControlEvent::Freed { name, .. } => println!("control  {name} gave this device back"),
+        ControlEvent::TookBack { name, .. } => {
             println!("control  took this device back from {name} (local input)");
         }
-        ControlEvent::LetGo { name, reason } => {
+        ControlEvent::LetGo { name, reason, .. } => {
             let why = match reason.as_str() {
                 released::PREEMPTED => "another device took it over",
                 released::LOCAL_INPUT => "someone used it",
@@ -526,7 +526,7 @@ fn print_control(event: &ControlEvent) {
             };
             println!("control  {name} let go ({why}); back here at the next input");
         }
-        ControlEvent::Unresponsive { name } => {
+        ControlEvent::Unresponsive { name, .. } => {
             println!("warning  {name} stopped answering; back here at the next input");
         }
         ControlEvent::Paused { on: true } => {
@@ -537,6 +537,14 @@ fn print_control(event: &ControlEvent) {
             println!("control  pointer locked to its device; Ctrl+Alt+L unlocks it");
         }
         ControlEvent::Locked { on: false } => println!("control  pointer unlocked"),
+        ControlEvent::LockedHere { name, on: true, .. } => {
+            println!("control  {name} locked the pointer to this device");
+        }
+        ControlEvent::LockedHere {
+            name, on: false, ..
+        } => {
+            println!("control  {name} unlocked the pointer");
+        }
         ControlEvent::Unavailable { what, reason } => {
             println!("warning  {what} is unavailable: {reason}");
         }

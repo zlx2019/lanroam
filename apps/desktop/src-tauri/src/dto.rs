@@ -228,8 +228,10 @@ impl From<&Peer> for NearbyDto {
 pub struct ControlDto {
     /// Where input goes right now
     pub mode: ControlMode,
-    /// The other device concerned (controlled or controlling)
+    /// The other device concerned (controlled or controlling): its name
     pub peer: Option<String>,
+    /// Its fingerprint
+    pub peer_fingerprint: Option<String>,
     /// Crossing edges is paused
     pub paused: bool,
     /// The pointer stays on its device
@@ -254,26 +256,32 @@ impl ControlDto {
     pub fn apply(&mut self, event: &ControlEvent) -> bool {
         let before = self.clone();
         match event {
-            ControlEvent::Controlling { name } => {
+            ControlEvent::Controlling { name, fingerprint } => {
                 self.mode = ControlMode::Controlling;
                 self.peer = Some(name.clone());
+                self.peer_fingerprint = Some(fingerprint.clone());
             }
-            ControlEvent::ControlledBy { name } => {
+            ControlEvent::ControlledBy {
+                name, fingerprint, ..
+            } => {
                 self.mode = ControlMode::Controlled;
                 self.peer = Some(name.clone());
+                self.peer_fingerprint = Some(fingerprint.clone());
             }
             // Control is back here, or about to come back at the next input
-            ControlEvent::Home
+            ControlEvent::Home { .. }
             | ControlEvent::Freed { .. }
             | ControlEvent::TookBack { .. }
             | ControlEvent::LetGo { .. }
             | ControlEvent::Unresponsive { .. } => {
                 self.mode = ControlMode::Idle;
                 self.peer = None;
+                self.peer_fingerprint = None;
             }
             ControlEvent::Paused { on } => self.paused = *on,
             ControlEvent::Locked { on } => self.locked = *on,
-            ControlEvent::Unavailable { .. } => {}
+            // Said on screen only (the lock is the controller's)
+            ControlEvent::LockedHere { .. } | ControlEvent::Unavailable { .. } => {}
         }
         *self != before
     }

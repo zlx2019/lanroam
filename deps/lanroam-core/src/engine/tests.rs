@@ -530,6 +530,7 @@ async fn control_walks_across_devices() {
     b.injected(&Injected::Move(Point::new(1, 500))).await;
     a.expect_control(ControlEvent::Controlling {
         name: b_name.clone(),
+        fingerprint: b.fp(),
     })
     .await;
     a.input.key(0x04, true);
@@ -538,24 +539,38 @@ async fn control_walks_across_devices() {
 
     a.input.push((0, 0), 1000.0, 0.0);
     c.injected(&Injected::Move(Point::new(1, 500))).await;
-    a.expect_control(ControlEvent::Controlling { name: c_name })
-        .await;
+    a.expect_control(ControlEvent::Controlling {
+        name: c_name,
+        fingerprint: c.fp(),
+    })
+    .await;
     a.input.push((0, 0), -5.0, 0.0);
     b.injected(&Injected::Move(Point::new(998, 500))).await;
 
     let decision = a.input.push((0, 0), -1000.0, 0.0);
-    assert!(decision.cursor.is_some(), "back home: {decision:?}");
+    let Some(switch::CursorAction::Release(back)) = decision.cursor else {
+        panic!("not back home: {decision:?}");
+    };
     let mut hops = Vec::new();
-    a.expect("home", |event| match event {
-        EngineEvent::Control(ControlEvent::Home) => Some(()),
-        EngineEvent::Control(other) => {
-            hops.push(other.clone());
-            None
-        }
-        _ => None,
-    })
-    .await;
-    assert_eq!(hops, [ControlEvent::Controlling { name: b_name }]);
+    let at = a
+        .expect("home", |event| match event {
+            EngineEvent::Control(ControlEvent::Home { at }) => Some(*at),
+            EngineEvent::Control(other) => {
+                hops.push(other.clone());
+                None
+            }
+            _ => None,
+        })
+        .await;
+    // The pointer comes back where the switch put it
+    assert_eq!(at, back);
+    assert_eq!(
+        hops,
+        [ControlEvent::Controlling {
+            name: b_name,
+            fingerprint: b.fp(),
+        }]
+    );
 }
 
 /// A second controller preempts the first, which gets its keys released
@@ -569,8 +584,12 @@ async fn preemption_and_takeover() {
     a.input.push((999, 500), 5.0, 0.0);
     a.input.key(0x04, true);
     b.injected(&Injected::Key(0x04, true)).await;
-    b.expect_control(ControlEvent::ControlledBy { name: a_name })
-        .await;
+    b.expect_control(ControlEvent::ControlledBy {
+        name: a_name,
+        fingerprint: a.fp(),
+        at: Point::new(1, 500),
+    })
+    .await;
 
     // c comes in from the right
     c.input.push((0, 500), -5.0, 0.0);
@@ -581,6 +600,7 @@ async fn preemption_and_takeover() {
     );
     a.expect_control(ControlEvent::LetGo {
         name: b_name.clone(),
+        fingerprint: b.fp(),
         reason: crate::protocol::released::PREEMPTED.into(),
     })
     .await;
@@ -589,10 +609,14 @@ async fn preemption_and_takeover() {
 
     // Someone at b touches its keyboard
     b.input.key(0x06, true);
-    b.expect_control(ControlEvent::TookBack { name: c_name })
-        .await;
+    b.expect_control(ControlEvent::TookBack {
+        name: c_name,
+        fingerprint: c.fp(),
+    })
+    .await;
     c.expect_control(ControlEvent::LetGo {
         name: b_name,
+        fingerprint: b.fp(),
         reason: crate::protocol::released::LOCAL_INPUT.into(),
     })
     .await;
@@ -608,7 +632,11 @@ async fn lost_controller_is_released() {
     b.injected(&Injected::Key(0x04, true)).await;
     a.engine.shutdown().await;
     b.injected(&Injected::Key(0x04, false)).await;
-    b.expect_control(ControlEvent::Freed { name: a_name }).await;
+    b.expect_control(ControlEvent::Freed {
+        name: a_name,
+        fingerprint: a.fp(),
+    })
+    .await;
 }
 
 /// Hotkeys act on the whole group: number 3 jumps straight to c (mid
@@ -630,12 +658,19 @@ async fn hotkeys_jump_across_the_group() {
     chord(usage::DIGIT_1 + 2);
     c.injected(&Injected::Move(Point::new(500, 500))).await;
     chord(usage::ESCAPE);
-    a.expect_control(ControlEvent::Controlling { name: c_name })
-        .await;
+    a.expect_control(ControlEvent::Controlling {
+        name: c_name,
+        fingerprint: c.fp(),
+    })
+    .await;
     a.expect_control(ControlEvent::Paused { on: true }).await;
     // c saw the modifiers (pressed while it was controlled) come and go,
     // never the hotkey's own key
-    c.expect_control(ControlEvent::Freed { name: a_name }).await;
+    c.expect_control(ControlEvent::Freed {
+        name: a_name,
+        fingerprint: a.fp(),
+    })
+    .await;
     let injected = c.injected(&Injected::Key(usage::LEFT_CTRL, false)).await;
     assert!(
         !injected.contains(&Injected::Key(usage::ESCAPE, true)),
@@ -733,8 +768,11 @@ async fn requests_from_the_tray() {
     a.engine.input_status().await.unwrap();
     a.input.push((500, 500), 1.0, 0.0);
     c.injected(&Injected::Move(Point::new(500, 500))).await;
-    a.expect_control(ControlEvent::Controlling { name: c_name })
-        .await;
+    a.expect_control(ControlEvent::Controlling {
+        name: c_name,
+        fingerprint: c.fp(),
+    })
+    .await;
 
     a.engine.request(Request::Pause).unwrap();
     a.engine.input_status().await.unwrap();
@@ -773,4 +811,25 @@ async fn identify_reaches_every_member() {
             })
             .await;
     }
+}
+
+/// Locking the pointer while controlling another device tells that device,
+/// which shows it where the user looks
+#[tokio::test]
+async fn a_lock_reaches_the_controlled_device() {
+    use lanroam_input::keymap::usage;
+
+    let (mut a, mut b, _c) = row_of_three().await;
+    let a_name = a.name();
+    a.input.push((999, 500), 5.0, 0.0);
+    b.injected(&Injected::Move(Point::new(1, 500))).await;
+    a.input.key(usage::SCROLL_LOCK, true);
+    a.input.key(usage::SCROLL_LOCK, false);
+    a.expect_control(ControlEvent::Locked { on: true }).await;
+    b.expect_control(ControlEvent::LockedHere {
+        name: a_name,
+        fingerprint: a.fp(),
+        on: true,
+    })
+    .await;
 }

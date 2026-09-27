@@ -88,29 +88,46 @@ pub enum ControlEvent {
     Controlling {
         /// The device
         name: String,
+        /// Its fingerprint
+        fingerprint: String,
     },
     /// They drive this device again
-    Home,
+    Home {
+        /// Where the pointer came back, in this device's coordinates: on an
+        /// outer edge after crossing it, mid-display otherwise
+        at: Point,
+    },
     /// `name` took control of this device
     ControlledBy {
         /// The device
         name: String,
+        /// Its fingerprint
+        fingerprint: String,
+        /// Where the pointer came in, in this device's coordinates: on an
+        /// outer edge after crossing it, mid-display after a jump
+        at: Point,
     },
     /// `name` gave control of this device back, or its link dropped
     Freed {
         /// The device
         name: String,
+        /// Its fingerprint
+        fingerprint: String,
     },
     /// Local input took this device back from `name`
     TookBack {
         /// The device
         name: String,
+        /// Its fingerprint
+        fingerprint: String,
     },
     /// The device being controlled let go (a [`released`] reason); control
     /// comes back at the next input
     LetGo {
         /// The device
         name: String,
+        /// Its fingerprint
+        fingerprint: String,
         /// Why
         reason: String,
     },
@@ -119,6 +136,18 @@ pub enum ControlEvent {
     Unresponsive {
         /// The device
         name: String,
+        /// Its fingerprint
+        fingerprint: String,
+    },
+    /// `name`, controlling this device, locked the pointer to it (or
+    /// unlocked it)
+    LockedHere {
+        /// The device
+        name: String,
+        /// Its fingerprint
+        fingerprint: String,
+        /// Locked
+        on: bool,
     },
     /// Crossing edges was paused (Ctrl+Alt+Esc) or resumed
     Paused {
@@ -446,7 +475,8 @@ impl Input {
                         next = inbox.try_recv().ok();
                     }
                     if std::mem::take(&mut self.home_pending) && self.target.is_none() {
-                        self.notify(ControlEvent::Home);
+                        let at = switch::lock(&self.switch).landed();
+                        self.notify(ControlEvent::Home { at });
                     }
                 }
                 _ = heartbeat.tick() => self.heartbeat(),
@@ -504,7 +534,10 @@ impl Input {
                 self.seq = 0;
                 self.send(&device, Control::Enter { x: at.x, y: at.y });
                 let name = self.name(&device);
-                self.notify(ControlEvent::Controlling { name });
+                self.notify(ControlEvent::Controlling {
+                    name,
+                    fingerprint: device,
+                });
             }
             Emit::Leave { device } => {
                 self.send(&device, Control::Leave);
@@ -546,7 +579,14 @@ impl Input {
             ),
             Emit::Wheel { device, dx, dy } => self.send(&device, Control::Wheel { dx, dy }),
             Emit::Paused(on) => self.notify(ControlEvent::Paused { on }),
-            Emit::Locked(on) => self.notify(ControlEvent::Locked { on }),
+            Emit::Locked(on) => {
+                // The pointer is on the controlled device: tell it too, so
+                // that it can say so where the user looks
+                if let Some(target) = self.target.clone() {
+                    self.send(&target, Control::PointerLocked { on });
+                }
+                self.notify(ControlEvent::Locked { on });
+            }
             Emit::Takeover => {
                 if let Some(controller) = self.controller.take() {
                     self.replay(Op::ReleaseAll);
@@ -557,7 +597,10 @@ impl Input {
                         },
                     );
                     let name = self.name(&controller);
-                    self.notify(ControlEvent::TookBack { name });
+                    self.notify(ControlEvent::TookBack {
+                        name,
+                        fingerprint: controller,
+                    });
                 }
             }
         }
@@ -574,11 +617,19 @@ impl Input {
                 self.replay(Op::Button(button, down, Point::new(x, y)));
             }
             Control::Wheel { dx, dy } if controlled => self.replay(Op::Wheel(dx, dy)),
+            Control::PointerLocked { on } if controlled => {
+                self.notify(ControlEvent::LockedHere {
+                    name: self.name(from),
+                    fingerprint: from.to_string(),
+                    on,
+                });
+            }
             Control::Released { reason_code } if self.target.as_deref() == Some(from) => {
                 switch::lock(&self.switch).request_release(Some(from));
                 let name = self.name(from);
                 self.notify(ControlEvent::LetGo {
                     name,
+                    fingerprint: from.to_string(),
                     reason: reason_code,
                 });
             }
@@ -610,7 +661,11 @@ impl Input {
         switch::lock(&self.switch).set_controlled(true);
         if fresh {
             let name = self.name(from);
-            self.notify(ControlEvent::ControlledBy { name });
+            self.notify(ControlEvent::ControlledBy {
+                name,
+                fingerprint: from.to_string(),
+                at,
+            });
         }
     }
 
@@ -620,7 +675,10 @@ impl Input {
         self.replay(Op::ReleaseAll);
         switch::lock(&self.switch).set_controlled(false);
         let name = self.name(from);
-        self.notify(ControlEvent::Freed { name });
+        self.notify(ControlEvent::Freed {
+            name,
+            fingerprint: from.to_string(),
+        });
     }
 
     /// Ping the controlled device; take control back if it went quiet
@@ -633,7 +691,10 @@ impl Input {
             self.unresponsive = true;
             switch::lock(&self.switch).request_release(Some(&target));
             let name = self.name(&target);
-            self.notify(ControlEvent::Unresponsive { name });
+            self.notify(ControlEvent::Unresponsive {
+                name,
+                fingerprint: target,
+            });
         }
     }
 

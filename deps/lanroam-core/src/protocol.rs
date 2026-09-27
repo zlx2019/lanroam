@@ -192,6 +192,12 @@ pub enum Control {
     /// Show your number in the layout on your screens for a moment, so the
     /// user can tell the devices apart (to every online member; since 2.1)
     Identify,
+    /// The controller locked the pointer to the receiver, or unlocked it,
+    /// for the receiver to show where the user looks (since 2.1)
+    PointerLocked {
+        /// Locked
+        on: bool,
+    },
     /// One PIN attempt begins (sponsor → joiner): the sponsor's SPAKE2
     /// message
     JoinChallenge {
@@ -242,6 +248,7 @@ impl Control {
             Self::Released { .. } => "released",
             Self::Group { .. } => "group",
             Self::Identify => "identify",
+            Self::PointerLocked { .. } => "pointer_locked",
             Self::JoinChallenge { .. } => "join_challenge",
             Self::JoinAnswer { .. } => "join_answer",
             Self::JoinAccepted { .. } => "join_accepted",

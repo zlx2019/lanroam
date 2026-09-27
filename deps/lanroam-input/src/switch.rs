@@ -207,6 +207,8 @@ pub struct Switch {
     remote: Option<Remote>,
     /// Where the local cursor left this machine, for coming back to it
     departed: Point,
+    /// Where the local cursor reappeared when control last came back
+    landed: Point,
     /// Where the local cursor is, as last seen
     local_at: Point,
     /// Where the cursor last was on each device left
@@ -245,6 +247,7 @@ impl Switch {
             local: local.into(),
             remote: None,
             departed: Point::default(),
+            landed: Point::default(),
             local_at: Point::default(),
             last: HashMap::new(),
             numbered: Vec::new(),
@@ -273,6 +276,12 @@ impl Switch {
     /// Whether input currently goes to another device
     pub fn is_remote(&self) -> bool {
         self.remote.is_some()
+    }
+
+    /// Where the local cursor reappeared when control last came back: on
+    /// the edge it crossed, or mid-display after a jump or a release
+    pub fn landed(&self) -> Point {
+        self.landed
     }
 
     /// Update the layout, and the devices that get Command and Control
@@ -471,6 +480,7 @@ impl Switch {
                 .and_then(|desktop| desktop.display_at(self.departed))
                 .map_or(self.departed, Rect::centre),
         };
+        self.landed = back;
         CursorAction::Release(back)
     }
 
@@ -874,6 +884,7 @@ mod tests {
             }]
         );
         assert_eq!(d.cursor, Some(CursorAction::Release(Point::new(1510, 400))));
+        assert_eq!(sw.landed(), Point::new(1510, 400));
         assert!(!sw.is_remote());
     }
 
