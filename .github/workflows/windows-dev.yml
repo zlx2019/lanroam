@@ -6,8 +6,9 @@ name: Windows Dev Build
 # at a fixed URL, which scripts/windows/update.ps1 downloads.
 on:
   push:
-    # Branches only: the rolling `dev` tag must never trigger a build
-    branches: ["**"]
+    # Branches only: the rolling `dev` tag must never trigger a build, and
+    # Dependabot's branches must not replace the build being tested
+    branches: ["**", "!dependabot/**"]
     paths:
       - "deps/**"
       - "apps/**"
