@@ -1,17 +1,21 @@
 //! macOS backend.
 //!
 //! - **Capture**: a Quartz event tap at the HID level, served by a CFRunLoop
-//!   on a thread of its own. An active tap (one that may drop events) needs
-//!   the Accessibility permission, and keyboard events need Input
-//!   Monitoring; macOS grants both to the app that started the process,
-//!   i.e. the terminal when running the CLI.
+//!   on a thread of its own. An active tap (one that may drop
+//!   events) needs the Accessibility permission, and keyboard events need
+//!   Input Monitoring; macOS grants both to the app that started the
+//!   process, i.e. the terminal when running the CLI.
 //! - **Displays**: CoreGraphics bounds, in points.
 //! - **Injection**: M1 step 2.
 //!
-//! While the target is being controlled the local cursor is frozen by
-//! disassociating it from the mouse. Motion is then read from the events'
-//! delta fields, which keep reporting movement even while the cursor
-//! cannot move.
+//! While the target is being controlled, the local cursor is hidden and
+//! frozen where it crossed, and motion is read from the events' delta
+//! fields, which keep reporting movement while the cursor cannot move. This
+//! follows Deskflow step by step: a background process only gets reliable
+//! control over the cursor once its window server connection has the private
+//! "SetsCursorInBackground" property. Warping the cursor back after every
+//! motion instead does not work: each warp makes macOS drop mouse events
+//! for a moment, and the remote cursor barely moves.
 
 #![allow(unsafe_code)] // CoreGraphics FFI: the tap callback and its context pointer
 
@@ -21,12 +25,16 @@ use std::ptr::{NonNull, null_mut};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
-use objc2_core_foundation::{CFMachPort, CFRunLoop, CGPoint, kCFRunLoopDefaultMode};
+use objc2_core_foundation::{
+    CFBoolean, CFMachPort, CFRetained, CFRunLoop, CFString, CGPoint, kCFBooleanTrue,
+    kCFRunLoopDefaultMode,
+};
 use objc2_core_graphics::{
-    CGAssociateMouseAndMouseCursorPosition, CGDirectDisplayID, CGDisplayBounds, CGError, CGEvent,
-    CGEventField, CGEventMask, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
-    CGEventTapProxy, CGEventType, CGGetActiveDisplayList, CGRequestListenEventAccess,
-    CGRequestPostEventAccess, CGWarpMouseCursorPosition,
+    CGAssociateMouseAndMouseCursorPosition, CGDirectDisplayID, CGDisplayBounds,
+    CGDisplayHideCursor, CGDisplayShowCursor, CGError, CGEvent, CGEventField, CGEventMask,
+    CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventTapProxy, CGEventType,
+    CGGetActiveDisplayList, CGMainDisplayID, CGRequestListenEventAccess, CGRequestPostEventAccess,
+    CGWarpMouseCursorPosition,
 };
 
 use super::{Capture, EmitSink};
@@ -42,6 +50,28 @@ const STOP_POLL_SECS: f64 = 0.2;
 
 /// Most displays one Mac drives
 const MAX_DISPLAYS: u32 = 16;
+
+/// How long macOS may hold local mouse events back after the cursor changes
+/// hands while it is parked, in seconds (Deskflow's value; the default
+/// quarter second makes the first remote motions hesitate)
+const PARKED_SUPPRESSION_SECS: f64 = 0.0001;
+
+// Private SkyLight calls, used by Barrier, Deskflow and lan-mouse alike: a
+// background process controls the cursor (hiding it, freezing it) reliably
+// only once its window server connection has the "SetsCursorInBackground"
+// property
+#[link(name = "ApplicationServices", kind = "framework")]
+unsafe extern "C" {
+    /// This process's connection to the window server
+    fn _CGSDefaultConnection() -> u32;
+    /// Set a property of a window server connection
+    fn CGSSetConnectionProperty(
+        connection: u32,
+        target: u32,
+        key: &CFString,
+        value: &CFBoolean,
+    ) -> CGError;
+}
 
 /// What to grant when the event tap cannot be created
 const PERMISSION_HELP: &str = "allow the app running lanroam (your terminal, for the CLI) under \
@@ -167,19 +197,16 @@ fn capture_thread(
         sink,
         port: None,
         out: Vec::with_capacity(8),
-        parked_at: None,
-        drift_reported: false,
+        parked: false,
     }));
     // SAFETY: `context` comes from Box::into_raw and is reclaimed only below,
     // after `run_tap` has returned
     let result = unsafe { run_tap(context, stop, ready) };
     // SAFETY: `run_tap` never created the tap or has invalidated it, so the
     // callback can no longer reach `context`
-    let tap = unsafe { Box::from_raw(context) };
-    if tap.parked_at.is_some() {
-        // Stopped while controlling the target: free the cursor where it is
-        CGAssociateMouseAndMouseCursorPosition(true);
-    }
+    let mut tap = unsafe { Box::from_raw(context) };
+    // Stopped while controlling the target: show the cursor again
+    tap.unpark();
     if let Err(e) = result {
         let _ = ready.send(Err(e));
     }
@@ -265,7 +292,46 @@ unsafe extern "C-unwind" fn tap_callback(
         catch_unwind(AssertUnwindSafe(|| tap.on_event(ty, cg_event))).unwrap_or(Verdict::Pass);
     match verdict {
         Verdict::Pass => event.as_ptr(),
-        Verdict::Swallow => null_mut(),
+        Verdict::Swallow => {
+            // Belt and braces: should the event get through anyway, it is
+            // now a null event nobody acts on
+            CGEvent::set_type(Some(cg_event), CGEventType::Null);
+            null_mut()
+        }
+    }
+}
+
+/// Let this background process control the cursor (best effort)
+fn allow_background_cursor() {
+    let key = CFString::from_static_str("SetsCursorInBackground");
+    // SAFETY: reading an immutable CoreFoundation constant
+    let Some(yes) = (unsafe { kCFBooleanTrue }) else {
+        return;
+    };
+    // SAFETY: private but long-stable call, with this process's connection
+    // and a valid key and value
+    let err = unsafe {
+        let connection = _CGSDefaultConnection();
+        CGSSetConnectionProperty(connection, connection, &key, yes)
+    };
+    warn_on_error(err, "let the background process control the cursor");
+}
+
+/// Set how long local mouse events may be held back after the cursor
+/// changes hands
+///
+/// Deprecated without a replacement for this purpose, yet still honoured;
+/// Deskflow relies on it the same way.
+#[allow(deprecated)]
+fn set_suppression_interval(seconds: f64) {
+    let err = objc2_core_graphics::CGSetLocalEventsSuppressionInterval(seconds);
+    warn_on_error(err, "set the event suppression interval");
+}
+
+/// Log a failed CoreGraphics call; cursor handling is best effort
+fn warn_on_error(err: CGError, what: &str) {
+    if err != CGError::Success {
+        tracing::warn!(code = err.0, "cannot {what}");
     }
 }
 
@@ -276,13 +342,11 @@ struct Tap {
     /// Receives the messages for the target
     sink: EmitSink,
     /// The tap itself, to re-enable it after macOS disabled it
-    port: Option<objc2_core_foundation::CFRetained<CFMachPort>>,
+    port: Option<CFRetained<CFMachPort>>,
     /// Reused buffer for the switch's messages
     out: Vec<Emit>,
-    /// Where the local cursor is frozen while controlling the target
-    parked_at: Option<Point>,
-    /// Whether a moving parked cursor was already reported
-    drift_reported: bool,
+    /// Whether the local cursor is hidden and frozen (target controlled)
+    parked: bool,
 }
 
 impl Tap {
@@ -293,6 +357,12 @@ impl Tap {
             if let Some(port) = &self.port {
                 CGEvent::tap_enable(port, true);
             }
+            // Input went straight to the local apps meanwhile: never leave
+            // the user with an invisible cursor, and take control back
+            if self.parked {
+                self.unpark();
+                switch::lock(&self.switch).request_release();
+            }
             return Verdict::Pass;
         }
         let ev = Some(event);
@@ -302,8 +372,10 @@ impl Tap {
             return Verdict::Pass;
         }
         let translated = translate(ty, event);
-        if let Translated::Event(InputEvent::Motion { at, .. }) = translated {
-            self.check_parked(at);
+        if self.parked
+            && let Translated::Event(InputEvent::Motion { at, dx, dy }) = translated
+        {
+            tracing::trace!(?at, dx, dy, "motion while parked");
         }
         let decision = {
             let mut switch = switch::lock(&self.switch);
@@ -330,49 +402,53 @@ impl Tap {
             (self.sink)(emit);
         }
         match decision.cursor {
-            Some(CursorAction::Park) => {
-                let p = CGEvent::location(ev);
-                self.park(Point::floor(p.x, p.y));
-            }
+            Some(CursorAction::Park) => self.park(),
             Some(CursorAction::Release(at)) => self.release(at),
             None => {}
         }
         decision.verdict
     }
 
-    /// Freeze the local cursor: moving the mouse no longer moves it, while
-    /// the events keep their deltas
-    fn park(&mut self, at: Point) {
-        let err = CGAssociateMouseAndMouseCursorPosition(false);
-        if err != CGError::Success {
-            tracing::warn!(code = err.0, "could not freeze the cursor");
+    /// Hide the local cursor and freeze it where it is (Deskflow's leave)
+    fn park(&mut self) {
+        if std::mem::replace(&mut self.parked, true) {
+            return;
         }
-        self.parked_at = Some(at);
+        tracing::debug!("parking the local cursor");
+        allow_background_cursor();
+        warn_on_error(CGDisplayHideCursor(CGMainDisplayID()), "hide the cursor");
+        // Re-associating right after hiding avoids the cursor randomly not
+        // hiding (Deskflow)
+        CGAssociateMouseAndMouseCursorPosition(true);
+        set_suppression_interval(PARKED_SUPPRESSION_SECS);
+        warn_on_error(
+            CGAssociateMouseAndMouseCursorPosition(false),
+            "freeze the cursor",
+        );
     }
 
-    /// Unfreeze the local cursor and put it at `at`
+    /// Put the local cursor at `at` and give it back to the mouse
     fn release(&mut self, at: Point) {
-        self.parked_at = None;
+        tracing::debug!(?at, "releasing the local cursor");
         CGAssociateMouseAndMouseCursorPosition(true);
         CGWarpMouseCursorPosition(CGPoint {
             x: f64::from(at.x),
             y: f64::from(at.y),
         });
-        // Re-associating right after a warp cancels the quarter second during
-        // which macOS would otherwise ignore mouse movement
-        CGAssociateMouseAndMouseCursorPosition(true);
+        self.unpark();
     }
 
-    /// Report once if the frozen cursor moves anyway (diagnostics for the
-    /// M1 prototype: the freeze is not documented for background processes)
-    fn check_parked(&mut self, at: Point) {
-        if let Some(parked) = self.parked_at
-            && at != parked
-            && !self.drift_reported
-        {
-            self.drift_reported = true;
-            tracing::warn!(?parked, now = ?at, "the local cursor moves while controlling the target");
+    /// Unfreeze and show the cursor if it is parked (Deskflow's enter);
+    /// hiding is counted by macOS, so every hide gets exactly one show
+    fn unpark(&mut self) {
+        if !std::mem::take(&mut self.parked) {
+            return;
         }
+        CGAssociateMouseAndMouseCursorPosition(true);
+        allow_background_cursor();
+        warn_on_error(CGDisplayShowCursor(CGMainDisplayID()), "show the cursor");
+        CGAssociateMouseAndMouseCursorPosition(true);
+        set_suppression_interval(0.0);
     }
 }
 
