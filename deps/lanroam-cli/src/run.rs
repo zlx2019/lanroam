@@ -376,12 +376,11 @@ fn print_layout(engine: &Engine) {
             Edge::Right => ("right", "left", "y"),
             _ => ("bottom", "top", "x"),
         };
+        let ((a_from, a_to), (b_from, b_to)) = (edge.first_span, edge.second_span);
         println!(
-            "edge     {} {from_side} | {} {to_side}   {axis} {:.0}..{:.0}",
+            "edge     {} {from_side} ({axis} {a_from:.0}..{a_to:.0}) <-> {} {to_side} ({axis} {b_from:.0}..{b_to:.0})",
             name(&edge.first),
             name(&edge.second),
-            edge.from,
-            edge.to
         );
     }
     if let Some((a, b)) = world.overlapping() {

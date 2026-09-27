@@ -7,9 +7,12 @@
 //! pixels), so a 150% Windows display and a Mac display of the same logical
 //! size line up.
 //!
-//! Crossing is "what you see is what you get": the pointer leaves one
-//! display and enters the facing display of another device at the same spot
-//! on the canvas. Where no display faces it, the edge is a wall.
+//! Crossing is proportional: where two devices touch, the whole of each
+//! one's side crosses, position mapped by its share of the side (the bottom
+//! of a tall display leads to the bottom of a short one), so going across
+//! and back returns to the same height. A device's side is every display of
+//! it on that line; several devices facing one side count as one stretch.
+//! Where no device faces a side, it is a wall.
 
 use crate::geometry::{Desktop, Edge, Point, Rect};
 
@@ -115,7 +118,7 @@ impl Device {
     }
 }
 
-/// A stretch of edge where two devices' displays touch
+/// Where two devices touch: the pointer crosses between their sides
 #[derive(Debug, Clone, PartialEq)]
 pub struct SharedEdge {
     /// The device on the left of a vertical edge, or above a horizontal one
@@ -126,10 +129,28 @@ pub struct SharedEdge {
     pub edge: Edge,
     /// Where the edge lies across its direction, on the canvas
     pub at: f64,
-    /// Start of the shared stretch along the edge
-    pub from: f64,
-    /// End of the shared stretch
-    pub to: f64,
+    /// Span of the first device's side along the edge
+    pub first_span: (f64, f64),
+    /// Span of the second device's side
+    pub second_span: (f64, f64),
+}
+
+/// The span `device` covers on the line `at` with its `side`: every display
+/// whose side lies on that line, from the first to the last
+fn span_on(device: &Device, side: Edge, at: f64) -> Option<(f64, f64)> {
+    device
+        .desktop
+        .displays()
+        .iter()
+        .map(|d| device.area(d).side(side))
+        .filter(|(line, _, _)| (line - at).abs() <= TOUCH)
+        .map(|(_, lo, hi)| (lo, hi))
+        .reduce(|(lo, hi), (a, b)| (lo.min(a), hi.max(b)))
+}
+
+/// Length two spans have in common (negative when apart)
+fn overlap((lo, hi): (f64, f64), (a, b): (f64, f64)) -> f64 {
+    hi.min(b) - lo.max(a)
 }
 
 /// Every device on the canvas
@@ -161,16 +182,16 @@ impl World {
     }
 
     /// Where a pointer pushed out of device `from` at `at` through `edge`
-    /// lands: the facing display of another device at the same canvas
-    /// position, `inset` pixels inside it. `None` at a wall or in a corner
-    /// guard
+    /// lands: on the devices facing that side, at the same share of their
+    /// side as it left at, `inset` pixels inside. `None` at a wall or in a
+    /// corner guard
     ///
     /// `at` must be on `from`'s outer boundary at `edge` (see
     /// [`Desktop::on_edge`]).
     pub fn cross(&self, from: &str, at: Point, edge: Edge, inset: i32) -> Option<(&Device, Point)> {
         let source = self.device(from)?;
         let display = source.desktop.display_at(at)?;
-        let (boundary, lo, hi) = source.area(display).side(edge);
+        let (line, lo, hi) = source.area(display).side(edge);
         // The pointer's pixel centre, projected on the canvas
         let (cx, cy) = source.to_canvas(f64::from(at.x) + 0.5, f64::from(at.y) + 0.5);
         let along = match edge {
@@ -180,16 +201,35 @@ impl World {
         if along < lo + CORNER_GUARD || along > hi - CORNER_GUARD {
             return None;
         }
-        self.devices
+        let from_span = span_on(source, edge, line)?;
+        let facing = edge.opposite();
+        let targets: Vec<&Device> = self
+            .devices
             .iter()
             .filter(|d| d.key != from)
-            .find_map(|target| {
-                let entry = target.desktop.displays().iter().find(|e| {
-                    let (facing, lo, hi) = target.area(e).side(edge.opposite());
-                    (facing - boundary).abs() <= TOUCH && along >= lo && along < hi
-                })?;
-                Some((target, landing(target, entry, edge, along, inset)))
+            .filter(|d| {
+                span_on(d, facing, line).is_some_and(|span| overlap(from_span, span) > TOUCH)
             })
+            .collect();
+        let to_span = targets
+            .iter()
+            .filter_map(|d| span_on(d, facing, line))
+            .reduce(|(lo, hi), (a, b)| (lo.min(a), hi.max(b)))?;
+        let share = ((along - from_span.0) / (from_span.1 - from_span.0)).clamp(0.0, 1.0);
+        let mapped = to_span.0 + share * (to_span.1 - to_span.0);
+        // The facing display closest to that spot (it falls in a gap when
+        // several devices share the side)
+        let (target, entry) = targets
+            .iter()
+            .flat_map(|d| d.desktop.displays().iter().map(move |e| (*d, e)))
+            .filter_map(|(d, e)| {
+                let (at, lo, hi) = d.area(e).side(facing);
+                let miss = (lo - mapped).max(mapped - hi).max(0.0);
+                ((at - line).abs() <= TOUCH).then_some((d, e, miss))
+            })
+            .min_by(|x, y| x.2.total_cmp(&y.2))
+            .map(|(d, e, _)| (d, e))?;
+        Some((target, landing(target, entry, edge, mapped, inset)))
     }
 
     /// The nearest device in `direction` from device `from`: devices lined
@@ -256,28 +296,36 @@ impl World {
         None
     }
 
-    /// Every stretch of edge where two devices' displays touch
+    /// Every place where two devices touch
     pub fn shared_edges(&self) -> Vec<SharedEdge> {
         let mut edges = Vec::new();
         for a in &self.devices {
             for b in self.devices.iter().filter(|b| b.key != a.key) {
-                for da in a.desktop.displays() {
-                    for db in b.desktop.displays() {
-                        let (area_a, area_b) = (a.area(da), b.area(db));
-                        for edge in [Edge::Right, Edge::Bottom] {
-                            let (at, a_lo, a_hi) = area_a.side(edge);
-                            let (facing, b_lo, b_hi) = area_b.side(edge.opposite());
-                            let (from, to) = (a_lo.max(b_lo), a_hi.min(b_hi));
-                            if (at - facing).abs() <= TOUCH && to - from > TOUCH {
-                                edges.push(SharedEdge {
-                                    first: a.key.clone(),
-                                    second: b.key.clone(),
-                                    edge,
-                                    at,
-                                    from,
-                                    to,
-                                });
-                            }
+                for edge in [Edge::Right, Edge::Bottom] {
+                    // Each line a's displays end on, once
+                    let mut lines: Vec<f64> = a
+                        .desktop
+                        .displays()
+                        .iter()
+                        .map(|d| a.area(d).side(edge).0)
+                        .collect();
+                    lines.sort_by(f64::total_cmp);
+                    lines.dedup_by(|x, y| (*x - *y).abs() <= TOUCH);
+                    for at in lines {
+                        let (Some(first_span), Some(second_span)) =
+                            (span_on(a, edge, at), span_on(b, edge.opposite(), at))
+                        else {
+                            continue;
+                        };
+                        if overlap(first_span, second_span) > TOUCH {
+                            edges.push(SharedEdge {
+                                first: a.key.clone(),
+                                second: b.key.clone(),
+                                edge,
+                                at,
+                                first_span,
+                                second_span,
+                            });
                         }
                     }
                 }
@@ -326,34 +374,38 @@ mod tests {
         ])
     }
 
-    /// The pointer enters at the same canvas height, in the target's own
-    /// (scaled) coordinates
+    /// The pointer enters at the same share of the side, in the target's
+    /// own (scaled) coordinates, and comes back where it left
     #[test]
-    fn crosses_at_the_same_spot() {
+    fn crosses_proportionally() {
         let world = mac_and_pc();
         let (pc, at) = world
             .cross("mac", Point::new(2559, 600), Edge::Right, 1)
             .unwrap();
         assert_eq!(pc.key, "pc");
-        // Canvas y 600.5 is 500.5 below the PC's origin: 750.75 physical
-        assert_eq!(at, Point::new(1, 750));
+        // 600.5 of 1440 → 41.7% of the PC's 1080 logical (1620 physical)
+        assert_eq!(at, Point::new(1, 675));
         let (mac, back) = world
-            .cross("pc", Point::new(0, 750), Edge::Left, 1)
+            .cross("pc", Point::new(0, 675), Edge::Left, 1)
             .unwrap();
         assert_eq!(mac.key, "mac");
         assert_eq!(back, Point::new(2558, 600));
+        // The bottom of the tall side reaches the bottom of the short one
+        let (_, low) = world
+            .cross("mac", Point::new(2559, 1430), Edge::Right, 1)
+            .unwrap();
+        assert_eq!(low, Point::new(1, 1609));
     }
 
-    /// Beside the stretch the displays share there is wall, and corners
-    /// never cross
+    /// Only a side nobody faces is a wall, and corners never cross
     #[test]
     fn walls_and_corners() {
         let world = mac_and_pc();
-        // Above the PC's top (canvas y < 100): wall
+        // Above the PC's top on the canvas, still part of the Mac's side
         assert!(
             world
                 .cross("mac", Point::new(2559, 50), Edge::Right, 1)
-                .is_none()
+                .is_some()
         );
         // Other sides: nothing there
         assert!(
@@ -361,23 +413,71 @@ mod tests {
                 .cross("mac", Point::new(0, 600), Edge::Left, 1)
                 .is_none()
         );
-        // Within the corner guard of the PC's top-left corner (canvas y 100)
+        assert!(
+            world
+                .cross("pc", Point::new(500, 1619), Edge::Bottom, 1)
+                .is_none()
+        );
+        // Corner guards at both ends of a display side
+        assert!(
+            world
+                .cross("mac", Point::new(2559, 1435), Edge::Right, 1)
+                .is_none()
+        );
         assert!(world.cross("pc", Point::new(0, 5), Edge::Left, 1).is_none());
         assert!(
             world
                 .cross("pc", Point::new(0, 20), Edge::Left, 1)
                 .is_some()
         );
-        // The PC's bottom reaches canvas 1180; the Mac continues below it
-        let (_, at) = world
-            .cross("mac", Point::new(2559, 1150), Edge::Right, 1)
-            .unwrap();
-        assert_eq!(at, Point::new(1, 1575));
+        // Devices on the same line that do not overlap are not neighbours
+        let apart = World::new([
+            single("a", (0, 0), 1000, 1000, 1.0),
+            single("b", (1000, 1000), 1000, 1000, 1.0),
+        ]);
         assert!(
-            world
-                .cross("mac", Point::new(2559, 1185), Edge::Right, 1)
+            apart
+                .cross("a", Point::new(999, 990), Edge::Right, 1)
                 .is_none()
         );
+    }
+
+    /// Stacked displays of one device make one side
+    #[test]
+    fn stacked_displays_form_one_side() {
+        let mac = Device::new(
+            "mac",
+            Desktop::new([Rect::new(0, 0, 1000, 500), Rect::new(0, 500, 1000, 500)]),
+            Point::new(0, 0),
+            1.0,
+        );
+        let world = World::new([mac, single("pc", (1000, 0), 1000, 250, 1.0)]);
+        let (_, at) = world
+            .cross("mac", Point::new(999, 750), Edge::Right, 1)
+            .unwrap();
+        assert_eq!(at, Point::new(1, 187));
+        let (_, back) = world
+            .cross("pc", Point::new(0, 187), Edge::Left, 1)
+            .unwrap();
+        assert_eq!(back, Point::new(998, 750));
+    }
+
+    /// Several devices along one side share it as one stretch
+    #[test]
+    fn devices_sharing_a_side() {
+        let world = World::new([
+            single("tall", (0, 0), 1000, 2000, 1.0),
+            single("upper", (1000, 0), 800, 1000, 1.0),
+            single("lower", (1000, 1000), 800, 1000, 1.0),
+        ]);
+        let (upper, _) = world
+            .cross("tall", Point::new(999, 500), Edge::Right, 1)
+            .unwrap();
+        let (lower, at) = world
+            .cross("tall", Point::new(999, 1500), Edge::Right, 1)
+            .unwrap();
+        assert_eq!((upper.key.as_str(), lower.key.as_str()), ("upper", "lower"));
+        assert_eq!(at, Point::new(1, 500));
     }
 
     /// Crossing works vertically and between displays of multi-display
@@ -439,9 +539,10 @@ mod tests {
         assert_eq!(edges.len(), 1);
         let edge = &edges[0];
         assert_eq!((edge.first.as_str(), edge.second.as_str()), ("mac", "pc"));
+        assert_eq!((edge.edge, edge.at), (Edge::Right, 2560.0));
         assert_eq!(
-            (edge.edge, edge.at, edge.from, edge.to),
-            (Edge::Right, 2560.0, 100.0, 1180.0)
+            (edge.first_span, edge.second_span),
+            ((0.0, 1440.0), (100.0, 1180.0))
         );
 
         let clash = World::new([

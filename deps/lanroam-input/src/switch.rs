@@ -574,12 +574,12 @@ mod tests {
         )
     }
 
-    /// `mac` (1512x982) | `pc` (1920x1080) | `tv` (1920x1080), side by side,
-    /// seen from the Mac
+    /// `mac` (1512x1080) | `pc` (1920x1080) | `tv` (1920x1080), side by side,
+    /// seen from the Mac; equal heights keep crossings one to one
     fn switch() -> Switch {
         let mut sw = Switch::new("mac");
         let world = World::new([
-            device("mac", 0, 1512, 982, 1.0),
+            device("mac", 0, 1512, 1080, 1.0),
             device("pc", 1512, 1920, 1080, 1.0),
             device("tv", 3432, 1920, 1080, 1.0),
         ]);
@@ -673,12 +673,12 @@ mod tests {
         assert!(!sw.is_remote());
     }
 
-    /// Walls stop the cursor, which slides along them
+    /// Sides nobody faces are walls: the cursor slides along them
     #[test]
     fn walls_hold_the_cursor() {
         let mut sw = switch();
         cross_to_pc(&mut sw, 400);
-        // Down past the PC's bottom: nothing below, it slides
+        // Down past the PC's bottom, then up past its top: nothing there
         let (_, out) = feed(&mut sw, motion(0, 0, 10.0, 5000.0));
         assert_eq!(
             out,
@@ -687,15 +687,13 @@ mod tests {
                 at: Point::new(11, 1079)
             }]
         );
-        // Left at a height the Mac (982 high) does not reach: wall
-        feed(&mut sw, motion(0, 0, -10.0, -79.0));
-        let (d, out) = feed(&mut sw, motion(0, 0, -5.0, 0.0));
+        let (d, out) = feed(&mut sw, motion(0, 0, 5.0, -5000.0));
         assert_eq!(d.cursor, None);
         assert_eq!(
             out,
             [Emit::Motion {
                 device: "pc".into(),
-                at: Point::new(0, 1000)
+                at: Point::new(16, 0)
             }]
         );
         assert_eq!(sw.target(), Some("pc"));
@@ -706,7 +704,7 @@ mod tests {
     fn motion_is_scaled() {
         let mut sw = Switch::new("mac");
         let world = World::new([
-            device("mac", 0, 1512, 982, 1.0),
+            device("mac", 0, 1512, 1080, 1.0),
             device("pc", 1512, 2880, 1620, 1.5),
         ]);
         sw.set_world(world, HashSet::new());
@@ -816,7 +814,7 @@ mod tests {
         cross_to_pc(&mut sw, 400);
         let (d, out) = feed(&mut sw, key(usage::ESCAPE, true));
         assert_eq!(d.verdict, Verdict::Swallow);
-        assert_eq!(d.cursor, Some(CursorAction::Release(Point::new(756, 491))));
+        assert_eq!(d.cursor, Some(CursorAction::Release(Point::new(756, 540))));
         assert_eq!(
             out,
             [Emit::Leave {
@@ -838,7 +836,7 @@ mod tests {
         assert_eq!(d.cursor, None);
         sw.request_release(Some("pc"));
         let (d, out) = feed(&mut sw, motion(0, 0, 1.0, 0.0));
-        assert_eq!(d.cursor, Some(CursorAction::Release(Point::new(756, 491))));
+        assert_eq!(d.cursor, Some(CursorAction::Release(Point::new(756, 540))));
         assert_eq!(
             out,
             [Emit::Leave {
@@ -849,7 +847,7 @@ mod tests {
         assert!(!sw.is_remote());
 
         cross_to_pc(&mut sw, 400);
-        let world = World::new([device("mac", 0, 1512, 982, 1.0)]);
+        let world = World::new([device("mac", 0, 1512, 1080, 1.0)]);
         sw.set_world(world, HashSet::new());
         let (d, _) = feed(&mut sw, key(0x04, true));
         assert!(matches!(d.cursor, Some(CursorAction::Release(_))));

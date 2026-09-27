@@ -204,7 +204,10 @@ mod tests {
         doc.place("pc", spot(Edge::Right, 180), "mac");
         let edges = world(&doc).shared_edges();
         assert_eq!(edges.len(), 1);
-        assert_eq!((edges[0].from, edges[0].to), (180.0, 1260.0));
+        assert_eq!(
+            (edges[0].first_span, edges[0].second_span),
+            ((0.0, 1440.0), (180.0, 1260.0))
+        );
     }
 
     /// Spots are refused where devices would overlap, and errors name the

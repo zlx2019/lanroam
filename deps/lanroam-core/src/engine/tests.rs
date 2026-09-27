@@ -419,7 +419,10 @@ async fn layout_syncs() {
     }
     let edges = crate::layout::world(&a.engine.group().unwrap()).shared_edges();
     assert_eq!(edges.len(), 1);
-    assert_eq!((edges[0].from, edges[0].to), (0.0, 1080.0));
+    assert_eq!(
+        (edges[0].first_span, edges[0].second_span),
+        ((0.0, 1440.0), (0.0, 1080.0))
+    );
 
     // b moves itself below a; a sees it
     let below = Spot::Beside {
