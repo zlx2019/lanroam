@@ -10,7 +10,7 @@ Move the pointer past the edge of one screen and it lands on the next computer, 
 
 ## Status
 
-**Early development, not usable yet.** Peer discovery, device identity and a QUIC transport pinned to certificate fingerprints are done. The keyboard and mouse prototype is under way: a Mac can already drive a Windows PC from the command line; the other direction comes next.
+**Early development, not usable yet.** Peer discovery, device identity and a QUIC transport pinned to certificate fingerprints are done. The keyboard and mouse prototype works from the command line between a Mac and a Windows PC, in both directions; desk groups, a screen layout editor and the desktop app come next.
 
 | Milestone | Scope | |
 |---|---|---|
@@ -44,7 +44,7 @@ cargo run -p lanroam-cli -- share <target> --edge right   # control <target> fro
 
 Two instances on one machine need their own identities: pass a different `--data-dir` to each and `--port 0`; `listen --dry-run` prints the input it receives instead of injecting it.
 
-`share` captures the local keyboard and mouse: push the pointer through the chosen edge to control the target, move it back to return. **Ctrl+Alt+Esc** (Ctrl+Option+Esc on a Mac) takes control back at once. On macOS, the app running the command (your terminal) needs Accessibility and Input Monitoring under System Settings > Privacy & Security.
+`share` captures the local keyboard and mouse: push the pointer through the chosen edge to control the target, move it back to return. **Ctrl+Alt+Esc** (Ctrl+Option+Esc on a Mac) takes control back at once. On macOS, the app running the command (your terminal) needs Accessibility (both to control and to be controlled) and Input Monitoring (to control) under System Settings > Privacy & Security.
 
 The Windows code can be linted from any machine: `cargo clippy -p lanroam-input --target x86_64-pc-windows-msvc`.
 

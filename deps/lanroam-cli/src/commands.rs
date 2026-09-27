@@ -107,9 +107,10 @@ pub(crate) async fn cmd_listen(
         .await
         .context("failed to start the node")?;
     println!(
-        "listening as {} on udp/{}  (Ctrl-C to quit)",
+        "listening as {} on udp/{}  (lanroam-cli {}, Ctrl-C to quit)",
         describe(node.info()),
-        node.transport().local_port()
+        node.transport().local_port(),
+        crate::VERSION
     );
 
     let accept = tokio::spawn(accept_loop(

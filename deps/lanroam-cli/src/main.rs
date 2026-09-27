@@ -18,7 +18,7 @@ use lanroam_core::{DEFAULT_DISCOVERY_PORT, DEFAULT_PORT};
 /// Version shown by `--version`. CI dev builds set `LANROAM_BUILD` to the
 /// branch and commit, so a binary on the Windows test machine can be matched
 /// to its source
-const VERSION: &str = match option_env!("LANROAM_BUILD") {
+pub(crate) const VERSION: &str = match option_env!("LANROAM_BUILD") {
     Some(build) => build,
     None => env!("CARGO_PKG_VERSION"),
 };

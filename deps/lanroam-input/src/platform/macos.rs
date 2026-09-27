@@ -6,7 +6,8 @@
 //!   Input Monitoring; macOS grants both to the app that started the
 //!   process, i.e. the terminal when running the CLI.
 //! - **Displays**: CoreGraphics bounds, in points.
-//! - **Injection**: M1 step 2.
+//! - **Injection**: `CGEventPost` at the HID level, where synthetic events
+//!   look like hardware ones; needs the Accessibility permission as well.
 //!
 //! While the target is being controlled, the local cursor is hidden and
 //! frozen where it crossed, and motion is read from the events' delta
@@ -19,11 +20,13 @@
 
 #![allow(unsafe_code)] // CoreGraphics FFI: the tap callback and its context pointer
 
+use std::collections::HashSet;
 use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr::{NonNull, null_mut};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use objc2_core_foundation::{
     CFBoolean, CFMachPort, CFRetained, CFRunLoop, CFString, CGPoint, kCFBooleanTrue,
@@ -31,18 +34,19 @@ use objc2_core_foundation::{
 };
 use objc2_core_graphics::{
     CGAssociateMouseAndMouseCursorPosition, CGDirectDisplayID, CGDisplayBounds,
-    CGDisplayHideCursor, CGDisplayShowCursor, CGError, CGEvent, CGEventField, CGEventMask,
-    CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventTapProxy, CGEventType,
-    CGGetActiveDisplayList, CGMainDisplayID, CGRequestListenEventAccess, CGRequestPostEventAccess,
-    CGWarpMouseCursorPosition,
+    CGDisplayHideCursor, CGDisplayShowCursor, CGError, CGEvent, CGEventField, CGEventFlags,
+    CGEventMask, CGEventSource, CGEventSourceStateID, CGEventTapLocation, CGEventTapOptions,
+    CGEventTapPlacement, CGEventTapProxy, CGEventType, CGGetActiveDisplayList, CGMainDisplayID,
+    CGMouseButton, CGPreflightPostEventAccess, CGRequestListenEventAccess,
+    CGRequestPostEventAccess, CGScrollEventUnit, CGWarpMouseCursorPosition,
 };
 
-use super::{Capture, EmitSink};
+use super::{Capture, EmitSink, Ready};
 use crate::event::{InputEvent, MouseButton};
 use crate::geometry::{Point, Rect};
 use crate::inject::Injector;
 use crate::keymap::{self, usage};
-use crate::switch::{self, CursorAction, Decision, Emit, Switch, Verdict};
+use crate::switch::{CursorAction, Emit, Switch, Verdict};
 use crate::{INJECTED_MARKER, InputError};
 
 /// How often the capture thread checks whether it should stop, in seconds
@@ -76,6 +80,22 @@ unsafe extern "C" {
 /// What to grant when the event tap cannot be created
 const PERMISSION_HELP: &str = "allow the app running lanroam (your terminal, for the CLI) under \
     System Settings > Privacy & Security > Accessibility and > Input Monitoring, then restart that app";
+
+/// What to grant when events cannot be posted
+const INJECT_PERMISSION_HELP: &str = "allow the app running lanroam (your terminal, for the CLI) \
+    under System Settings > Privacy & Security > Accessibility, then restart that app";
+
+/// Presses of the same button closer together than this count as a double
+/// (triple, ...) click; macOS's default double-click interval
+const MULTI_CLICK_TIME: Duration = Duration::from_millis(500);
+
+/// Presses of the same button further apart than this, in points, start a
+/// new click (Deskflow's value; the pointer wobbles slightly while clicking)
+const MULTI_CLICK_DISTANCE: f64 = 1.5;
+
+/// Scroll units (1/120 of a notch) per line: one wheel notch scrolls three
+/// lines, as it does on Windows (Deskflow's scale)
+const UNITS_PER_LINE: i32 = 40;
 
 /// Event types the tap receives
 const CAPTURED: [CGEventType; 14] = [
@@ -123,6 +143,11 @@ const MODIFIERS: [(u16, u64, u64); 8] = [
 /// Key code of Caps Lock, which only reports toggles
 const CAPS_LOCK_CODE: u16 = 0x39;
 
+/// Every modifier bit of the event flags: the generic ones, Caps Lock, and
+/// the device-dependent low bits
+const MODIFIER_FLAGS: u64 =
+    flag::SHIFT | flag::CONTROL | flag::ALTERNATE | flag::COMMAND | 0x0001_0000 | 0xFFFF;
+
 /// Bounds of the active displays, in points
 pub(super) fn displays() -> Result<Vec<Rect>, InputError> {
     let mut ids = [CGDirectDisplayID::default(); MAX_DISPLAYS as usize];
@@ -150,48 +175,17 @@ pub(super) fn displays() -> Result<Vec<Rect>, InputError> {
         .collect())
 }
 
-/// Injection arrives in M1 step 2
-pub(super) fn injector() -> Result<Box<dyn Injector>, InputError> {
-    Err(InputError::Unsupported("input injection on macOS"))
-}
-
 /// Start the event tap on its own thread; returns once it runs
 pub(super) fn start_capture(
     switch: Arc<Mutex<Switch>>,
     sink: EmitSink,
 ) -> Result<Capture, InputError> {
-    let stop = Arc::new(AtomicBool::new(false));
-    let (ready_tx, ready_rx) = mpsc::channel();
-    let thread = std::thread::Builder::new()
-        .name("lanroam-capture".into())
-        .spawn({
-            let stop = Arc::clone(&stop);
-            move || capture_thread(switch, sink, &stop, &ready_tx)
-        })
-        .map_err(|e| InputError::Os(format!("cannot start the capture thread: {e}")))?;
-    match ready_rx.recv() {
-        Ok(Ok(())) => Ok(Capture::new(stop, thread)),
-        Ok(Err(e)) => {
-            let _ = thread.join();
-            Err(e)
-        }
-        Err(_) => {
-            let _ = thread.join();
-            Err(InputError::Os(
-                "the capture thread ended during startup".into(),
-            ))
-        }
-    }
+    super::spawn_capture(move |stop, ready| capture_thread(switch, sink, stop, ready))
 }
 
 /// Body of the capture thread: own the tap context, run the tap, and give
 /// the cursor back at the end
-fn capture_thread(
-    switch: Arc<Mutex<Switch>>,
-    sink: EmitSink,
-    stop: &AtomicBool,
-    ready: &mpsc::Sender<Result<(), InputError>>,
-) {
+fn capture_thread(switch: Arc<Mutex<Switch>>, sink: EmitSink, stop: &AtomicBool, ready: &Ready) {
     let context = Box::into_raw(Box::new(Tap {
         switch,
         sink,
@@ -219,11 +213,7 @@ fn capture_thread(
 /// `context` must point to a live `Tap` that nothing else accesses until
 /// this function returns. The tap is invalidated before returning, so the
 /// callback never outlives the call.
-unsafe fn run_tap(
-    context: *mut Tap,
-    stop: &AtomicBool,
-    ready: &mpsc::Sender<Result<(), InputError>>,
-) -> Result<(), InputError> {
+unsafe fn run_tap(context: *mut Tap, stop: &AtomicBool, ready: &Ready) -> Result<(), InputError> {
     let mask: CGEventMask = CAPTURED.iter().fold(0, |mask, ty| mask | (1 << ty.0));
     // SAFETY: `tap_callback` follows the CGEventTapCallBack contract and
     // `context` stays valid while the tap exists (see above)
@@ -361,7 +351,7 @@ impl Tap {
             // the user with an invisible cursor, and take control back
             if self.parked {
                 self.unpark();
-                switch::lock(&self.switch).request_release();
+                crate::switch::lock(&self.switch).request_release();
             }
             return Verdict::Pass;
         }
@@ -377,30 +367,16 @@ impl Tap {
         {
             tracing::trace!(?at, dx, dy, "motion while parked");
         }
-        let decision = {
-            let mut switch = switch::lock(&self.switch);
-            match translated {
-                Translated::Event(input) => switch.handle(input, &mut self.out),
-                Translated::Toggle(usage) => {
-                    let press = switch.handle(InputEvent::Key { usage, down: true }, &mut self.out);
-                    switch.handle(InputEvent::Key { usage, down: false }, &mut self.out);
-                    press
-                }
-                // Something Lanroam does not forward: it must not leak to the
-                // local apps while the target is being controlled either
-                Translated::Ignored => Decision {
-                    verdict: if switch.is_remote() {
-                        Verdict::Swallow
-                    } else {
-                        Verdict::Pass
-                    },
-                    cursor: None,
-                },
+        let mut decide = |event| super::decide(&self.switch, event, &mut self.out, &mut self.sink);
+        let decision = match translated {
+            Translated::Event(input) => decide(Some(input)),
+            Translated::Toggle(usage) => {
+                let press = decide(Some(InputEvent::Key { usage, down: true }));
+                decide(Some(InputEvent::Key { usage, down: false }));
+                press
             }
+            Translated::Ignored => decide(None),
         };
-        for emit in self.out.drain(..) {
-            (self.sink)(emit);
-        }
         match decision.cursor {
             Some(CursorAction::Park) => self.park(),
             Some(CursorAction::Release(at)) => self.release(at),
@@ -449,6 +425,242 @@ impl Tap {
         warn_on_error(CGDisplayShowCursor(CGMainDisplayID()), "show the cursor");
         CGAssociateMouseAndMouseCursorPosition(true);
         set_suppression_interval(0.0);
+    }
+}
+
+/// An injector for this session
+///
+/// Posting events needs the Accessibility permission; without it macOS
+/// drops them silently, so it is checked up front.
+pub(super) fn injector() -> Result<Box<dyn Injector>, InputError> {
+    if !CGPreflightPostEventAccess() {
+        // Makes the app appear in the list, ready to be switched on
+        CGRequestPostEventAccess();
+        return Err(InputError::PermissionDenied(INJECT_PERMISSION_HELP.into()));
+    }
+    let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
+        .ok_or_else(|| InputError::Os("cannot create an event source".into()))?;
+    // Every event carries the marker, so a capture on this Mac ignores them
+    CGEventSource::set_user_data(Some(&source), i64::from(INJECTED_MARKER));
+    // The local mouse and keyboard stay usable while being controlled
+    CGEventSource::set_local_events_suppression_interval(Some(&source), 0.0);
+    let at = CGEvent::new(None).map_or(CGPoint { x: 0.0, y: 0.0 }, |now| {
+        CGEvent::location(Some(&now))
+    });
+    Ok(Box::new(PostInjector {
+        source,
+        at,
+        buttons: [false; MouseButton::COUNT],
+        keys: HashSet::new(),
+        clicks: Clicks::default(),
+        scroll: (0, 0),
+    }))
+}
+
+/// Injects with `CGEventPost`
+///
+/// Like Deskflow, it sets the modifier flags on every event itself (so that
+/// Cmd+click and Shift+arrow work and no modifier sticks), sends drag events
+/// while a button is held, and counts multi-clicks, since apps read the click
+/// count from the event rather than timing clicks themselves.
+struct PostInjector {
+    /// Source of every event: tagged, without local input suppression
+    source: CFRetained<CGEventSource>,
+    /// Where the cursor is
+    at: CGPoint,
+    /// Buttons held
+    buttons: [bool; MouseButton::COUNT],
+    /// Key codes held
+    keys: HashSet<u16>,
+    /// Multi-click counting
+    clicks: Clicks,
+    /// Scrolling not yet worth a whole line, in 1/120 notch (x, y)
+    scroll: (i32, i32),
+}
+
+// SAFETY: the event source is only ever used by the thread that currently
+// owns the injector, and CoreFoundation objects may move between threads
+unsafe impl Send for PostInjector {}
+
+impl PostInjector {
+    /// Set the modifier flags of the keys held and post the event
+    fn post(&self, event: &CGEvent) {
+        let ev = Some(event);
+        // Keep what the event says beyond the modifiers (keypad, Fn)
+        let other = CGEvent::flags(ev).0 & !MODIFIER_FLAGS;
+        let held = MODIFIERS
+            .iter()
+            .filter(|(code, ..)| self.keys.contains(code))
+            .fold(0, |bits, (_, device, generic)| bits | device | generic);
+        CGEvent::set_flags(ev, CGEventFlags(other | held));
+        CGEvent::post(CGEventTapLocation::HIDEventTap, ev);
+    }
+
+    /// The first button held, which decides the drag event type
+    fn held_button(&self) -> Option<MouseButton> {
+        MouseButton::ALL
+            .into_iter()
+            .find(|button| self.buttons[button.index()])
+    }
+
+    /// A mouse event of `ty` for `button` at the cursor
+    fn mouse_event(
+        &self,
+        ty: CGEventType,
+        button: MouseButton,
+    ) -> Result<CFRetained<CGEvent>, InputError> {
+        CGEvent::new_mouse_event(Some(&self.source), ty, self.at, cg_button(button))
+            .ok_or_else(|| InputError::Os("cannot create a mouse event".into()))
+    }
+}
+
+impl Injector for PostInjector {
+    /// Move, or drag while a button is held; the deltas are filled in for
+    /// apps that read them (games, 3D tools)
+    fn move_to(&mut self, at: Point) -> Result<(), InputError> {
+        let to = CGPoint {
+            x: f64::from(at.x),
+            y: f64::from(at.y),
+        };
+        let (dx, dy) = (to.x - self.at.x, to.y - self.at.y);
+        self.at = to;
+        let held = self.held_button();
+        let ty = match held {
+            None => CGEventType::MouseMoved,
+            Some(MouseButton::Left) => CGEventType::LeftMouseDragged,
+            Some(MouseButton::Right) => CGEventType::RightMouseDragged,
+            Some(_) => CGEventType::OtherMouseDragged,
+        };
+        let event = self.mouse_event(ty, held.unwrap_or(MouseButton::Left))?;
+        let ev = Some(&*event);
+        CGEvent::set_double_value_field(ev, CGEventField::MouseEventDeltaX, dx);
+        CGEvent::set_double_value_field(ev, CGEventField::MouseEventDeltaY, dy);
+        if held.is_some() {
+            CGEvent::set_integer_value_field(
+                ev,
+                CGEventField::MouseEventClickState,
+                self.clicks.count,
+            );
+        }
+        self.post(&event);
+        Ok(())
+    }
+
+    /// Press or release, with the click count of the current series
+    fn button(&mut self, button: MouseButton, down: bool) -> Result<(), InputError> {
+        if down {
+            self.clicks.press(button, self.at);
+        }
+        let ty = match (button, down) {
+            (MouseButton::Left, true) => CGEventType::LeftMouseDown,
+            (MouseButton::Left, false) => CGEventType::LeftMouseUp,
+            (MouseButton::Right, true) => CGEventType::RightMouseDown,
+            (MouseButton::Right, false) => CGEventType::RightMouseUp,
+            (_, true) => CGEventType::OtherMouseDown,
+            (_, false) => CGEventType::OtherMouseUp,
+        };
+        let event = self.mouse_event(ty, button)?;
+        CGEvent::set_integer_value_field(
+            Some(&event),
+            CGEventField::MouseEventClickState,
+            self.clicks.count,
+        );
+        self.buttons[button.index()] = down;
+        self.post(&event);
+        Ok(())
+    }
+
+    /// Scroll by whole lines, carrying the remainder over
+    fn wheel(&mut self, dx: i32, dy: i32) -> Result<(), InputError> {
+        self.scroll.0 += dx;
+        self.scroll.1 += dy;
+        let (lines_x, lines_y) = (
+            self.scroll.0 / UNITS_PER_LINE,
+            self.scroll.1 / UNITS_PER_LINE,
+        );
+        self.scroll.0 -= lines_x * UNITS_PER_LINE;
+        self.scroll.1 -= lines_y * UNITS_PER_LINE;
+        if lines_x == 0 && lines_y == 0 {
+            return Ok(());
+        }
+        // macOS counts horizontal scrolling positive to the left
+        let event = CGEvent::new_scroll_wheel_event2(
+            Some(&self.source),
+            CGScrollEventUnit::Line,
+            2,
+            lines_y,
+            -lines_x,
+            0,
+        )
+        .ok_or_else(|| InputError::Os("cannot create a scroll event".into()))?;
+        self.post(&event);
+        Ok(())
+    }
+
+    /// Press or release; modifiers go out as flag changes, like the
+    /// hardware sends them (input methods watch those, e.g. Shift to switch
+    /// between Chinese and English)
+    fn key(&mut self, usage: u16, down: bool) -> Result<(), InputError> {
+        let code = keymap::mac_from_usage(usage).ok_or_else(|| {
+            InputError::Os(format!("no macOS key code for HID usage {usage:#04x}"))
+        })?;
+        let repeat = down && !self.keys.insert(code);
+        if !down {
+            self.keys.remove(&code);
+        }
+        let event = CGEvent::new_keyboard_event(Some(&self.source), code, down)
+            .ok_or_else(|| InputError::Os("cannot create a keyboard event".into()))?;
+        let ev = Some(&*event);
+        if MODIFIERS.iter().any(|(modifier, ..)| *modifier == code) {
+            CGEvent::set_type(ev, CGEventType::FlagsChanged);
+        } else if repeat {
+            CGEvent::set_integer_value_field(ev, CGEventField::KeyboardEventAutorepeat, 1);
+        }
+        self.post(&event);
+        Ok(())
+    }
+}
+
+/// The CoreGraphics number of a button
+fn cg_button(button: MouseButton) -> CGMouseButton {
+    match button {
+        MouseButton::Left => CGMouseButton::Left,
+        MouseButton::Right => CGMouseButton::Right,
+        MouseButton::Middle => CGMouseButton::Center,
+        MouseButton::Back => CGMouseButton(3),
+        MouseButton::Forward => CGMouseButton(4),
+    }
+}
+
+/// Counts presses of one button in quick succession, as the hardware path
+/// would: 1 for a click, 2 for a double click, ...
+#[derive(Debug, Default)]
+struct Clicks {
+    /// Count of the current series (0 before any press)
+    count: i64,
+    /// Button, time and position of the series' last press, position of its
+    /// first
+    last: Option<(MouseButton, Instant, CGPoint)>,
+}
+
+impl Clicks {
+    /// A press of `button` at `at`: continue the series or start a new one
+    fn press(&mut self, button: MouseButton, at: CGPoint) {
+        let continues = self.last.is_some_and(|(last, when, first)| {
+            last == button
+                && when.elapsed() <= MULTI_CLICK_TIME
+                && (at.x - first.x).abs() <= MULTI_CLICK_DISTANCE
+                && (at.y - first.y).abs() <= MULTI_CLICK_DISTANCE
+        });
+        if continues {
+            self.count += 1;
+            if let Some((_, when, _)) = &mut self.last {
+                *when = Instant::now();
+            }
+        } else {
+            self.count = 1;
+            self.last = Some((button, Instant::now(), at));
+        }
     }
 }
 
@@ -578,12 +790,40 @@ mod tests {
         assert_eq!(modifier_down(0x00, flag::SHIFT), None);
     }
 
+    /// Quick presses of one button in one place make a series; another
+    /// button, a pause or a move starts over
+    #[test]
+    fn multi_clicks() {
+        let at = CGPoint { x: 10.0, y: 10.0 };
+        let mut clicks = Clicks::default();
+        clicks.press(MouseButton::Left, at);
+        clicks.press(MouseButton::Left, CGPoint { x: 11.0, y: 10.0 });
+        clicks.press(MouseButton::Left, at);
+        assert_eq!(clicks.count, 3);
+        clicks.press(MouseButton::Right, at);
+        assert_eq!(clicks.count, 1);
+        clicks.press(MouseButton::Right, CGPoint { x: 30.0, y: 10.0 });
+        assert_eq!(clicks.count, 1);
+    }
+
     /// Every modifier key code is in the key map
     #[test]
     fn modifiers_are_mapped() {
         for (code, ..) in MODIFIERS {
             assert!(keymap::usage_from_mac(code).is_some(), "{code:#x}");
         }
+    }
+
+    /// The injector can post: a move to where the cursor already is changes
+    /// nothing on screen. Needs the Accessibility permission, hence ignored
+    /// by default (`cargo nextest run --run-ignored all`)
+    #[test]
+    #[ignore = "needs the Accessibility permission"]
+    fn posts_a_harmless_move() {
+        let mut injector = injector().unwrap();
+        let now = CGEvent::new(None).unwrap();
+        let at = CGEvent::location(Some(&now));
+        injector.move_to(Point::floor(at.x, at.y)).unwrap();
     }
 
     /// The display list is readable (every Mac, even headless CI runners,
