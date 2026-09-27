@@ -35,6 +35,9 @@ export function JoinModal({
   const [busy, setBusy] = useState(false);
   // Closed while still connecting: a join that starts afterwards is dropped
   const closed = useRef(false);
+  // Connected once per dialog, however often the effect below runs (twice
+  // under React's StrictMode in development)
+  const started = useRef(false);
   const input = useRef<HTMLInputElement>(null);
 
   /** Connect to the target; it shows its PIN */
@@ -61,7 +64,11 @@ export function JoinModal({
 
   // Not in a group: connect right away
   useEffect(() => {
-    if (!grouped) connect();
+    closed.current = false;
+    if (!grouped && !started.current) {
+      started.current = true;
+      connect();
+    }
     return () => {
       closed.current = true;
     };
