@@ -14,6 +14,7 @@ readme.workspace = true
 lan-kit = { workspace = true }
 lanroam-input = { workspace = true }
 lanroam-clipboard = { workspace = true }
+lanroam-dnd = { workspace = true }
 tokio = { workspace = true }
 quinn = { workspace = true }
 rustls = { workspace = true }

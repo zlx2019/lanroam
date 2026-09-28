@@ -12,10 +12,12 @@
 //!   a controller holds is released when it leaves, is preempted, or its
 //!   link drops.
 //!
-//! Where the pointer goes, the clipboard actor hears too.
+//! Where the pointer goes, the clipboard actor hears too. Drags of files
+//! go along with it (see [`carry`]).
 
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc as std_mpsc};
 use std::time::{Duration, Instant};
 
@@ -29,7 +31,10 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use super::EngineEvent;
 use super::clipboard::ClipMsg;
-use crate::protocol::{Control, Datagram, released};
+use super::drag::{DragBackend, DragEvent};
+use crate::protocol::{Control, Datagram, DragItem, released};
+
+mod carry;
 use crate::settings::InputSettings;
 
 /// Heartbeat period while another device is controlled
@@ -245,6 +250,30 @@ pub(super) enum InputMsg {
     Restart(oneshot::Sender<InputStatus>),
     /// Give everything back and stop
     Shutdown(oneshot::Sender<()>),
+    /// The native drag and drop reported something
+    Drag(DragEvent),
+    /// What the files a probe found are (read off the runtime), for whoever
+    /// asked (`None`: this device's switch)
+    Described {
+        /// The probe
+        id: u64,
+        /// Who asked
+        asker: Option<String>,
+        /// The files
+        files: Vec<DragItem>,
+    },
+    /// The files of a drag carried here are staged, or could not be
+    Staged {
+        /// The drag
+        id: u64,
+        /// Their paths, or why not
+        paths: Result<Vec<PathBuf>, String>,
+    },
+    /// The files of a drag carried here are ready to drop
+    DragReady(u64),
+    /// A drag carried here took too long to get ready, or to refuse its
+    /// drop
+    DragTimeout(u64),
 }
 
 /// One step of replayed input
@@ -257,6 +286,8 @@ enum Op {
     Key(u16, bool),
     /// Button press or release at a position
     Button(MouseButton, bool, Point),
+    /// Button release where the cursor is
+    Release(MouseButton),
     /// Scrolling
     Wheel(i32, i32),
     /// Release everything held
@@ -286,6 +317,7 @@ impl Replay {
                         Op::Motion(seq, at) => input.motion(seq, at),
                         Op::Key(usage, down) => input.key(usage, down),
                         Op::Button(button, down, at) => input.button(button, down, at),
+                        Op::Release(button) => input.release(button),
                         Op::Wheel(dx, dy) => input.wheel(dx, dy),
                         Op::ReleaseAll => input.release_all(),
                     }
@@ -371,11 +403,16 @@ pub(super) struct Input {
     wheel: WheelScale,
     /// The clipboard actor's inbox
     clip: mpsc::UnboundedSender<ClipMsg>,
+    /// This device's fingerprint
+    local: String,
+    /// Drags of files through this device
+    drags: carry::Drags,
 }
 
 impl Input {
-    /// Start capture and injection as far as the platform allows; problems
-    /// are reported as [`ControlEvent::Unavailable`]
+    /// Start capture, injection and native drag and drop as far as the
+    /// platform allows; problems are reported as
+    /// [`ControlEvent::Unavailable`]
     pub(super) fn new(
         local: &str,
         backend: Arc<dyn InputBackend>,
@@ -383,10 +420,12 @@ impl Input {
         events: mpsc::UnboundedSender<EngineEvent>,
         inbox: mpsc::UnboundedSender<InputMsg>,
         clip: mpsc::UnboundedSender<ClipMsg>,
+        drag: &dyn DragBackend,
     ) -> Self {
         let switch = Arc::new(Mutex::new(Switch::new(local)));
         let capture = backend.capture(Arc::clone(&switch), emit_sink(&inbox));
         let injection = start_injection(backend.as_ref());
+        let drags = carry::Drags::start(drag, &inbox);
         let mut input = Self {
             switch,
             backend,
@@ -406,6 +445,8 @@ impl Input {
             controller: None,
             wheel: WheelScale::default(),
             clip,
+            local: local.to_string(),
+            drags,
         };
         input.took_capture(capture);
         input.took_injection(injection);
@@ -525,6 +566,7 @@ impl Input {
             InputMsg::Datagram { from, datagram } => {
                 if let Datagram::Motion { seq, x, y } = datagram
                     && self.controlled_by(&from)
+                    && !self.hold_motion(&from, seq, Point::new(x, y))
                 {
                     self.replay(Op::Motion(seq, Point::new(x, y)));
                 }
@@ -584,6 +626,11 @@ impl Input {
             InputMsg::Status(reply) => {
                 let _ = reply.send(self.status());
             }
+            InputMsg::Drag(event) => self.on_drag_event(event),
+            InputMsg::Described { id, asker, files } => self.described(id, asker, files),
+            InputMsg::Staged { id, paths } => self.staged(id, paths),
+            InputMsg::DragReady(id) => self.ready(id),
+            InputMsg::DragTimeout(id) => self.timed_out(id),
             // Handled by the run loop
             InputMsg::Restart(_) | InputMsg::Shutdown(_) => {}
         }
@@ -659,10 +706,17 @@ impl Input {
                 }
                 self.notify(ControlEvent::Locked { on });
             }
+            emit @ (Emit::LocalPress { .. }
+            | Emit::DragAtEdge { .. }
+            | Emit::Carry { .. }
+            | Emit::Drop { .. }
+            | Emit::DragCancel { .. }) => self.on_drag_emit(emit),
             Emit::Takeover => {
                 if let Some(controller) = self.controller.take() {
                     let _ = self.clip.send(ClipMsg::TookBack);
-                    self.replay(Op::ReleaseAll);
+                    if !self.controller_gone(&controller) {
+                        self.replay(Op::ReleaseAll);
+                    }
                     self.send(
                         &controller,
                         Control::Released {
@@ -699,7 +753,11 @@ impl Input {
                 self.replay(Op::Key(usage, down));
             }
             Control::Button { button, down, x, y } if controlled => {
-                self.replay(Op::Button(button, down, Point::new(x, y)));
+                let at = Point::new(x, y);
+                if button == MouseButton::Left && self.on_controller_left(from, down, at) {
+                    return;
+                }
+                self.replay(Op::Button(button, down, at));
             }
             Control::Wheel { dx, dy } if controlled => {
                 let (dx, dy) = self.wheel.apply(dx, dy);
@@ -731,6 +789,10 @@ impl Input {
                 self.heard = Instant::now();
                 self.unresponsive = false;
             }
+            msg @ (Control::DragProbe { .. }
+            | Control::DragFiles { .. }
+            | Control::DragEnter { .. }
+            | Control::DragCancel { .. }) => self.on_drag_control(from, msg),
             // From a device that is not in control (any more), or not input
             _ => {}
         }
@@ -746,7 +808,9 @@ impl Input {
         }
         let fresh = !self.controlled_by(from);
         if let Some(previous) = self.controller.take_if(|c| c != from) {
-            self.replay(Op::ReleaseAll);
+            if !self.controller_gone(&previous) {
+                self.replay(Op::ReleaseAll);
+            }
             let reason_code = released::PREEMPTED.into();
             self.send(&previous, Control::Released { reason_code });
         }
@@ -764,11 +828,14 @@ impl Input {
         }
     }
 
-    /// The controller let go (or its link dropped): release what it held
+    /// The controller let go (or its link dropped): release what it held,
+    /// once a drag it carried here refuses its drop
     fn free(&mut self, from: &str) {
         self.controller = None;
         let _ = self.clip.send(ClipMsg::Freed(from.to_string()));
-        self.replay(Op::ReleaseAll);
+        if !self.controller_gone(from) {
+            self.replay(Op::ReleaseAll);
+        }
         switch::lock(&self.switch).set_controlled(false);
         let name = self.name(from);
         self.notify(ControlEvent::Freed {

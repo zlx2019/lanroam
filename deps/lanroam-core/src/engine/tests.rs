@@ -6,6 +6,7 @@ use std::time::Duration;
 use lan_kit::DeviceIdentity;
 use lanroam_clipboard::{Content, Image, MemoryClipboard};
 use lanroam_input::inject::Injector;
+use lanroam_input::keymap::usage;
 use lanroam_input::platform::EmitSink;
 use lanroam_input::switch::{self, Decision, Switch};
 use lanroam_input::{InputError, InputEvent, MouseButton};
@@ -49,6 +50,91 @@ impl Injector for Recorder {
     fn key(&mut self, usage: u16, down: bool) -> Result<(), InputError> {
         self.0.lock().unwrap().push(Injected::Key(usage, down));
         Ok(())
+    }
+}
+
+/// What the fake drag and drop was asked to do
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DragCall {
+    /// A press here
+    Pressed,
+    /// Probe with this id
+    Probe(u64),
+    /// Probe over
+    Unprobe,
+    /// Armed with this id, at, with these file names
+    Arm(u64, Point, Vec<String>),
+    /// Cancel this id
+    Cancel(u64),
+}
+
+/// Drag and drop driven by the test: probes find its files (set with
+/// [`FakeDrag::holds`]), and arming and cancelling succeed at once
+#[derive(Default)]
+struct FakeDrag {
+    /// The files a probe finds
+    files: Arc<Mutex<Vec<std::path::PathBuf>>>,
+    /// Calls so far
+    calls: Arc<Mutex<Vec<DragCall>>>,
+}
+
+impl FakeDrag {
+    /// Let probes find `files` from now on
+    fn holds(&self, files: &[std::path::PathBuf]) {
+        *self.files.lock().unwrap() = files.to_vec();
+    }
+}
+
+impl DragBackend for FakeDrag {
+    fn start(&self, sink: DragSink) -> Result<Box<dyn Dragging>, String> {
+        Ok(Box::new(FakeDragging {
+            files: Arc::clone(&self.files),
+            calls: Arc::clone(&self.calls),
+            sink,
+        }))
+    }
+}
+
+/// The running side of [`FakeDrag`]
+struct FakeDragging {
+    /// The files a probe finds
+    files: Arc<Mutex<Vec<std::path::PathBuf>>>,
+    /// Calls so far
+    calls: Arc<Mutex<Vec<DragCall>>>,
+    /// Where events go
+    sink: DragSink,
+}
+
+impl FakeDragging {
+    /// Note a call
+    fn note(&self, call: DragCall) {
+        self.calls.lock().unwrap().push(call);
+    }
+}
+
+impl Dragging for FakeDragging {
+    fn pressed(&self) {
+        self.note(DragCall::Pressed);
+    }
+    fn probe(&self, id: u64) {
+        self.note(DragCall::Probe(id));
+        let files = self.files.lock().unwrap().clone();
+        (self.sink)(DragEvent::Probed { id, files });
+    }
+    fn unprobe(&self) {
+        self.note(DragCall::Unprobe);
+    }
+    fn arm(&self, id: u64, at: Point, paths: Vec<std::path::PathBuf>) {
+        let names = paths
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        self.note(DragCall::Arm(id, at, names));
+        (self.sink)(DragEvent::Armed { id });
+    }
+    fn cancel(&self, id: u64) {
+        self.note(DragCall::Cancel(id));
+        (self.sink)(DragEvent::Cancelling { id });
     }
 }
 
@@ -111,6 +197,14 @@ impl FakeInput {
         self.feed(InputEvent::Key { usage, down })
     }
 
+    /// Press or release the left button
+    fn left(&self, down: bool) -> Decision {
+        self.feed(InputEvent::Button {
+            button: MouseButton::Left,
+            down,
+        })
+    }
+
     /// Devices the switch knows of
     fn devices(&self) -> usize {
         let capture = self.capture.lock().unwrap();
@@ -131,6 +225,8 @@ struct TestEngine {
     input: Arc<FakeInput>,
     /// Its clipboard
     clipboard: Arc<MemoryClipboard>,
+    /// Its drag and drop
+    drag: Arc<FakeDrag>,
 }
 
 impl TestEngine {
@@ -152,6 +248,7 @@ impl TestEngine {
         let input = Arc::new(input);
         let backend = Arc::clone(&input) as Arc<dyn InputBackend>;
         let clipboard = Arc::new(MemoryClipboard::new());
+        let drag = Arc::new(FakeDrag::default());
         let (engine, events) = Engine::launch(
             GroupStore::new(&dir.0),
             Some(dir.0.clone()),
@@ -161,6 +258,7 @@ impl TestEngine {
             None,
             backend,
             Arc::clone(&clipboard) as Arc<dyn Clipboard>,
+            Arc::clone(&drag) as Arc<dyn DragBackend>,
         )
         .unwrap();
         Self {
@@ -169,6 +267,7 @@ impl TestEngine {
             dir,
             input,
             clipboard,
+            drag,
         }
     }
 
@@ -1282,4 +1381,176 @@ async fn a_copy_is_passed_on() {
     a.input.push((0, 0), 1000.0, 0.0);
     c.until_clipboard(&text("copied on b")).await;
     a.until_clipboard(&text("copied on b")).await;
+}
+
+impl TestEngine {
+    /// A file of this engine's to drag
+    fn file_to_drag(&self, name: &str) -> std::path::PathBuf {
+        let path = self.dir.0.join(name);
+        std::fs::write(&path, b"12345").unwrap();
+        path
+    }
+
+    /// Wait until the drag and drop was asked for `want` (and return
+    /// everything so far)
+    async fn dragged(&self, want: impl Fn(&DragCall) -> bool) -> Vec<DragCall> {
+        let deadline = tokio::time::Instant::now() + WAIT;
+        loop {
+            let calls = self.drag.calls.lock().unwrap().clone();
+            if calls.iter().any(&want) {
+                return calls;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "drag call not made within {WAIT:?}: {calls:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// Push the pointer by (`dx`, 0) until `crossed` holds, as a hand
+    /// pushing against an edge would while the drag is asked about
+    async fn push_until(&self, dx: f64, crossed: impl Fn(&Decision) -> bool) {
+        let deadline = tokio::time::Instant::now() + WAIT;
+        loop {
+            if crossed(&self.input.push((999, 500), dx, 0.0)) {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "no crossing within {WAIT:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+}
+
+/// Whether a decision moved control elsewhere
+fn parked(decision: &Decision) -> bool {
+    decision.cursor == Some(switch::CursorAction::Park)
+}
+
+/// Whether a decision brought control home
+fn released(decision: &Decision) -> bool {
+    matches!(decision.cursor, Some(switch::CursorAction::Release(_)))
+}
+
+/// A drag of files held here goes along to b: b drags stand-ins with the
+/// same names from where the pointer entered, and a release there before
+/// they are ready drops them once they are
+#[tokio::test]
+async fn files_dragged_from_here_go_along() {
+    let (a, b, _c) = row_of_three().await;
+    a.drag.holds(&[a.file_to_drag("report.pdf")]);
+    a.input.left(true);
+    a.dragged(|call| *call == DragCall::Pressed).await;
+    a.push_until(5.0, parked).await;
+    let calls = b.dragged(|call| matches!(call, DragCall::Arm(..))).await;
+    let arm = calls.iter().find(|call| matches!(call, DragCall::Arm(..)));
+    assert_eq!(
+        arm,
+        Some(&DragCall::Arm(
+            1,
+            Point::new(1, 500),
+            vec!["report.pdf".into()]
+        ))
+    );
+    b.injected(&Injected::Button(MouseButton::Left, true)).await;
+
+    // Let go at once: the drop waits for the stand-in transfer
+    let decision = a.input.left(false);
+    assert_eq!(decision.verdict, switch::Verdict::Pass);
+    b.injected(&Injected::Button(MouseButton::Left, false))
+        .await;
+    a.dragged(|call| *call == DragCall::Unprobe).await;
+}
+
+/// A drag that holds no files stays where it is
+#[tokio::test]
+async fn other_drags_stay() {
+    let (mut a, _b, _c) = row_of_three().await;
+    a.input.left(true);
+    a.input.push((999, 500), 5.0, 0.0);
+    a.dragged(|call| matches!(call, DragCall::Probe(_))).await;
+    tokio::time::sleep(SETTLE).await;
+    assert!(!parked(&a.input.push((999, 500), 5.0, 0.0)));
+    a.input.left(false);
+    a.input.push((999, 500), 5.0, 0.0);
+    a.expect("control on b", |event| {
+        matches!(
+            event,
+            EngineEvent::Control(ControlEvent::Controlling { .. })
+        )
+        .then_some(())
+    })
+    .await;
+}
+
+/// Files dragged on b come home with the pointer: b's drag ends there, and
+/// this device drags them on
+#[tokio::test]
+async fn files_dragged_there_come_home() {
+    let (a, b, _c) = row_of_three().await;
+    enter_b(&a, &b).await;
+    b.drag.holds(&[b.file_to_drag("photos.zip")]);
+    a.input.left(true);
+    b.dragged(|call| *call == DragCall::Pressed).await;
+    a.push_until(-5.0, released).await;
+    // b lets go of its drag (on its catcher)
+    b.injected(&Injected::Button(MouseButton::Left, false))
+        .await;
+    let calls = a.dragged(|call| matches!(call, DragCall::Arm(..))).await;
+    assert!(
+        calls
+            .iter()
+            .any(|call| matches!(call, DragCall::Arm(1, _, names) if names == &["photos.zip"])),
+        "{calls:?}"
+    );
+    a.injected(&Injected::Button(MouseButton::Left, true)).await;
+    a.input.left(false);
+    a.injected(&Injected::Button(MouseButton::Left, false))
+        .await;
+}
+
+/// Esc cancels a drag carried to b: it refuses the drop, then the button
+/// goes up there
+#[tokio::test]
+async fn esc_cancels_a_carried_drag() {
+    let (a, b, _c) = row_of_three().await;
+    a.drag.holds(&[a.file_to_drag("draft.txt")]);
+    a.input.left(true);
+    a.push_until(5.0, parked).await;
+    b.injected(&Injected::Button(MouseButton::Left, true)).await;
+    a.input.key(usage::ESCAPE, true);
+    a.input.key(usage::ESCAPE, false);
+    b.dragged(|call| matches!(call, DragCall::Cancel(1))).await;
+    b.injected(&Injected::Button(MouseButton::Left, false))
+        .await;
+    // Nothing of Esc reaches b
+    let injected = b.input.injected.lock().unwrap().clone();
+    assert!(!injected.contains(&Injected::Key(usage::ESCAPE, true)));
+    // The release ends the drag held here
+    assert_eq!(a.input.left(false).verdict, switch::Verdict::Pass);
+}
+
+/// Esc cancels a drag carried home too: the button goes up where the
+/// pointer is, which the injector here cannot know by itself
+#[tokio::test]
+async fn esc_cancels_a_drag_carried_home() {
+    let (a, b, _c) = row_of_three().await;
+    enter_b(&a, &b).await;
+    b.drag.holds(&[b.file_to_drag("photos.zip")]);
+    a.input.left(true);
+    a.push_until(-5.0, released).await;
+    a.injected(&Injected::Button(MouseButton::Left, true)).await;
+    a.input.push((990, 480), -8.0, -20.0);
+    a.input.key(usage::ESCAPE, true);
+    a.dragged(|call| matches!(call, DragCall::Cancel(1))).await;
+    let injected = a
+        .injected(&Injected::Button(MouseButton::Left, false))
+        .await;
+    let up = injected.len() - 1;
+    assert_eq!(injected[up - 1], Injected::Move(Point::new(990, 480)));
+    // The release then goes nowhere
+    assert_eq!(a.input.left(false).verdict, switch::Verdict::Swallow);
 }

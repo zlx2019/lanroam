@@ -29,6 +29,12 @@
 //! over a content stream ([`StreamRequest::Clipboard`], answered with a
 //! [`ClipReply`] and the bytes) unless it holds it already.
 //!
+//! Drags of files follow the pointer too: a drag held on the controlled
+//! device reaches an edge, the controller asks what it drags
+//! ([`Control::DragProbe`], answered with [`Control::DragFiles`]), and the
+//! device the pointer takes it to drags the files on from there
+//! ([`Control::DragEnter`], or [`Control::DragCancel`] to let go of them).
+//!
 //! The protocol version is `major.minor`; a different major refuses the
 //! connection, a newer minor only adds messages an older peer may ignore.
 
@@ -43,7 +49,7 @@ use serde::{Deserialize, Serialize};
 use crate::group::GroupDoc;
 
 /// Protocol version (major.minor), checked by the Hello gate
-pub const PROTOCOL_VERSION: &str = "2.2";
+pub const PROTOCOL_VERSION: &str = "2.3";
 
 /// ALPN of the QUIC connections; a client speaking anything else is refused
 /// during the TLS handshake
@@ -261,6 +267,41 @@ pub enum Control {
         /// The content's hash ([`lanroam_clipboard::Content::hash`])
         hash: String,
     },
+    /// Whether the left button held on the receiver drags files: its drag
+    /// reached an edge that lets the pointer through (controller →
+    /// controlled; since 2.3)
+    DragProbe {
+        /// Names the press; the answer carries it back
+        id: u64,
+    },
+    /// Answer to [`Control::DragProbe`]: the files dragged, none if the
+    /// drag holds anything else
+    DragFiles {
+        /// The probe's id
+        id: u64,
+        /// What is dragged (top level)
+        files: Vec<DragItem>,
+    },
+    /// A drag of files comes here with the pointer (right after
+    /// [`Control::Enter`]): drag them on from (`x`, `y`) until the button
+    /// held goes up
+    DragEnter {
+        /// Names the drag
+        id: u64,
+        /// Fingerprint of the device the files are on
+        origin: String,
+        /// Horizontal position (receiver's coordinates)
+        x: i32,
+        /// Vertical position
+        y: i32,
+        /// What is dragged (top level)
+        files: Vec<DragItem>,
+    },
+    /// Let go of the drag carried here without dropping anything (Esc)
+    DragCancel {
+        /// The drag's id
+        id: u64,
+    },
     /// One PIN attempt begins (sponsor → joiner): the sponsor's SPAKE2
     /// message
     JoinChallenge {
@@ -314,12 +355,28 @@ impl Control {
             Self::PointerLocked { .. } => "pointer_locked",
             Self::Request { .. } => "request",
             Self::ClipOffer { .. } => "clip_offer",
+            Self::DragProbe { .. } => "drag_probe",
+            Self::DragFiles { .. } => "drag_files",
+            Self::DragEnter { .. } => "drag_enter",
+            Self::DragCancel { .. } => "drag_cancel",
             Self::JoinChallenge { .. } => "join_challenge",
             Self::JoinAnswer { .. } => "join_answer",
             Self::JoinAccepted { .. } => "join_accepted",
             Self::JoinDenied { .. } => "join_denied",
         }
     }
+}
+
+/// A file or folder of a drag, as the device it goes to shows it (since
+/// 2.3)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DragItem {
+    /// File name
+    pub name: String,
+    /// Size in bytes (0 for a folder)
+    pub size: u64,
+    /// A folder
+    pub dir: bool,
 }
 
 /// First frame on a content stream: what the opener wants (since 2.2)
@@ -552,6 +609,27 @@ mod tests {
                 size: 33_177_600,
                 hash: "ab".repeat(32),
             },
+            Control::DragProbe { id: 3 },
+            Control::DragFiles {
+                id: 3,
+                files: vec![DragItem {
+                    name: "报告 final.pdf".into(),
+                    size: 1 << 20,
+                    dir: false,
+                }],
+            },
+            Control::DragEnter {
+                id: 3,
+                origin: "f".repeat(64),
+                x: 1,
+                y: 400,
+                files: vec![DragItem {
+                    name: "photos".into(),
+                    size: 0,
+                    dir: true,
+                }],
+            },
+            Control::DragCancel { id: 3 },
         ];
         let (mut a, mut b) = tokio::io::duplex(64 * 1024);
         for msg in &samples {

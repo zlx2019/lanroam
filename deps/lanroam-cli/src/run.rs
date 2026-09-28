@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail};
 use lanroam_core::engine::{
-    ControlEvent, Engine, EngineEvent, InputBackend, PlatformInput, Spot, Status,
+    ControlEvent, Engine, EngineEvent, InputBackend, NoDrag, PlatformInput, Spot, Status,
 };
 use lanroam_core::group::GroupDoc;
 use lanroam_core::group::join::{PIN_ATTEMPTS, normalize_pin};
@@ -80,7 +80,8 @@ pub(crate) async fn cmd_run(
     } else {
         (Arc::new(PlatformInput), Arc::new(SystemClipboard))
     };
-    let (engine, mut events) = Engine::start(config, input, clipboard)
+    // No desktop to drag files on: a drag stays where it is
+    let (engine, mut events) = Engine::start(config, input, clipboard, Arc::new(NoDrag))
         .await
         .context("failed to start the node")?;
     println!(

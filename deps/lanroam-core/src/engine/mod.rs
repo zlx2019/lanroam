@@ -12,9 +12,11 @@
 //! actor's; the clipboard, which follows the pointer, the clipboard actor's.
 
 mod clipboard;
+mod drag;
 mod input;
 mod mesh;
 
+pub use drag::{DragBackend, DragEvent, DragSink, Dragging, NoDrag, PlatformDrag};
 pub use input::{ControlEvent, InputBackend, InputStatus, PlatformInput};
 pub use lanroam_input::switch::Request;
 
@@ -199,12 +201,13 @@ struct Inner {
 
 impl Engine {
     /// Start a node and run it in its desk group (if any), sharing the
-    /// keyboard and mouse of `input` and the clipboard `clipboard`, with the
-    /// stream of events for the user
+    /// keyboard and mouse of `input`, the clipboard `clipboard` and drags of
+    /// files through `drag`, with the stream of events for the user
     pub async fn start(
         config: NodeConfig,
         input: Arc<dyn InputBackend>,
         clipboard: Arc<dyn Clipboard>,
+        drag: Arc<dyn DragBackend>,
     ) -> Result<(Self, mpsc::UnboundedReceiver<EngineEvent>), EngineError> {
         let store = GroupStore::new(&config.data_dir);
         let data_dir = Some(config.data_dir.clone());
@@ -222,6 +225,7 @@ impl Engine {
             peers,
             input,
             clipboard,
+            drag,
         )
     }
 
@@ -237,6 +241,7 @@ impl Engine {
         peer_events: Option<mpsc::Receiver<PeerEvent>>,
         backend: Arc<dyn InputBackend>,
         clipboard: Arc<dyn Clipboard>,
+        drag: Arc<dyn DragBackend>,
     ) -> Result<(Self, mpsc::UnboundedReceiver<EngineEvent>), EngineError> {
         let doc = store.load()?;
         let (events_tx, events) = mpsc::unbounded_channel();
@@ -274,6 +279,7 @@ impl Engine {
             events_tx.clone(),
             input_tx.clone(),
             clip_tx.clone(),
+            drag.as_ref(),
         );
         let input_settings = data_dir
             .as_deref()

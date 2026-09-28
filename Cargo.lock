@@ -2449,6 +2449,7 @@ dependencies = [
  "hex",
  "lan-kit",
  "lanroam-clipboard",
+ "lanroam-dnd",
  "lanroam-input",
  "quinn",
  "rustls",
@@ -2482,6 +2483,22 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "windows-version",
+]
+
+[[package]]
+name = "lanroam-dnd"
+version = "0.1.0"
+dependencies = [
+ "dispatch2",
+ "lanroam-input",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-core-graphics",
+ "objc2-foundation",
+ "thiserror 2.0.21",
+ "tracing",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
 ]
 
 [[package]]

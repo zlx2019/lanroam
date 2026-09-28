@@ -680,7 +680,11 @@ impl Mesh {
             | Control::Button { .. }
             | Control::Wheel { .. }
             | Control::Released { .. }
-            | Control::Pong { .. }) => {
+            | Control::Pong { .. }
+            | Control::DragProbe { .. }
+            | Control::DragFiles { .. }
+            | Control::DragEnter { .. }
+            | Control::DragCancel { .. }) => {
                 let _ = self.wiring.input.send(InputMsg::Control { from: fp, msg });
             }
             Control::ClipOffer { kind, size, hash } => {
