@@ -122,6 +122,16 @@ impl RemoteInput {
         self.check(result);
     }
 
+    /// Release `button` where the cursor is, if the source holds it
+    pub fn release(&mut self, button: MouseButton) {
+        if !std::mem::take(&mut self.buttons[button.index()]) {
+            return;
+        }
+        self.stats.buttons += 1;
+        let result = self.injector.button(button, false);
+        self.check(result);
+    }
+
     /// Scrolling
     pub fn wheel(&mut self, dx: i32, dy: i32) {
         self.stats.wheels += 1;
@@ -312,6 +322,26 @@ mod tests {
         assert_eq!(scale.apply(0, 1), (0, 0));
         assert_eq!(scale.apply(0, 1), (0, -1));
         assert_eq!(scale.apply(240, -120), (-120, 60));
+    }
+
+    /// A button is released where the cursor is, once
+    #[test]
+    fn release_where_the_cursor_is() {
+        let (mut input, ops) = recorded();
+        input.release(MouseButton::Left);
+        input.button(MouseButton::Left, true, Point::new(3, 4));
+        input.motion(1, Point::new(9, 9));
+        input.release(MouseButton::Left);
+        input.release(MouseButton::Left);
+        assert_eq!(
+            *ops.lock().unwrap(),
+            [
+                Op::Move(Point::new(3, 4)),
+                Op::Button(MouseButton::Left, true),
+                Op::Move(Point::new(9, 9)),
+                Op::Button(MouseButton::Left, false),
+            ]
+        );
     }
 
     /// Released keys are not released again

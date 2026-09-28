@@ -11,6 +11,14 @@
 //! release follows it there. That single rule keeps keys from getting stuck
 //! when control changes hands in the middle of a press.
 //!
+//! A held button keeps the pointer on its device, with one exception: a
+//! drag of files. When the left button alone pushes against an edge that
+//! would let the pointer through, the engine is asked whether it drags
+//! files ([`Emit::DragAtEdge`]); if so ([`Switch::allow_carry`]), the drag
+//! goes along ([`Emit::Carry`]) and the release drops the files where the
+//! pointer is then. Esc, or taking the drag back where it came from,
+//! cancels it.
+//!
 //! Hotkeys are recognised here too, from the physical keys, and never
 //! reach any device. By default (Mac: Option for Alt; see
 //! [`Hotkeys`] for changing them):
@@ -155,6 +163,49 @@ pub enum Emit {
     /// A key combination was recorded ([`Switch::record`]); `None` when
     /// the user gave up (Esc alone)
     Recorded(Option<Chord>),
+    /// The left button went down or up on this machine itself (its press
+    /// stayed here): a drag of files may start in between
+    LocalPress {
+        /// Pressed (true) or released
+        down: bool,
+    },
+    /// A drag held with the left button on `device` (this one or another)
+    /// pushes against an edge that would let the pointer through: whether
+    /// it drags files decides whether it goes along (answered with
+    /// [`Switch::allow_carry`]). Asked once per press
+    DragAtEdge {
+        /// The device the drag is held on
+        device: String,
+        /// The press, as the answer names it
+        press: u64,
+    },
+    /// A drag of files went along with the pointer, from `origin` to `to`
+    /// (either may be this device); follows the `Enter` or `Leave` of the
+    /// move
+    Carry {
+        /// The device the files are dragged from
+        origin: String,
+        /// The device the pointer took them to
+        to: String,
+        /// Where the pointer entered `to`
+        at: Point,
+        /// The press, as [`Emit::DragAtEdge`] named it
+        press: u64,
+    },
+    /// The left button carrying files to this machine was released: they
+    /// land here
+    Drop {
+        /// Where the local cursor is
+        at: Point,
+    },
+    /// The drag of files carried to `device` ends without dropping
+    /// anything (Esc, or the pointer took it back)
+    DragCancel {
+        /// The device dragging the files
+        device: String,
+        /// Where the pointer is on it
+        at: Point,
+    },
 }
 
 /// A hotkey's action
@@ -217,6 +268,45 @@ enum Owner {
     /// Pressed on this machine by Lanroam in its place (a combination kept
     /// local); the release follows the same way
     Replayed,
+    /// The left button carrying a drag of files (see [`Carry`]): its
+    /// release drops them
+    Carried,
+}
+
+/// A drag of files carried from one device to another: the left button
+/// held since the press that started it, the pointer on the device that
+/// drags the files now
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Carry {
+    /// The device the files are dragged from
+    origin: String,
+    /// The device dragging them now, where the pointer is
+    to: String,
+}
+
+/// What is known about the drag of the left button held now
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Probe {
+    /// Nothing asked yet
+    #[default]
+    None,
+    /// Asked whether it drags files ([`Emit::DragAtEdge`]), no answer yet
+    Asked,
+    /// It drags files: it may go along with the pointer
+    Files,
+}
+
+/// What the buttons held allow at an edge
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Held {
+    /// Nothing held on the device the pointer is on: it crosses freely
+    Nothing,
+    /// The left button alone, maybe dragging files
+    Drag,
+    /// A drag of files carried here: only back where it came from
+    Carrying,
+    /// Other buttons: the pointer stays
+    Other,
 }
 
 /// Where the time comes from; tests move it by hand
@@ -305,6 +395,14 @@ pub struct Switch {
     keys: HashMap<u16, (Owner, u16)>,
     /// Buttons currently pressed, and where each press went
     buttons: [Option<Owner>; MouseButton::COUNT],
+    /// Presses of the left button so far: a probe names the press it asks
+    /// about
+    press: u64,
+    /// What is known about the drag of the left button held now
+    probe: Probe,
+    /// The drag of files carried to another device, while its button is
+    /// held
+    carry: Option<Carry>,
     /// Hand control back at the next event (set from outside the capture)
     release_requested: bool,
     /// Requests to carry out at the next event (set from outside the
@@ -354,6 +452,9 @@ impl Switch {
             locked: false,
             keys: HashMap::new(),
             buttons: std::array::from_fn(|_| None),
+            press: 0,
+            probe: Probe::None,
+            carry: None,
             release_requested: false,
             requests: Vec::new(),
             swapped: HashSet::new(),
@@ -521,6 +622,15 @@ impl Switch {
         self.local_travel = 0.0;
     }
 
+    /// The drag of the press `press` ([`Emit::DragAtEdge`]) drags files: it
+    /// goes along with the pointer from the next push on. Ignored once that
+    /// press is over
+    pub fn allow_carry(&mut self, press: u64) {
+        if press == self.press && self.probe == Probe::Asked {
+            self.probe = Probe::Files;
+        }
+    }
+
     /// Decide what happens to one captured event; messages for other
     /// devices are appended to `out`
     pub fn handle(&mut self, event: InputEvent, out: &mut Vec<Emit>) -> Decision {
@@ -571,10 +681,14 @@ impl Switch {
             // No crossing right after a forced release, or a motion that
             // arrives with it would take control straight back
             if cursor.is_none()
-                && let Some((device, entry, departed)) = self.crossing(at, dx, dy)
+                && let Some((device, entry, departed, held)) = self.crossing(at, dx, dy, out)
             {
                 self.departed = departed;
                 self.enter(device, entry, out);
+                if held == Held::Drag {
+                    let origin = self.local.clone();
+                    self.carry_on(origin, entry, out);
+                }
                 *cursor = Some(CursorAction::Park);
                 return Verdict::Swallow;
             }
@@ -593,10 +707,12 @@ impl Switch {
                 self.keep_dwell(&remote.device, Point::floor(x, y));
                 (x, y)
             }
-            // A held button keeps the pointer on the device: dragging across
-            // devices is not supported yet
-            Step::Blocked { x, y, .. } if self.holds_remote_button() || self.locked => (x, y),
+            Step::Blocked { x, y, .. } if self.locked => (x, y),
+            // A held button keeps the pointer on the device, unless it drags
+            // files (see `lets_through`)
+            Step::Blocked { x, y, .. } if self.held() == Held::Other => (x, y),
             Step::Blocked { x, y, stop, edges } => {
+                let held = self.held();
                 let candidates = edges
                     .into_iter()
                     .filter_map(|edge| {
@@ -605,15 +721,26 @@ impl Switch {
                             .map(|(device, entry)| (edge, device.key.clone(), entry))
                     })
                     .collect();
-                match self.pass(&remote.device, stop, candidates) {
+                let passed = self
+                    .pass(&remote.device, stop, candidates)
+                    .filter(|(device, _)| self.lets_through(held, &remote.device, device, out));
+                // The drag held on the device left goes along
+                let carried = (held == Held::Drag).then(|| remote.device.clone());
+                match passed {
                     Some((device, entry)) if device == self.local => {
                         *cursor = Some(self.come_home(Landing::At(entry), out));
+                        if let Some(origin) = carried {
+                            self.carry_on(origin, entry, out);
+                        }
                         return Verdict::Swallow;
                     }
                     Some((device, entry)) => {
                         self.remote = Some(Remote { x, y, ..remote });
                         self.leave_remote(out);
                         self.enter(device, entry, out);
+                        if let Some(origin) = carried {
+                            self.carry_on(origin, entry, out);
+                        }
                         return Verdict::Swallow;
                     }
                     // A wall, or an edge that does not let it through yet:
@@ -635,9 +762,16 @@ impl Switch {
     }
 
     /// Where this motion takes the local pointer when it pushes out of this
-    /// machine: (device, entry point, departure point)
-    fn crossing(&mut self, at: Point, dx: f64, dy: f64) -> Option<(String, Point, Point)> {
-        if self.paused || self.locked || self.buttons.contains(&Some(Owner::Local)) {
+    /// machine: (device, entry point, departure point, buttons held)
+    fn crossing(
+        &mut self,
+        at: Point,
+        dx: f64,
+        dy: f64,
+        out: &mut Vec<Emit>,
+    ) -> Option<(String, Point, Point, Held)> {
+        let held = self.held();
+        if self.paused || self.locked || held == Held::Other {
             self.dwell = None;
             return None;
         }
@@ -654,8 +788,116 @@ impl Switch {
             .collect();
         let from = self.local.clone();
         self.keep_dwell(&from, at);
-        self.pass(&from, at, candidates)
-            .map(|(device, entry)| (device, entry, at))
+        let (device, entry) = self.pass(&from, at, candidates)?;
+        self.lets_through(held, &from, &device, out)
+            .then_some((device, entry, at, held))
+    }
+
+    /// What the buttons held allow at an edge: those pressed on the device
+    /// the pointer is on count (a press elsewhere was released there)
+    fn held(&self) -> Held {
+        if self.carry.is_some() {
+            return Held::Carrying;
+        }
+        let remote = self.remote.is_some();
+        let here = |button: &MouseButton| match &self.buttons[button.index()] {
+            Some(Owner::Local) => !remote,
+            Some(Owner::Remote(_)) => remote,
+            _ => false,
+        };
+        let mut held = MouseButton::ALL.into_iter().filter(here);
+        match (held.next(), held.next()) {
+            (None, _) => Held::Nothing,
+            (Some(MouseButton::Left), None) => Held::Drag,
+            _ => Held::Other,
+        }
+    }
+
+    /// Whether the buttons held (`held`) let the pointer on `on` over to
+    /// `to`: a drag goes along once it is known to drag files, which is
+    /// asked the first time; a drag carried here only goes back where it
+    /// came from, which cancels it
+    fn lets_through(&mut self, held: Held, on: &str, to: &str, out: &mut Vec<Emit>) -> bool {
+        match held {
+            Held::Nothing => true,
+            Held::Other => false,
+            Held::Carrying => self.carry.as_ref().is_some_and(|carry| carry.origin == to),
+            Held::Drag => match self.probe {
+                Probe::Files => true,
+                Probe::Asked => false,
+                Probe::None => {
+                    self.probe = Probe::Asked;
+                    out.push(Emit::DragAtEdge {
+                        device: on.to_string(),
+                        press: self.press,
+                    });
+                    false
+                }
+            },
+        }
+    }
+
+    /// The drag held on `origin` went along to the device the pointer is on
+    /// now, entered at `at`: the left button carries it
+    fn carry_on(&mut self, origin: String, at: Point, out: &mut Vec<Emit>) {
+        let to = self.target().unwrap_or(&self.local).to_string();
+        self.buttons[MouseButton::Left.index()] = Some(Owner::Carried);
+        out.push(Emit::Carry {
+            origin: origin.clone(),
+            to: to.clone(),
+            at,
+            press: self.press,
+        });
+        self.carry = Some(Carry { origin, to });
+    }
+
+    /// The left button carrying files was released: they land where the
+    /// pointer is. A press made here is released here too, where the drag
+    /// held under the parked cursor ends (the engine's catcher refuses it)
+    fn drop_carry(&mut self, out: &mut Vec<Emit>) -> Verdict {
+        self.probe = Probe::None;
+        let Some(carry) = self.carry.take() else {
+            return Verdict::Swallow;
+        };
+        match &self.remote {
+            Some(remote) if remote.device == carry.to => out.push(Emit::Button {
+                device: carry.to,
+                button: MouseButton::Left,
+                down: false,
+                at: remote.pixel(),
+            }),
+            None if carry.to == self.local => out.push(Emit::Drop { at: self.local_at }),
+            _ => {}
+        }
+        if carry.origin == self.local {
+            out.push(Emit::LocalPress { down: false });
+            return Verdict::Pass;
+        }
+        Verdict::Swallow
+    }
+
+    /// The drag of files carried to another device ends without dropping
+    /// anything: that device lets go of it. The button still held stays
+    /// with a drag held on this machine, which goes on here; a drag held
+    /// elsewhere was let go of already
+    fn cancel_carry(&mut self, out: &mut Vec<Emit>) {
+        let Some(carry) = self.carry.take() else {
+            return;
+        };
+        let at = match &self.remote {
+            Some(remote) if remote.device == carry.to => remote.pixel(),
+            _ => self.local_at,
+        };
+        out.push(Emit::DragCancel {
+            device: carry.to,
+            at,
+        });
+        let owner = if carry.origin == self.local {
+            Owner::Local
+        } else {
+            Owner::Dropped
+        };
+        self.buttons[MouseButton::Left.index()] = Some(owner);
     }
 
     /// End a dwell once the pointer, now at `at` on device `from`, is off
@@ -743,6 +985,8 @@ impl Switch {
 
     /// Take control of `device` with its cursor at `at`
     fn enter(&mut self, device: String, at: Point, out: &mut Vec<Emit>) {
+        // A drag carried to this machine does not follow
+        self.cancel_carry(out);
         tracing::debug!(%device, "control moves to another device");
         out.push(Emit::Enter {
             device: device.clone(),
@@ -770,11 +1014,17 @@ impl Switch {
             at: back,
             jumped: false,
         };
+        // Where a drop lands should the button go up before any motion
+        self.local_at = back;
         CursorAction::Release(back)
     }
 
     /// A mouse button: the release goes where the press went
     fn button(&mut self, button: MouseButton, down: bool, out: &mut Vec<Emit>) -> Verdict {
+        if !down && self.buttons[button.index()] == Some(Owner::Carried) {
+            self.buttons[button.index()] = None;
+            return self.drop_carry(out);
+        }
         let side = self.side();
         let slot = &mut self.buttons[button.index()];
         let owner = if down {
@@ -783,6 +1033,17 @@ impl Switch {
         } else {
             slot.take()
         };
+        if button == MouseButton::Left {
+            // Each press of the left button starts afresh; the engine hears
+            // of those made here, where a drag of files may start
+            if down {
+                self.press += 1;
+            }
+            self.probe = Probe::None;
+            if owner == Some(Owner::Local) {
+                out.push(Emit::LocalPress { down });
+            }
+        }
         let at = self
             .remote
             .as_ref()
@@ -821,6 +1082,13 @@ impl Switch {
         // A press completing a recording goes nowhere, nor its release
         if let Some(recorded) = self.record_key(key, down) {
             out.push(Emit::Recorded(recorded));
+            self.keys.insert(key, (Owner::Dropped, key));
+            return Verdict::Swallow;
+        }
+        // Esc cancels a drag of files carried to another device, and goes
+        // nowhere itself
+        if down && key == usage::ESCAPE && self.carry.is_some() {
+            self.cancel_carry(out);
             self.keys.insert(key, (Owner::Dropped, key));
             return Verdict::Swallow;
         }
@@ -970,7 +1238,7 @@ impl Switch {
                         });
                     }
                 }
-                Owner::Dropped => {}
+                Owner::Dropped | Owner::Carried => {}
             }
             out.push(Emit::Local {
                 usage: modifier,
@@ -1101,6 +1369,8 @@ impl Switch {
     /// Stop controlling the current device, remembering where its cursor
     /// was; returns it
     fn leave_remote(&mut self, out: &mut Vec<Emit>) -> Option<String> {
+        // A drag carried there stays behind, cancelled
+        self.cancel_carry(out);
         let remote = self.remote.take()?;
         self.last.insert(remote.device.clone(), remote.pixel());
         out.push(Emit::Leave {
@@ -1115,13 +1385,6 @@ impl Switch {
             Some(remote) => Owner::Remote(remote.device.clone()),
             None => Owner::Local,
         }
-    }
-
-    /// Whether a mouse button pressed on some other device is still held
-    fn holds_remote_button(&self) -> bool {
-        self.buttons
-            .iter()
-            .any(|b| matches!(b, Some(Owner::Remote(_))))
     }
 
     /// Deliver a press or release according to where its press went.
@@ -1139,7 +1402,9 @@ impl Switch {
                 out.push(emit(device));
                 Verdict::Swallow
             }
-            (Some(Owner::Remote(_) | Owner::Dropped | Owner::Replayed), _) => Verdict::Swallow,
+            (Some(Owner::Remote(_) | Owner::Dropped | Owner::Replayed | Owner::Carried), _) => {
+                Verdict::Swallow
+            }
             // Pressed before the capture started
             (None, Some(_)) => Verdict::Swallow,
             (None, None) => Verdict::Pass,
@@ -1365,27 +1630,202 @@ mod tests {
         assert_eq!(d.verdict, Verdict::Swallow);
     }
 
+    /// A button event
+    fn button(button: MouseButton, down: bool) -> InputEvent {
+        InputEvent::Button { button, down }
+    }
+
     /// Held buttons keep the pointer on its side, both ways
     #[test]
     fn held_buttons_block_crossing() {
         let mut sw = switch();
-        let press = InputEvent::Button {
-            button: MouseButton::Left,
-            down: true,
-        };
-        let release = InputEvent::Button {
-            button: MouseButton::Left,
-            down: false,
-        };
-        feed(&mut sw, press);
+        feed(&mut sw, button(MouseButton::Right, true));
         assert_eq!(cross_to_pc(&mut sw, 400).1, []);
-        feed(&mut sw, release);
+        feed(&mut sw, button(MouseButton::Right, false));
         cross_to_pc(&mut sw, 400);
-        let (_, out) = feed(&mut sw, press);
+        let (_, out) = feed(&mut sw, button(MouseButton::Right, true));
         assert!(matches!(&out[..], [Emit::Button { device, down: true, .. }] if device == "pc"));
-        let (d, _) = feed(&mut sw, motion(0, 0, -50.0, 0.0));
+        let (d, out) = feed(&mut sw, motion(0, 0, -50.0, 0.0));
         assert_eq!(d.cursor, None);
+        assert!(matches!(&out[..], [Emit::Motion { .. }]), "{out:?}");
         assert_eq!(sw.target(), Some("pc"));
+    }
+
+    /// A drag held here asks at the edge, once; dragging files, it goes
+    /// along, and its release drops them there and ends the drag here
+    #[test]
+    fn files_dragged_from_here_go_along() {
+        let mut sw = switch();
+        let (_, out) = feed(&mut sw, button(MouseButton::Left, true));
+        assert_eq!(out, [Emit::LocalPress { down: true }]);
+        let (d, out) = cross_to_pc(&mut sw, 400);
+        assert_eq!((d.verdict, d.cursor), (Verdict::Pass, None));
+        let ask = Emit::DragAtEdge {
+            device: "mac".into(),
+            press: 1,
+        };
+        assert_eq!(out, [ask]);
+        assert_eq!(cross_to_pc(&mut sw, 400).1, []);
+        // An answer for another press changes nothing
+        sw.allow_carry(7);
+        assert_eq!(cross_to_pc(&mut sw, 400).1, []);
+
+        sw.allow_carry(1);
+        let (d, out) = cross_to_pc(&mut sw, 400);
+        assert_eq!(d.cursor, Some(CursorAction::Park));
+        let entry = Point::new(1, 400);
+        assert_eq!(
+            out,
+            [
+                Emit::Enter {
+                    device: "pc".into(),
+                    at: entry
+                },
+                Emit::Carry {
+                    origin: "mac".into(),
+                    to: "pc".into(),
+                    at: entry,
+                    press: 1
+                }
+            ]
+        );
+        feed(&mut sw, motion(0, 0, 20.0, 0.0));
+        let (d, out) = feed(&mut sw, button(MouseButton::Left, false));
+        assert_eq!(d.verdict, Verdict::Pass);
+        assert_eq!(
+            out,
+            [
+                Emit::Button {
+                    device: "pc".into(),
+                    button: MouseButton::Left,
+                    down: false,
+                    at: Point::new(21, 400)
+                },
+                Emit::LocalPress { down: false }
+            ]
+        );
+        // The next press asks afresh
+        feed(&mut sw, button(MouseButton::Left, true));
+        let (_, out) = feed(&mut sw, motion(0, 0, -50.0, 0.0));
+        let ask = Emit::DragAtEdge {
+            device: "pc".into(),
+            press: 2,
+        };
+        assert_eq!(out[0], ask);
+    }
+
+    /// Files dragged on another device come home with the pointer, and are
+    /// dropped here when released
+    #[test]
+    fn files_dragged_there_come_home() {
+        let mut sw = switch();
+        cross_to_pc(&mut sw, 400);
+        feed(&mut sw, button(MouseButton::Left, true));
+        let (_, out) = feed(&mut sw, motion(0, 0, -5.0, 0.0));
+        let ask = Emit::DragAtEdge {
+            device: "pc".into(),
+            press: 1,
+        };
+        assert_eq!(out[0], ask);
+        assert_eq!(sw.target(), Some("pc"));
+        sw.allow_carry(1);
+        let (d, out) = feed(&mut sw, motion(0, 0, -5.0, 0.0));
+        let entry = Point::new(1510, 400);
+        assert_eq!(d.cursor, Some(CursorAction::Release(entry)));
+        assert_eq!(
+            out,
+            [
+                Emit::Leave {
+                    device: "pc".into()
+                },
+                Emit::Carry {
+                    origin: "pc".into(),
+                    to: "mac".into(),
+                    at: entry,
+                    press: 1
+                }
+            ]
+        );
+        let (d, out) = feed(&mut sw, button(MouseButton::Left, false));
+        assert_eq!(d.verdict, Verdict::Swallow);
+        assert_eq!(out, [Emit::Drop { at: entry }]);
+    }
+
+    /// A carried drag goes no further, and goes back only to cancel; Esc
+    /// cancels it too. A drag from here then carries on here
+    #[test]
+    fn carried_drags_are_cancelled() {
+        let mut sw = switch();
+        feed(&mut sw, button(MouseButton::Left, true));
+        cross_to_pc(&mut sw, 400);
+        sw.allow_carry(1);
+        cross_to_pc(&mut sw, 400);
+        // No further than the PC
+        let (_, out) = feed(&mut sw, motion(0, 0, 5000.0, 0.0));
+        assert!(matches!(&out[..], [Emit::Motion { .. }]), "{out:?}");
+        assert_eq!(sw.target(), Some("pc"));
+        // Back home: cancelled there, and the drag goes on here
+        let (d, out) = feed(&mut sw, motion(0, 0, -5000.0, 0.0));
+        assert!(matches!(d.cursor, Some(CursorAction::Release(_))));
+        assert_eq!(
+            out,
+            [
+                Emit::DragCancel {
+                    device: "pc".into(),
+                    at: Point::new(1919, 400)
+                },
+                Emit::Leave {
+                    device: "pc".into()
+                }
+            ]
+        );
+        // Still known to drag files: over again, then Esc
+        let (_, out) = cross_to_pc(&mut sw, 400);
+        assert!(matches!(&out[..], [Emit::Enter { .. }, Emit::Carry { .. }]));
+        let (d, out) = feed(&mut sw, key(usage::ESCAPE, true));
+        assert_eq!(d.verdict, Verdict::Swallow);
+        assert_eq!(
+            out,
+            [Emit::DragCancel {
+                device: "pc".into(),
+                at: Point::new(1, 400)
+            }]
+        );
+        assert_eq!(feed(&mut sw, key(usage::ESCAPE, false)).1, []);
+        // The release ends the drag held here
+        let (d, out) = feed(&mut sw, button(MouseButton::Left, false));
+        assert_eq!(d.verdict, Verdict::Pass);
+        assert_eq!(out, [Emit::LocalPress { down: false }]);
+    }
+
+    /// Files carried here from another device are cancelled here when the
+    /// pointer leaves; the release then goes nowhere
+    #[test]
+    fn a_drag_carried_home_is_cancelled_on_leaving() {
+        let mut sw = switch();
+        cross_to_pc(&mut sw, 400);
+        feed(&mut sw, button(MouseButton::Left, true));
+        feed(&mut sw, motion(0, 0, -5.0, 0.0));
+        sw.allow_carry(1);
+        feed(&mut sw, motion(0, 0, -5.0, 0.0));
+        assert!(!sw.is_remote());
+        // Back to the PC, where the files come from
+        let (_, out) = cross_to_pc(&mut sw, 400);
+        assert_eq!(
+            out,
+            [
+                Emit::DragCancel {
+                    device: "mac".into(),
+                    at: Point::new(1511, 400)
+                },
+                Emit::Enter {
+                    device: "pc".into(),
+                    at: Point::new(1, 400)
+                }
+            ]
+        );
+        let (d, out) = feed(&mut sw, button(MouseButton::Left, false));
+        assert_eq!((d.verdict, out), (Verdict::Swallow, vec![]));
     }
 
     /// A key pressed on one device is released there, never on the next
