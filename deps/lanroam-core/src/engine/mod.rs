@@ -445,8 +445,7 @@ impl Engine {
     }
 
     /// Set what this device does with files from the group: whether files
-    /// are dragged to and from it, and how much of those copied elsewhere
-    /// it fetches ahead of a paste
+    /// are dragged to and from it
     pub async fn set_files(&self, share: FileShare) -> Result<(), EngineError> {
         self.ask(|reply| Msg::SetFiles { share, reply }).await?
     }

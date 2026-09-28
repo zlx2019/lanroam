@@ -149,13 +149,11 @@ export const en: Record<TextKey, string> = {
   "clip.image": "Images",
   "clip.imageHint": "Screenshots and copied pictures",
   "clip.files": "Files",
-  "clip.filesHint": "Fetched ahead as the pointer comes, ready to paste; the limit is under Files",
+  "clip.filesHint": "Up to 32 MB, fetched ahead as the pointer comes, ready to paste",
   "clip.note": "What a password manager copies never leaves this device.",
 
   "files.drag": "Drag files",
   "files.dragHint": "Drag files across a screen edge onto another device; both devices need it on",
-  "files.prefetch": "Fetch ahead up to",
-  "files.prefetchHint": "Files copied on another device up to this size come over with the pointer, ready to paste; 0 for no limit",
   "files.note": "Released before the files are all there, a drag waits where it is and drops once they are; Esc cancels it.",
 
   "hint.paused": "Paused",
@@ -180,7 +178,7 @@ export const en: Record<TextKey, string> = {
   "hint.dragNothing": "Nothing was dropped",
   "hint.filesReady": "The copied files are ready to paste",
   "hint.filesTooLarge": "The copied files are over {limit}, not fetched ahead",
-  "hint.filesTooLargeSub": "{what} · {size}; drag them over, or raise the limit in Settings",
+  "hint.filesTooLargeSub": "{what} · {size}; drag them over instead",
   "hint.filesFailed": "The copied files could not be brought over",
   "hint.filesNoSpace": "Not enough space here for the copied files",
   "drop.more": "{name} and {others} more",

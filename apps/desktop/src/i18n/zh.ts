@@ -158,13 +158,11 @@ export const zh = {
   "clip.image": "图片",
   "clip.imageHint": "截图、复制的图片",
   "clip.files": "文件",
-  "clip.filesHint": "光标过来时提前传好，直接粘贴；上限在「文件」里设置",
+  "clip.filesHint": "不超过 32 MB 的，光标一过来就提前传好，直接粘贴",
   "clip.note": "密码管理器复制的内容不会离开本机。",
 
   "files.drag": "拖拽文件",
   "files.dragHint": "按住文件拖过屏幕边缘，放到另一台设备上；两台设备都开启才可以",
-  "files.prefetch": "提前传输上限",
-  "files.prefetchHint": "别的设备上复制的文件不超过这个大小，光标一过来就提前传好；0 表示不限",
   "files.note": "文件还没传完就松手时，指针会停在松手处，传完再放下；按 Esc 取消。",
 
   "hint.paused": "已暂停",
@@ -189,7 +187,7 @@ export const zh = {
   "hint.dragNothing": "什么都没有放下",
   "hint.filesReady": "复制的文件已可粘贴",
   "hint.filesTooLarge": "复制的文件超过 {limit}，没有提前传",
-  "hint.filesTooLargeSub": "{what} · {size}；可以直接拖过来，或在设置里调高上限",
+  "hint.filesTooLargeSub": "{what} · {size}；可以直接拖过来",
   "hint.filesFailed": "复制的文件没能传过来",
   "hint.filesNoSpace": "空间不足，复制的文件没能传过来",
 

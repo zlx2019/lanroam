@@ -131,18 +131,12 @@ impl ClipboardShare {
 pub struct FileShare {
     /// Files dragged across screen edges, to and from the device
     pub drag: bool,
-    /// Most files copied elsewhere fetched here ahead of a paste, in MiB;
-    /// 0 for no limit
-    pub prefetch: u32,
 }
 
 impl Default for FileShare {
-    /// Drags on, prefetching up to 1 GiB
+    /// Drags on
     fn default() -> Self {
-        Self {
-            drag: true,
-            prefetch: 1024,
-        }
+        Self { drag: true }
     }
 }
 
@@ -742,27 +736,15 @@ mod tests {
         assert!(old.allows(Kind::Files));
     }
 
-    /// A profile from before file settings drags and prefetches up to 1 GiB
+    /// A profile from before file settings drags files
     #[test]
     fn file_share() {
         let old: Profile = serde_json::from_value(serde_json::json!({
             "rev": 1, "device_id": "d", "name": "n", "platform": "macos"
         }))
         .unwrap();
-        assert_eq!(
-            old.files,
-            FileShare {
-                drag: true,
-                prefetch: 1024
-            }
-        );
-        let partial: FileShare = serde_json::from_str(r#"{"drag":false}"#).unwrap();
-        assert_eq!(
-            partial,
-            FileShare {
-                drag: false,
-                prefetch: 1024
-            }
-        );
+        assert!(old.files.drag);
+        let off: FileShare = serde_json::from_str(r#"{"drag":false}"#).unwrap();
+        assert!(!off.drag);
     }
 }

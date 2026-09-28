@@ -159,8 +159,6 @@ export interface ClipboardShare {
 export interface FileShare {
   /** Files dragged across screen edges, to and from it */
   drag: boolean;
-  /** Most files copied elsewhere fetched ahead of a paste, in MiB; 0 for no limit */
-  prefetch: number;
 }
 
 /** Where input goes right now */

@@ -1112,8 +1112,7 @@ impl Mesh {
         });
     }
 
-    /// Hand the clipboard actor what every member shares, and how much of
-    /// what is copied elsewhere this device fetches ahead
+    /// Hand the clipboard actor what every member shares
     fn publish_shares(&self) {
         let shares = self
             .doc
@@ -1121,15 +1120,7 @@ impl Mesh {
             .flat_map(|doc| doc.members())
             .map(|(fp, record)| (fp.to_string(), record.profile.clipboard))
             .collect();
-        let prefetch = self
-            .doc
-            .as_ref()
-            .and_then(|doc| doc.devices.get(&self.info.fingerprint))
-            .map_or_else(
-                || FileShare::default().prefetch,
-                |r| r.profile.files.prefetch,
-            );
-        let _ = self.wiring.clip.send(ClipMsg::Shares { shares, prefetch });
+        let _ = self.wiring.clip.send(ClipMsg::Shares(shares));
     }
 
     /// A member's name for messages

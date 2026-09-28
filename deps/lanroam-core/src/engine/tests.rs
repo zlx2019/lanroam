@@ -1440,18 +1440,14 @@ async fn copied_files_come_along() {
     assert_eq!(std::fs::read(&paths[0]).unwrap(), b"12345");
 }
 
-/// Files larger than b fetches ahead stay where they are, and b says so
+/// Files larger than a device fetches ahead stay where they are, and it
+/// says so
 #[tokio::test]
 async fn copied_files_beyond_the_limit_stay() {
     let (a, mut b, _c) = row_of_three().await;
-    let one_mib = FileShare {
-        prefetch: 1,
-        ..FileShare::default()
-    };
-    b.engine.set_files(one_mib).await.unwrap();
-    tokio::time::sleep(SETTLE).await;
     let big = a.dir.0.join("big.bin");
-    std::fs::write(&big, vec![0u8; (1 << 20) + 1]).unwrap();
+    let size = (32 << 20) + 1;
+    std::fs::File::create(&big).unwrap().set_len(size).unwrap();
     a.clipboard.copy(Content::Files(vec![big]));
     enter_b(&a, &b).await;
     let told = b
@@ -1462,7 +1458,7 @@ async fn copied_files_beyond_the_limit_stay() {
             _ => None,
         })
         .await;
-    assert_eq!(told, ("big.bin".to_string(), (1 << 20) + 1, 1 << 20));
+    assert_eq!(told, ("big.bin".to_string(), size, 32 << 20));
     assert_eq!(b.clipboard.content(), None);
 }
 
@@ -1623,10 +1619,7 @@ async fn other_drags_stay() {
 #[tokio::test]
 async fn drags_stay_off_devices_without_them() {
     let (a, b, _c) = row_of_three().await;
-    let off = FileShare {
-        drag: false,
-        ..FileShare::default()
-    };
+    let off = FileShare { drag: false };
     b.engine.set_files(off).await.unwrap();
     let fp = b.fp();
     a.until("b's file settings", |status| {

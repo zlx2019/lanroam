@@ -50,6 +50,10 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 /// out first
 const CONTENT_PRIORITY: i32 = -1;
 
+/// Most bytes of files copied elsewhere fetched ahead of a paste: larger
+/// ones may never be pasted, and are better dragged
+const PREFETCH_LIMIT: u64 = 32 << 20;
+
 /// Files fetched ahead taking longer than this are said to be ready: the
 /// user may be waiting to paste them
 const READY_HINT_AFTER: Duration = Duration::from_secs(1);
@@ -154,15 +158,8 @@ pub(super) enum ClipMsg {
         /// The content, if it came
         content: Option<Content>,
     },
-    /// What every member shares, this one included, by fingerprint, and
-    /// the most this device fetches ahead of files copied elsewhere (MiB,
-    /// 0 for no limit)
-    Shares {
-        /// What each member shares
-        shares: HashMap<String, ClipboardShare>,
-        /// The limit
-        prefetch: u32,
-    },
+    /// What every member shares, this one included, by fingerprint
+    Shares(HashMap<String, ClipboardShare>),
 }
 
 /// Why a transfer failed
@@ -276,9 +273,6 @@ pub(super) struct Clip {
     offers: Offers,
     /// What each member shares
     shares: HashMap<String, ClipboardShare>,
-    /// The most bytes of files copied elsewhere fetched ahead, in MiB; 0
-    /// for no limit
-    prefetch: u32,
     /// The files copied here last described, by hash
     described: Option<(String, Summary)>,
     /// The folder of the files fetched here that the clipboard holds
@@ -319,7 +313,6 @@ impl Clip {
             events,
             offers,
             shares: HashMap::new(),
-            prefetch: crate::group::FileShare::default().prefetch,
             described: None,
             staged: None,
             skipped: None,
@@ -378,10 +371,7 @@ impl Clip {
                 number,
                 content,
             } => self.on_fetched(&from, number, content).await,
-            ClipMsg::Shares { shares, prefetch } => {
-                self.shares = shares;
-                self.prefetch = prefetch;
-            }
+            ClipMsg::Shares(shares) => self.shares = shares,
         }
     }
 
@@ -619,13 +609,13 @@ impl Clip {
 
     /// Fetch files copied elsewhere ahead of a paste, unless the clipboard
     /// here holds them already, they are on their way, or they are larger
-    /// than this device fetches ahead
+    /// than [`PREFETCH_LIMIT`]
     async fn on_files(&mut self, offer: FilesOffer) {
         if !self.share(&self.local).allows(Kind::Files) {
             return;
         }
-        let limit = (self.prefetch > 0).then(|| u64::from(self.prefetch) << 20);
-        if let Some(limit) = limit.filter(|limit| offer.bytes > *limit) {
+        if offer.bytes > PREFETCH_LIMIT {
+            let limit = PREFETCH_LIMIT;
             // Told once per copy: the offer comes again at every visit
             if self.skipped.as_ref() != Some(&offer.hash) {
                 tracing::info!(
