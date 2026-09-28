@@ -34,7 +34,7 @@ pub mod events {
     /// user gave up
     pub const RECORDED: &str = "recorded";
     /// The main window is to show one of its pages (the tray asked);
-    /// payload: the page, e.g. `arrange`
+    /// payload: the page, e.g. `settings`
     pub const SHOW_PAGE: &str = "show-page";
 }
 

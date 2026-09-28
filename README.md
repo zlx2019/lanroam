@@ -41,7 +41,7 @@ Arrange them once. From then on, move the pointer past the edge of one screen an
 - 📡 **Zero-config discovery** — mDNS with a UDP multicast fallback; nearby devices just show up.
 - 🤝 **Join with a PIN** — a device joins the group by typing the 6-digit PIN a member shows, checked with a password-authenticated key exchange bound to both TLS certificates.
 - 🔐 **Secure by default** — mutually authenticated TLS 1.3 over QUIC, with identities pinned to certificate fingerprints; input only ever reaches the members of your group.
-- 🗂️ **Lives in the menu bar** — pause, lock, switch to a device or go and arrange the screens from the menu bar (macOS) or the tray (Windows), and optionally start at login.
+- 🗂️ **Lives in the menu bar** — pause, lock or switch to a device from the menu bar (macOS) or the tray (Windows), and optionally start at login.
 
 ### Hotkeys
 
@@ -131,7 +131,7 @@ macOS 15+ asks for **Local Network** permission on first launch. It must be allo
 Discovery and control need an inbound firewall rule for private networks: the installer adds it (for a development build, run the update script once with `-Firewall` as shown above). Make sure Windows counts your network as **Private**, not Public.
 
 **The pointer crosses at the wrong place, or not at all.**
-The pointer only crosses where two screens touch in the layout. Open the **Arrange** page (or **Arrange Screens…** in the tray menu): the other devices show their numbers on their screens, so you can tell which is which; drag them to match your desk.
+The pointer only crosses where two screens touch in the layout. Open the **Arrange** page: the other devices show their numbers on their screens, so you can tell which is which; drag them to match your desk.
 
 **Scrolling goes the wrong way on the other computer.**
 A Mac with natural scrolling scrolls a PC the other way round. On the computer being controlled, turn on **Settings → Control → Reverse scrolling**; its scrolling speed is set there too.

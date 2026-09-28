@@ -1,6 +1,5 @@
 //! The tray icon and its menu: the state, pause and lock, a jump to any
-//! online member, the window (on its arrangement page, or as it was),
-//! quitting.
+//! online member, the settings, quitting.
 //!
 //! The menu is rebuilt from each snapshot: members come and go, and the
 //! texts follow the language setting. The icon's shape follows where input
@@ -32,10 +31,8 @@ mod ids {
     pub const LOCK: &str = "lock";
     /// Prefix of a jump to a device, followed by its fingerprint
     pub const JUMP: &str = "jump:";
-    /// Open the window on its arrangement page
-    pub const ARRANGE: &str = "arrange";
-    /// Show the window
-    pub const OPEN: &str = "open";
+    /// Show the window on its settings page
+    pub const SETTINGS: &str = "settings";
     /// Quit
     pub const QUIT: &str = "quit";
 }
@@ -223,19 +220,12 @@ fn build_menu(app: &AppHandle, snapshot: Option<&Snapshot>) -> tauri::Result<Men
                 menu.append(&item)?;
             }
             menu.append(&PredefinedMenuItem::separator(app)?)?;
-            menu.append(&MenuItem::with_id(
-                app,
-                ids::ARRANGE,
-                t.arrange,
-                true,
-                None::<&str>,
-            )?)?;
         }
     }
     menu.append(&MenuItem::with_id(
         app,
-        ids::OPEN,
-        t.open,
+        ids::SETTINGS,
+        t.settings,
         true,
         None::<&str>,
     )?)?;
@@ -253,10 +243,9 @@ fn build_menu(app: &AppHandle, snapshot: Option<&Snapshot>) -> tauri::Result<Men
 /// A menu item was chosen
 fn on_menu(app: &AppHandle, id: &str) {
     let request = match id {
-        ids::OPEN => return show_main_window(app),
-        ids::ARRANGE => {
+        ids::SETTINGS => {
             show_main_window(app);
-            return bridge::emit(app, events::SHOW_PAGE, "arrange");
+            return bridge::emit(app, events::SHOW_PAGE, "settings");
         }
         ids::QUIT => return app.exit(0),
         ids::PAUSE => Request::Pause,

@@ -49,10 +49,8 @@ pub struct Texts {
     pub switch_to: &'static str,
     /// Tray: marks an offline device in the list
     pub offline: &'static str,
-    /// Tray: open the window on its arrangement page
-    pub arrange: &'static str,
-    /// Tray: open the window
-    pub open: &'static str,
+    /// Tray: open the window on its settings page
+    pub settings: &'static str,
     /// Tray: quit
     pub quit: &'static str,
     /// Dialog title when the engine cannot start
@@ -79,8 +77,7 @@ static ZH: Texts = Texts {
     lock: "锁定",
     switch_to: "切换到",
     offline: "离线",
-    arrange: "排列屏幕…",
-    open: "打开 Lanroam",
+    settings: "设置…",
     quit: "退出",
     start_failed_title: "Lanroam 无法启动",
     start_failed_hint: "可能已有另一个 Lanroam 在运行（包括命令行版 lanroam-cli run），请先退出它再打开。",
@@ -96,8 +93,7 @@ static EN: Texts = Texts {
     lock: "Lock",
     switch_to: "Switch To",
     offline: "offline",
-    arrange: "Arrange Screens…",
-    open: "Open Lanroam",
+    settings: "Settings…",
     quit: "Quit",
     start_failed_title: "Lanroam cannot start",
     start_failed_hint: "Another Lanroam may be running already (the command-line lanroam-cli run counts too); quit it first.",
