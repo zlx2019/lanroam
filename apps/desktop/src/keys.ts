@@ -91,5 +91,16 @@ export function modsOf(chord: Chord): Mods {
 
 /** Whether two combinations are the same */
 export function sameChord(a: Chord, b: Chord): boolean {
-  return a.key === b.key && a.ctrl === b.ctrl && a.alt === b.alt && a.shift === b.shift && a.meta === b.meta;
+  return a.key === b.key && sameMods(a, b);
+}
+
+/** Whether two sets of modifiers are the same */
+function sameMods(a: Mods, b: Mods): boolean {
+  return a.ctrl === b.ctrl && a.alt === b.alt && a.shift === b.shift && a.meta === b.meta;
+}
+
+/** Whether the hotkeys are the defaults */
+export function defaultHotkeys(h: Hotkeys): boolean {
+  const d = DEFAULT_HOTKEYS;
+  return sameChord(h.pause, d.pause) && sameChord(h.lock, d.lock) && sameMods(h.jump, d.jump) && sameMods(h.step, d.step);
 }

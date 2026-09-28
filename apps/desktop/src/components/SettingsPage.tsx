@@ -231,6 +231,12 @@ function Look({
   );
 }
 
+/** A fingerprint by both ends, as `e852 1c76 … 90ca c1f3` */
+function shortFingerprint(fp: string): string {
+  const group = (hex: string) => hex.replace(/(.{4})(?=.)/g, "$1 ");
+  return `${group(fp.slice(0, 8))} … ${group(fp.slice(-8))}`;
+}
+
 /** Version, identity, logs */
 function About({ snapshot, onToast }: { snapshot: Snapshot; onToast: (message: string) => void }) {
   const { t } = useI18n();
@@ -255,7 +261,9 @@ function About({ snapshot, onToast }: { snapshot: Snapshot; onToast: (message: s
       </Row>
       <Row title={t("about.fingerprint")}>
         <span className="chips">
-          <span className="fp">{fp.slice(0, 16).replace(/(.{4})/g, "$1 ")}…</span>
+          <span className="fp" title={fp}>
+            {shortFingerprint(fp)}
+          </span>
           <button className="btn" onClick={copy}>
             {t(copied ? "about.copied" : "about.copy")}
           </button>

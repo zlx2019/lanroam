@@ -9,7 +9,16 @@ import { listen } from "@tauri-apps/api/event";
 import { api } from "../api";
 import { EVENTS } from "../events";
 import { altKey, formatError, useI18n } from "../i18n";
-import { DEFAULT_HOTKEYS, chordLabels, commanding, modLabels, modsOf, sameChord, validHotkey } from "../keys";
+import {
+  DEFAULT_HOTKEYS,
+  chordLabels,
+  commanding,
+  defaultHotkeys,
+  modLabels,
+  modsOf,
+  sameChord,
+  validHotkey,
+} from "../keys";
 import type { Chord, HoldKey, InputSettings, Snapshot, SwitchMode } from "../types";
 import { Keycaps, Row, Seg, Stepper } from "./controls";
 import { CORNER, EdgeList } from "./EdgeList";
@@ -117,6 +126,13 @@ export function SwitchingSettings({
     <>
       <div className="group-h">
         {t("switch.hotkeys")} <span className="muted">· {t("switch.hotkeysHint")}</span>
+        <button
+          className="link"
+          disabled={defaultHotkeys(hotkeys)}
+          onClick={() => save({ ...settings, hotkeys: DEFAULT_HOTKEYS })}
+        >
+          {t("switch.reset")}
+        </button>
       </div>
       <div className="group">
         <Row title={t("switch.pause")}>{keys("pause", chordLabels(hotkeys.pause, platform, names))}</Row>
@@ -125,11 +141,6 @@ export function SwitchingSettings({
         </Row>
         <Row title={t("switch.jump")}>{keys("jump", [...modLabels(hotkeys.jump, platform), "1–9"])}</Row>
         <Row title={t("switch.step")}>{keys("step", [...modLabels(hotkeys.step, platform), t("switch.arrows")])}</Row>
-        <div className="srow end">
-          <button className="btn ghost" onClick={() => save({ ...settings, hotkeys: DEFAULT_HOTKEYS })}>
-            {t("switch.reset")}
-          </button>
-        </div>
       </div>
 
       <div className="group-h">{t("switch.edges")}</div>
