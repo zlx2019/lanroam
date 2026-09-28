@@ -106,6 +106,8 @@ pub struct DeviceDto {
     pub scale: u32,
     /// Command and Control are swapped for input from the other platform
     pub swap: bool,
+    /// Pointer speed while controlled, in percent
+    pub pointer_speed: u32,
     /// Where the device sits on the layout canvas (logical pixels): the
     /// bounds of its displays
     pub rect: Option<RectDto>,
@@ -175,6 +177,7 @@ impl GroupDto {
                     resolution: primary.map(resolution).unwrap_or_default(),
                     scale: profile.scale,
                     swap: profile.swap_cmd_ctrl,
+                    pointer_speed: profile.pointer_speed,
                     rect: placed.and_then(|d| d.bounds()).map(RectDto::from),
                     origin: record.placement.as_ref().map(|p| PointDto {
                         x: p.at.x,

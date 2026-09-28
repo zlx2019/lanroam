@@ -10,6 +10,12 @@ use serde::{Deserialize, Serialize};
 /// File name in the data directory
 const SETTINGS_FILE: &str = "app.json";
 
+/// Closing the main window hides it in the tray (menu bar)
+pub const CLOSE_TO_TRAY: &str = "tray";
+
+/// Closing the main window quits Lanroam
+pub const CLOSE_TO_QUIT: &str = "quit";
+
 /// The app's preferences
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -27,6 +33,8 @@ pub struct Settings {
     /// The first close of the window already said that Lanroam keeps
     /// running
     pub close_hinted: bool,
+    /// Closing the main window: `tray` hides it, `quit` quits
+    pub close_window: String,
 }
 
 impl Default for Settings {
@@ -38,11 +46,17 @@ impl Default for Settings {
             hints: true,
             dim: false,
             close_hinted: false,
+            close_window: CLOSE_TO_TRAY.into(),
         }
     }
 }
 
 impl Settings {
+    /// Whether closing the main window quits
+    pub fn close_quits(&self) -> bool {
+        self.close_window == CLOSE_TO_QUIT
+    }
+
     /// Read the preferences; defaults when missing or unreadable
     pub fn load(dir: &Path) -> Self {
         fs::read(path(dir))

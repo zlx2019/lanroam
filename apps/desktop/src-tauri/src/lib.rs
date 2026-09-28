@@ -1,7 +1,8 @@
 //! Lanroam desktop shell: the engine behind a window and a tray icon.
 //!
 //! - Closing a window hides it; the tray keeps Lanroam running, and quitting
-//!   goes through the tray menu
+//!   goes through the tray menu (or closing the main window, if the user
+//!   sets it so)
 //! - On macOS it lives in the menu bar only (no Dock icon)
 //! - Started at login with `--hidden`, it stays in the tray; any other start
 //!   shows the window, and a second start raises the first one's
@@ -30,6 +31,9 @@ const HIDDEN_ARG: &str = "--hidden";
 /// Label of the main window
 const MAIN_WINDOW: &str = "main";
 
+/// The log file in the data directory, emptied at each start
+const LOG_FILE: &str = "lanroam.log";
+
 /// Run the app until it quits
 pub fn run() {
     init_logging();
@@ -52,6 +56,15 @@ pub fn run() {
             // Closing hides; prevent_close must come first or the app quits
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
+                // Unless the user wants closing the main window to quit
+                if window.label() == MAIN_WINDOW
+                    && window
+                        .try_state::<AppState>()
+                        .is_some_and(|app_state| state::lock(&app_state.settings).close_quits())
+                {
+                    window.app_handle().exit(0);
+                    return;
+                }
                 let _ = window.hide();
                 // Closing the PIN window turns the join down
                 if window.label() == bridge::JOIN_WINDOW
@@ -81,6 +94,7 @@ pub fn run() {
             commands::get_overlay,
             commands::rename,
             commands::set_swap,
+            commands::set_pointer_speed,
             commands::request_action,
             commands::get_permissions,
             commands::open_permission,
@@ -93,6 +107,7 @@ pub fn run() {
             commands::record_keys,
             commands::set_edge,
             commands::key_names,
+            commands::open_logs,
             commands::show_main_window,
             commands::quit_app,
         ])
@@ -200,7 +215,7 @@ fn init_logging() {
 /// The log file, emptied at each start
 fn open_log(dir: &Path) -> Option<std::fs::File> {
     std::fs::create_dir_all(dir).ok()?;
-    std::fs::File::create(dir.join("lanroam.log")).ok()
+    std::fs::File::create(dir.join(LOG_FILE)).ok()
 }
 
 /// Wait for Ctrl-C, or SIGTERM on unix

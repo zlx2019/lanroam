@@ -6,10 +6,11 @@ import { api } from "../api";
 import { formatError, useI18n } from "../i18n";
 import type { SettingsDto, Snapshot } from "../types";
 import { Row, Seg, Toggle } from "./controls";
+import { KeyboardMouseSettings } from "./KeyboardMouseSettings";
 import { SwitchingSettings } from "./SwitchingSettings";
 
 /** Sections of the settings page */
-type Section = "general" | "switching" | "look" | "about";
+type Section = "general" | "switching" | "input" | "look" | "about";
 
 /** The settings page */
 export function SettingsPage({
@@ -28,7 +29,7 @@ export function SettingsPage({
   return (
     <div className="settings">
       <nav className="snav">
-        {(["general", "switching", "look", "about"] as const).map((id) => (
+        {(["general", "switching", "input", "look", "about"] as const).map((id) => (
           <button key={id} className={section === id ? "on" : ""} onClick={() => setSection(id)}>
             {t(`settings.${id}`)}
           </button>
@@ -40,10 +41,12 @@ export function SettingsPage({
             <General snapshot={snapshot} settings={settings} onSettings={onSettings} onToast={onToast} />
           ) : section === "switching" ? (
             <SwitchingSettings snapshot={snapshot} onToast={onToast} />
+          ) : section === "input" ? (
+            <KeyboardMouseSettings snapshot={snapshot} onToast={onToast} />
           ) : section === "look" ? (
             <Look settings={settings} onSettings={onSettings} onToast={onToast} />
           ) : (
-            <About snapshot={snapshot} />
+            <About snapshot={snapshot} onToast={onToast} />
           )}
         </div>
       </div>
@@ -51,7 +54,7 @@ export function SettingsPage({
   );
 }
 
-/** Name, start at login, language, theme */
+/** Name, start at login, closing the window, language, theme */
 function General({
   snapshot,
   settings,
@@ -117,6 +120,16 @@ function General({
             onChange={(autostart) => change({ autostart })}
           />
         </Row>
+        <Row title={t("settings.closeWindow")}>
+          <Seg
+            options={[
+              ["tray", t(snapshot.device.platform === "macos" ? "settings.closeMenuBar" : "settings.closeTray")],
+              ["quit", t("settings.closeQuit")],
+            ]}
+            value={settings.closeWindow}
+            onChange={(closeWindow) => change({ closeWindow })}
+          />
+        </Row>
       </div>
       <div className="group">
         <Row title={t("settings.language")}>
@@ -177,8 +190,8 @@ function Look({
   );
 }
 
-/** Version, identity, source */
-function About({ snapshot }: { snapshot: Snapshot }) {
+/** Version, identity, source, logs */
+function About({ snapshot, onToast }: { snapshot: Snapshot; onToast: (message: string) => void }) {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   const fp = snapshot.device.fingerprint;
@@ -217,6 +230,11 @@ function About({ snapshot }: { snapshot: Snapshot }) {
       <div className="group">
         <Row title={t("about.source")} hint={t("about.license")}>
           <span className="muted">github.com/zlx2019/lanroam</span>
+        </Row>
+        <Row title={t("about.logs")} hint={t("about.logsHint")}>
+          <button className="btn sm" onClick={() => api.openLogs().catch((e) => onToast(formatError(t, e)))}>
+            {t("about.openLogs")}
+          </button>
         </Row>
       </div>
     </>

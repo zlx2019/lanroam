@@ -1399,6 +1399,23 @@ footer code,
   text-align: center;
   font-size: 12px;
 }
+.slider {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.slider input {
+  width: 150px;
+  accent-color: var(--accent);
+}
+.slider input:disabled {
+  opacity: 0.4;
+}
+.slider span {
+  width: 36px;
+  text-align: right;
+  font: 12px var(--mono);
+}
 .kbd {
   font: 500 11.5px var(--mono);
   padding: 3px 7px;

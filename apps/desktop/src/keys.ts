@@ -34,6 +34,12 @@ const SHORT: Record<string, string> = {
   Period: ".",
   Slash: "/",
   PrintScreen: "PrtSc",
+  AudioVolumeMute: "Mute",
+  AudioVolumeUp: "Vol+",
+  AudioVolumeDown: "Vol−",
+  MediaPlayPause: "⏯",
+  MediaTrackNext: "⏭",
+  MediaTrackPrevious: "⏮",
 };
 
 /** The modifiers as keycaps, in the platform's order */

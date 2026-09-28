@@ -1,7 +1,7 @@
 // Small controls shared by the settings page and the layout's edge
 // settings: choices, switches, steppers, keycaps.
 
-import type { ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 /** A segmented choice */
 export function Seg<T extends string>({
@@ -70,6 +70,57 @@ export function Stepper({
       <button onClick={() => to(value + step)} disabled={value >= max} aria-label="+">
         +
       </button>
+    </span>
+  );
+}
+
+/** A speed in percent picked on a scale, shown as a factor (1.5×);
+ * `onChange` gets it once the slider is let go */
+export function Slider({
+  value,
+  min,
+  max,
+  step,
+  label,
+  disabled = false,
+  onChange,
+}: {
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  label: string;
+  disabled?: boolean;
+  onChange: (value: number) => void;
+}) {
+  const [draft, setDraft] = useState(value);
+  const ref = useRef<HTMLInputElement>(null);
+  const changed = useRef(onChange);
+  changed.current = onChange;
+  useEffect(() => setDraft(value), [value]);
+  // The native change event fires once the value is settled (released, or
+  // stepped with the keyboard), not on every move
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const settle = () => changed.current(Number(el.value));
+    el.addEventListener("change", settle);
+    return () => el.removeEventListener("change", settle);
+  }, []);
+  return (
+    <span className="slider">
+      <input
+        ref={ref}
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={draft}
+        disabled={disabled}
+        aria-label={label}
+        onChange={(e) => setDraft(Number(e.target.value))}
+      />
+      <span className="muted">{(draft / 100).toFixed(1)}×</span>
     </span>
   );
 }

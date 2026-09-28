@@ -44,6 +44,7 @@ function device(
     resolution: `${w}×${h}`,
     scale,
     swap: true,
+    pointerSpeed: 100,
     rect: { x, y: 0, w: lw, h: lh },
     screens: [{ x, y: 0, w: lw, h: lh }],
     origin: { x, y: 0 },
@@ -75,13 +76,23 @@ let settings: SettingsDto = {
   edgeGlow: true,
   hints: true,
   dim: false,
+  closeWindow: "tray",
 };
 
 let inputSettings: InputSettings = {
   hotkeys: DEFAULT_HOTKEYS,
   keepLocal: [],
   switching: { mode: "direct", hold: "shift", dwellMs: 300, cornerPx: 8 },
+  mediaKeys: "remote",
+  scrolling: { speed: 100, reverse: false },
 };
+
+/** Change this device in the group and push the new state */
+function setLocal(patch: Partial<DeviceDto>) {
+  const local = state.group?.devices.find((d) => d.local);
+  if (local) Object.assign(local, patch);
+  setTimeout(() => emit("snapshot", structuredClone(state)), 50);
+}
 
 /** Key names by HID usage: letters, digits and a few others */
 const keyNames: Record<string, string> = {
@@ -120,6 +131,8 @@ const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
     inputSettings = args.settings as InputSettings;
   },
   key_names: () => keyNames,
+  set_swap: (args) => setLocal({ swap: args.on as boolean }),
+  set_pointer_speed: (args) => setLocal({ pointerSpeed: args.speed as number }),
   set_edge: (args) => {
     const group = state.group;
     if (!group) return;

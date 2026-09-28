@@ -46,6 +46,8 @@ export const api = {
   rename: (name: string) => invoke<void>("rename", { name }),
   /** Swap Command and Control for input into this device */
   setSwap: (on: boolean) => invoke<void>("set_swap", { on }),
+  /** How fast the pointer goes on this device while controlled, in percent */
+  setPointerSpeed: (speed: number) => invoke<void>("set_pointer_speed", { speed }),
   /** Pause, lock or jump at the next local input */
   requestAction: (action: Action) => invoke<void>("request_action", { action }),
   /** The OS input permissions */
@@ -71,6 +73,8 @@ export const api = {
   setEdge: (a: string, b: string, settings: EdgeSettings) => invoke<void>("set_edge", { a, b, settings }),
   /** Key names by HID usage (W3C code values) */
   keyNames: () => invoke<Record<string, string>>("key_names"),
+  /** Show the log file in the file manager */
+  openLogs: () => invoke<void>("open_logs"),
   /** Quit Lanroam */
   quit: () => invoke<void>("quit_app"),
 };

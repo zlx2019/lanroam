@@ -20,7 +20,7 @@ use crate::dto::{
     JoiningEndedDto, NearbyDto, PermissionsDto, Snapshot,
 };
 use crate::overlay::{self, SceneDto};
-use crate::settings::Settings;
+use crate::settings::{CLOSE_TO_QUIT, CLOSE_TO_TRAY, Settings};
 use crate::state::{AppState, lock};
 use crate::tray;
 
@@ -186,6 +186,13 @@ pub async fn set_swap(state: State<'_, AppState>, on: bool) -> Reply<()> {
     Ok(state.engine.set_swap(on).await?)
 }
 
+/// Set how fast the pointer goes on this device while another member
+/// controls it, in percent
+#[tauri::command]
+pub async fn set_pointer_speed(state: State<'_, AppState>, speed: u32) -> Reply<()> {
+    Ok(state.engine.set_pointer_speed(speed).await?)
+}
+
 /// What the window asks the keyboard and mouse to do
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -279,6 +286,8 @@ pub struct SettingsDto {
     pub hints: bool,
     /// Dim this device's screens while it controls another
     pub dim: bool,
+    /// Closing the main window: `tray` or `quit`
+    pub close_window: String,
 }
 
 /// The app's preferences
@@ -292,6 +301,7 @@ pub fn get_settings(app: AppHandle, state: State<'_, AppState>) -> SettingsDto {
         edge_glow: settings.edge_glow,
         hints: settings.hints,
         dim: settings.dim,
+        close_window: settings.close_window,
     }
 }
 
@@ -317,6 +327,11 @@ pub async fn save_settings(
         edge_glow: settings.edge_glow,
         hints: settings.hints,
         dim: settings.dim,
+        close_window: if settings.close_window == CLOSE_TO_QUIT {
+            CLOSE_TO_QUIT.into()
+        } else {
+            CLOSE_TO_TRAY.into()
+        },
         ..lock(&state.settings).clone()
     };
     saved.save(&state.data_dir)?;
@@ -362,9 +377,21 @@ pub async fn set_edge(
 /// The keys' names by HID usage (W3C `code` values), to show combinations
 #[tauri::command]
 pub fn key_names() -> BTreeMap<u16, &'static str> {
-    (0..=0xFF)
-        .filter_map(|usage| keymap::name(usage).map(|name| (usage, name)))
-        .collect()
+    keymap::names().collect()
+}
+
+/// Show the log file in the file manager (its folder, when there is no
+/// file yet)
+#[tauri::command]
+pub fn open_logs(app: AppHandle, state: State<'_, AppState>) -> Reply<()> {
+    let log = state.data_dir.join(crate::LOG_FILE);
+    let opened = if log.exists() {
+        app.opener().reveal_item_in_dir(&log)
+    } else {
+        app.opener()
+            .open_path(state.data_dir.to_string_lossy(), None::<&str>)
+    };
+    opened.map_err(|e| CommandError::new("internal", e.to_string()))
 }
 
 /// Bring up the main window

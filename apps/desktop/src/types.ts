@@ -61,12 +61,24 @@ export interface Switching {
   cornerPx: number;
 }
 
+/** Where media and volume keys go while another device is controlled */
+export type MediaKeys = "remote" | "local";
+
+/** How scrolling from a controlling device is replayed here */
+export interface Scrolling {
+  /** Percent */
+  speed: number;
+  reverse: boolean;
+}
+
 /** This device's input settings (lanroam-core settings.rs) */
 export interface InputSettings {
   hotkeys: Hotkeys;
   /** Combinations that stay on this machine while controlling another */
   keepLocal: Chord[];
   switching: Switching;
+  mediaKeys: MediaKeys;
+  scrolling: Scrolling;
 }
 
 /** Settings of the edge between two devices; null follows the defaults */
@@ -97,6 +109,8 @@ export interface DeviceDto {
   /** Display scale in percent */
   scale: number;
   swap: boolean;
+  /** Pointer speed while controlled, in percent */
+  pointerSpeed: number;
   /** Where it sits on the layout canvas (logical pixels): its displays' bounds */
   rect: RectDto | null;
   /** Its origin on the canvas, which placing moves */
@@ -206,6 +220,8 @@ export interface SettingsDto {
   hints: boolean;
   /** Dim this device's screens while it controls another */
   dim: boolean;
+  /** Closing the main window hides it in the tray, or quits */
+  closeWindow: "tray" | "quit";
 }
 
 /** What an on-screen hint says (overlay.rs) */
