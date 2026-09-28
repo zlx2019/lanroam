@@ -62,8 +62,10 @@ enum DragCall {
     Probe(u64),
     /// Probe over
     Unprobe,
-    /// Armed with this id, at, with these files
-    Arm(u64, Point, Vec<std::path::PathBuf>),
+    /// Armed with this id, at, with these files, all there or not
+    Arm(u64, Point, Vec<std::path::PathBuf>, bool),
+    /// What this id carries: how many files and folders
+    Listed(u64, usize),
     /// Cancel this id
     Cancel(u64),
     /// The files of this id are there, or not coming
@@ -87,7 +89,8 @@ struct FakeDragState {
     later: Mutex<Option<Option<u64>>>,
     /// Where events go, once started
     sink: Mutex<Option<Arc<DragSink>>>,
-    /// Drops as soon as the button goes up (as on Windows)
+    /// A drag armed before its files are there drops as soon as the button
+    /// goes up (it promises them, as on macOS and Windows)
     early: std::sync::atomic::AtomicBool,
 }
 
@@ -161,8 +164,8 @@ impl Dragging for FakeDragging {
     fn unprobe(&self) {
         self.note(DragCall::Unprobe);
     }
-    fn arm(&self, id: u64, at: Point, paths: Vec<std::path::PathBuf>) {
-        self.note(DragCall::Arm(id, at, paths));
+    fn arm(&self, id: u64, at: Point, paths: Vec<std::path::PathBuf>, ready: bool) {
+        self.note(DragCall::Arm(id, at, paths, ready));
         let mut later = self.0.later.lock().unwrap();
         if let Some(waiting) = later.as_mut() {
             *waiting = Some(id);
@@ -170,6 +173,9 @@ impl Dragging for FakeDragging {
         }
         drop(later);
         self.report(DragEvent::Armed { id });
+    }
+    fn listed(&self, id: u64, entries: Vec<lanroam_dnd::Listed>) {
+        self.note(DragCall::Listed(id, entries.len()));
     }
     fn cancel(&self, id: u64) {
         self.note(DragCall::Cancel(id));
@@ -1528,7 +1534,7 @@ impl TestEngine {
         calls
             .into_iter()
             .find_map(|call| match call {
-                DragCall::Arm(_, at, paths) => Some((at, paths)),
+                DragCall::Arm(_, at, paths, _) => Some((at, paths)),
                 _ => None,
             })
             .unwrap()
@@ -1587,8 +1593,8 @@ fn released(decision: &Decision) -> bool {
 }
 
 /// A drag of files held here goes along to b: b drags stand-ins with the
-/// same names from where the pointer entered, and a release there before
-/// they are ready drops them once they are
+/// same names from where the pointer entered; small, it gives the files a
+/// moment to arrive first, and drags them as they are
 #[tokio::test]
 async fn files_dragged_from_here_go_along() {
     let (a, b, _c) = row_of_three().await;
@@ -1599,6 +1605,12 @@ async fn files_dragged_from_here_go_along() {
     let (at, paths) = b.armed().await;
     assert_eq!(at, Point::new(1, 500));
     assert_eq!(names(&paths), ["report.pdf"]);
+    let ready = b
+        .drag
+        .calls()
+        .into_iter()
+        .any(|call| matches!(call, DragCall::Arm(.., true)));
+    assert!(ready);
     b.injected(&Injected::Button(MouseButton::Left, true)).await;
 
     let decision = a.input.left(false);
@@ -1769,9 +1781,10 @@ async fn a_folder_goes_over_whole() {
     assert!(landed.join("2026/empty").is_dir());
 }
 
-/// Where the native side drops early (Windows), a release before the files
-/// are there drops at once: the pointer is free, and the files are
-/// delivered to the app they landed on once they are all there
+/// Where the native side promises the files of a drag armed before they
+/// are there (macOS, Windows), its release drops at once: the pointer is
+/// free, and the files are delivered to the app they landed on once they
+/// are all there; it learns what is coming first
 #[tokio::test]
 async fn an_early_drop_frees_the_pointer() {
     let (a, mut b, _c) = row_of_three().await;
@@ -1802,12 +1815,23 @@ async fn an_early_drop_frees_the_pointer() {
         matches!(event, EngineEvent::Receiving(None)).then_some(())
     })
     .await;
-    let delivered = b
-        .drag
-        .calls()
-        .into_iter()
-        .any(|call| matches!(call, DragCall::Deliver(_, true)));
-    assert!(delivered);
+    let calls = b.drag.calls();
+    assert!(
+        calls
+            .iter()
+            .any(|call| matches!(call, DragCall::Arm(.., false)))
+    );
+    // The folder and its file
+    assert!(
+        calls
+            .iter()
+            .any(|call| matches!(call, DragCall::Listed(_, 2)))
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|call| matches!(call, DragCall::Deliver(_, true)))
+    );
     assert_eq!(std::fs::read(paths[0].join("big.bin")).unwrap(), big);
 }
 
@@ -1837,8 +1861,14 @@ async fn files_gone_meanwhile_fail() {
     );
     a.input.left(false);
     b.dragged(|call| matches!(call, DragCall::Cancel(1))).await;
-    b.injected(&Injected::Button(MouseButton::Left, false))
-        .await;
+    tokio::time::sleep(SETTLE).await;
+    // Given up before its press, or cancelled after: nothing stays pressed
+    let injected = b.input.injected.lock().unwrap().clone();
+    let count = |down| {
+        let button = Injected::Button(MouseButton::Left, down);
+        injected.iter().filter(|i| **i == button).count()
+    };
+    assert_eq!(count(true), count(false), "{injected:?}");
 }
 
 /// The files of a cancelled drag go

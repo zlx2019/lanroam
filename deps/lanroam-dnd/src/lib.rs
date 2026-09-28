@@ -16,9 +16,13 @@
 //! | macOS | the drag pasteboard (changed since the press) | `NSDraggingSession` from a panel under the cursor |
 //! | Windows | `IDropTarget::DragEnter` on a window under the cursor | `SHDoDragDrop` from a window under the cursor |
 //!
-//! Released before the files are all there, a drag on Windows drops at once
-//! and the app it lands on waits for them ([`Dnd::drops_early`]); on macOS
-//! the engine holds the release back until they are.
+//! A drag armed before its files are all there promises them instead
+//! ([`Dnd::drops_early`]): it drops as soon as the button goes up, and the
+//! app it lands on gets them once they are ([`Dnd::deliver`]), in the
+//! background. Only apps that take files that way take such a drop
+//! (Finder, Explorer, the desktop, mail): a file promise on macOS, virtual
+//! files on Windows, which lists them first ([`Dnd::listed`]) and adds the
+//! files themselves once they are there.
 //!
 //! Windows used here are transparent, above everything and never take
 //! focus. On macOS they live on the main thread, which must run the app's
@@ -80,6 +84,22 @@ pub enum Event {
 /// Receives what happens to the drags; called on any thread
 pub type Sink = Box<dyn Fn(Event) + Send + Sync>;
 
+/// A file of a drag lands under its name with this appended, and takes its
+/// name once it is whole: an app its drop promised it to may read it as it
+/// arrives
+pub const PART_SUFFIX: &str = ".lanroam.part";
+
+/// A file or folder a drag carries, as it lands ([`Dnd::listed`])
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listed {
+    /// Where it lands, under the folder of the paths armed
+    pub path: PathBuf,
+    /// Its bytes (none for a folder)
+    pub size: u64,
+    /// A folder
+    pub dir: bool,
+}
+
 /// Drag and drop errors
 #[derive(Debug, Error)]
 pub enum DndError {
@@ -126,9 +146,17 @@ impl Dnd {
 
     /// Get ready to drag `paths` from `at` (this machine's coordinates,
     /// see `lanroam_input::platform::displays`): the next left press there
-    /// starts the drag ([`Event::Armed`] once ready)
-    pub fn arm(&self, id: u64, at: Point, paths: Vec<PathBuf>) {
-        self.imp.arm(id, at, paths);
+    /// starts the drag ([`Event::Armed`] once ready). Unless `ready` (their
+    /// files all there), the drag promises them
+    pub fn arm(&self, id: u64, at: Point, paths: Vec<PathBuf>, ready: bool) {
+        self.imp.arm(id, at, paths, ready);
+    }
+
+    /// Everything the drag armed with `id` carries, folders before what
+    /// they hold, in the order the files arrive: what an app it drops on
+    /// before they are there learns is coming
+    pub fn listed(&self, id: u64, entries: Vec<Listed>) {
+        self.imp.listed(id, entries);
     }
 
     /// Cancel the drag armed with `id`: it drops nothing when the button
@@ -137,10 +165,9 @@ impl Dnd {
         self.imp.cancel(id);
     }
 
-    /// Whether a drag drops as soon as the button goes up, before its
-    /// files are all there: the app it lands on waits for them
-    /// ([`Dnd::deliver`]), not the pointer. Windows does; on macOS the
-    /// release waits for the files
+    /// Whether a drag armed before its files are all there drops as soon
+    /// as the button goes up: it promises them to the app it lands on
+    /// ([`Dnd::deliver`]), and the pointer goes on
     pub fn drops_early(&self) -> bool {
         imp::DROPS_EARLY
     }

@@ -37,7 +37,9 @@
 //! That device pulls the files from where they are over a content stream
 //! ([`StreamRequest::Drag`], answered with a [`DragReply`] and the files
 //! part by part, see [`DragPart`]), naming the drag by a token only the
-//! devices it went through know.
+//! devices it went through know. Since 2.6 it may ask for a listing of
+//! every file first: a drop there may happen before they are all there,
+//! and the app it lands on learns what is coming.
 //!
 //! The protocol version is `major.minor`; a different major refuses the
 //! connection, a newer minor only adds messages an older peer may ignore.
@@ -53,7 +55,7 @@ use serde::{Deserialize, Serialize};
 use crate::group::GroupDoc;
 
 /// Protocol version (major.minor), checked by the Hello gate
-pub const PROTOCOL_VERSION: &str = "2.5";
+pub const PROTOCOL_VERSION: &str = "2.6";
 
 /// ALPN of the QUIC connections; a client speaking anything else is refused
 /// during the TLS handshake
@@ -428,6 +430,10 @@ pub enum StreamRequest {
         /// The token, from [`Control::DragFiles`], [`Control::DragEnter`]
         /// or [`Control::ClipFiles`]
         token: String,
+        /// List every file and folder first ([`DragReply::Listing`], since
+        /// 2.6); an older peer answers without
+        #[serde(default)]
+        listing: bool,
     },
 }
 
@@ -451,6 +457,16 @@ pub enum ClipReply {
 pub enum DragReply {
     /// Here they come, as [`DragPart`]s up to [`DragPart::Done`]
     Files {
+        /// How many files (folders not counted)
+        count: u64,
+        /// Their bytes in all
+        bytes: u64,
+    },
+    /// Here they come, listed first (since 2.6, when asked): every folder
+    /// and file as a [`DragPart::Dir`] or [`DragPart::File`] (no bytes
+    /// follow) up to [`DragPart::Listed`], then as after
+    /// [`DragReply::Files`]
+    Listing {
         /// How many files (folders not counted)
         count: u64,
         /// Their bytes in all
@@ -483,6 +499,8 @@ pub enum DragPart {
         /// The hash
         hash: String,
     },
+    /// The listing is over; the files follow (since 2.6)
+    Listed,
     /// Nothing more
     Done,
 }
@@ -746,11 +764,23 @@ mod tests {
                 token: String::new()
             }
         );
-        let request = StreamRequest::Drag { token: "t".into() };
+        let request = StreamRequest::Drag {
+            token: "t".into(),
+            listing: true,
+        };
         let json = serde_json::to_string(&request).unwrap();
         assert_eq!(
             serde_json::from_str::<StreamRequest>(&json).unwrap(),
             request
+        );
+        // A 2.5 peer asks without a listing
+        let old = r#"{"type":"drag","token":"t"}"#;
+        assert_eq!(
+            serde_json::from_str::<StreamRequest>(old).unwrap(),
+            StreamRequest::Drag {
+                token: "t".into(),
+                listing: false
+            }
         );
         for part in [
             DragPart::Dir {
@@ -761,6 +791,7 @@ mod tests {
                 size: 7,
             },
             DragPart::Hash { hash: "ab".into() },
+            DragPart::Listed,
             DragPart::Done,
         ] {
             let json = serde_json::to_string(&part).unwrap();

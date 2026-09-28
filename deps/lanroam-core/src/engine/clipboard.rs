@@ -792,7 +792,7 @@ async fn fetch_files(
         let _ = inbox.send(failed(failed::NO_SPACE));
         return;
     }
-    if let Err(e) = files::pull(&conn, token, &dir, |_, _| {}).await {
+    if let Err(e) = files::pull(&conn, token, &dir, |_| {}, |_, _| {}).await {
         tracing::info!("cannot fetch the copied files: {e}");
         let _ = inbox.send(failed(failed::TRANSFER));
         return;

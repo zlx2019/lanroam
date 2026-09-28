@@ -10,6 +10,11 @@
 //!   the injected pointer and drops where the button goes up. Cancelling
 //!   moves the catcher under the cursor first, so the release drops
 //!   nothing.
+//! - **Promises**: armed before its files are all there, the session drags
+//!   a file promise of each (`NSFilePromiseProvider`) instead of its URL.
+//!   The app it drops on (Finder) names where each goes; once the files
+//!   are all there, each is moved there, off the main thread, and the app
+//!   told.
 //!
 //! Both panels are nearly transparent (fully transparent pixels would let
 //! the pointer through), sit above everything and never activate the app.
@@ -20,21 +25,28 @@
 #![allow(unsafe_code)]
 
 use std::cell::RefCell;
+use std::collections::HashMap;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::time::{Duration, Instant};
 
+use block2::{DynBlock, RcBlock};
 use dispatch2::{DispatchQueue, DispatchTime};
 use lanroam_input::{INJECTED_MARKER, Point};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
-use objc2::{AllocAnyThread, ClassType, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::{
+    AllocAnyThread, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class,
+    msg_send,
+};
 use objc2_app_kit::{
     NSBackingStoreType, NSColor, NSDragOperation, NSDraggingContext, NSDraggingDestination,
-    NSDraggingInfo, NSDraggingItem, NSDraggingSession, NSDraggingSource, NSEvent, NSPanel,
-    NSPasteboard, NSPasteboardNameDrag, NSPasteboardTypeFileURL, NSPasteboardTypeString,
-    NSPasteboardTypeURL, NSPasteboardURLReadingFileURLsOnlyKey, NSPopUpMenuWindowLevel, NSView,
+    NSDraggingInfo, NSDraggingItem, NSDraggingSession, NSDraggingSource, NSEvent,
+    NSFilePromiseProvider, NSFilePromiseProviderDelegate, NSPanel, NSPasteboard,
+    NSPasteboardNameDrag, NSPasteboardTypeFileURL, NSPasteboardTypeString, NSPasteboardTypeURL,
+    NSPasteboardURLReadingFileURLsOnlyKey, NSPasteboardWriting, NSPopUpMenuWindowLevel, NSView,
     NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
 };
 use objc2_core_graphics::{
@@ -42,14 +54,27 @@ use objc2_core_graphics::{
     CGMainDisplayID, CGMouseButton,
 };
 use objc2_foundation::{
-    NSArray, NSDictionary, NSNumber, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSURL,
+    NSArray, NSCocoaErrorDomain, NSDictionary, NSError, NSFileWriteUnknownError, NSNumber,
+    NSObject, NSObjectProtocol, NSOperationQueue, NSPoint, NSRect, NSSize, NSString, NSURL,
 };
 
-use crate::{DndError, Event, Sink};
+use crate::{DndError, Event, Listed, Sink};
 
-/// A drag here drops once its files are all there: the engine holds the
-/// release back until then
-pub(crate) const DROPS_EARLY: bool = false;
+/// A drag armed before its files are all there drops at once: it promises
+/// them
+pub(crate) const DROPS_EARLY: bool = true;
+
+/// How long the promises of a drag are kept after it was armed: as long as
+/// the engine keeps its files
+const PROMISE_LIFE: Duration = Duration::from_secs(10 * 60);
+
+/// Type of a promised file, and of a promised folder
+const FILE_TYPE: &str = "public.data";
+/// See [`FILE_TYPE`]
+const FOLDER_TYPE: &str = "public.folder";
+
+/// Tells the app a promise was dropped on whether it was kept (no error)
+type Completion = RcBlock<dyn Fn(*mut NSError)>;
 
 /// Side of the catcher, in points: the pointer pushing along an edge
 /// stays on it while the probe is answered
@@ -92,13 +117,37 @@ struct State {
     /// The panel taking the press that starts a drag, once created
     source: Option<Retained<NSPanel>>,
     /// A drag ready to start at the next press on the source panel: its
-    /// id and files
-    armed: Option<(u64, Vec<PathBuf>)>,
+    /// id and files, and whether they are all there
+    armed: Option<(u64, Vec<PathBuf>, bool)>,
     /// The drag started here, while it runs
     dragging: Option<u64>,
     /// Counts the catcher's showings, so that the delayed hide of an older
     /// one leaves a newer one alone
     showing: u64,
+    /// The promises of drags armed before their files were all there, by
+    /// id
+    promised: HashMap<u64, Promised>,
+    /// Apps to tell once a promised item is moved where they want it, by
+    /// ticket
+    keeping: HashMap<u64, Completion>,
+    /// The latest ticket
+    tickets: u64,
+}
+
+/// The promises of a drag armed before its files were all there
+struct Promised {
+    /// Where each item waits for its files: the stand-ins they fill in
+    paths: Vec<PathBuf>,
+    /// The files are all there (`true`), or will not come
+    delivered: Option<bool>,
+    /// The delegate of each item's promise, which its provider only holds
+    /// weakly
+    sources: Vec<Retained<PromiseSource>>,
+    /// Promises asked for before the files were there: the item, where the
+    /// app wants it, and how to tell it
+    asked: Vec<(usize, PathBuf, Completion)>,
+    /// When the drag was armed
+    since: Instant,
 }
 
 /// Handle for the engine; the work happens on the main thread
@@ -120,6 +169,9 @@ impl Dnd {
                     armed: None,
                     dragging: None,
                     showing: 0,
+                    promised: HashMap::new(),
+                    keeping: HashMap::new(),
+                    tickets: 0,
                 });
             });
         });
@@ -155,9 +207,14 @@ impl Dnd {
         on_main(|_, state| state.hide_catcher_later());
     }
 
-    /// Put the source panel at `at`, ready to drag `paths`
-    pub(crate) fn arm(&self, id: u64, at: Point, paths: Vec<PathBuf>) {
+    /// Put the source panel at `at`, ready to drag `paths`, or promises of
+    /// them unless `ready`
+    pub(crate) fn arm(&self, id: u64, at: Point, paths: Vec<PathBuf>, ready: bool) {
         on_main(move |mtm, state| {
+            state.prune_promises();
+            if !ready {
+                state.promise(mtm, id, &paths);
+            }
             let centre = to_cocoa(at);
             let frame = square(centre, SOURCE_SIZE);
             let panel = state.source.get_or_insert_with(|| {
@@ -169,8 +226,8 @@ impl Dnd {
             panel.setFrame_display(frame, false);
             panel.orderFrontRegardless();
             let number = panel.windowNumber();
-            tracing::info!(id, files = paths.len(), ?at, "armed a drag");
-            state.armed = Some((id, paths));
+            tracing::info!(id, files = paths.len(), ?at, ready, "armed a drag");
+            state.armed = Some((id, paths, ready));
             // The press must land on the panel, not on what lies beneath
             once_hit(number, centre, move |_, state| {
                 (state.sink)(Event::Armed { id });
@@ -182,8 +239,9 @@ impl Dnd {
     /// goes under the cursor, where the button will go up
     pub(crate) fn cancel(&self, id: u64) {
         on_main(move |mtm, state| {
-            if state.armed.as_ref().is_some_and(|(armed, _)| *armed == id) {
+            if state.armed.as_ref().is_some_and(|(armed, ..)| *armed == id) {
                 state.armed = None;
+                state.promised.remove(&id);
                 if let Some(source) = &state.source {
                     source.orderOut(None);
                 }
@@ -203,8 +261,13 @@ impl Dnd {
         });
     }
 
-    /// Nothing to do: a drop here happens once the files are all there
-    pub(crate) fn deliver(&self, _id: u64, _ok: bool) {}
+    /// Nothing to do: a promise names its item alone
+    pub(crate) fn listed(&self, _id: u64, _entries: Vec<Listed>) {}
+
+    /// Keep the promises of drag `id` asked for so far, or break them
+    pub(crate) fn deliver(&self, id: u64, ok: bool) {
+        on_main(move |_, state| state.deliver(id, ok));
+    }
 }
 
 impl State {
@@ -231,6 +294,114 @@ impl State {
         panel.orderFrontRegardless();
         self.showing += 1;
         panel.windowNumber()
+    }
+
+    /// Get ready to promise the items at `paths` for drag `id`
+    fn promise(&mut self, mtm: MainThreadMarker, id: u64, paths: &[PathBuf]) {
+        let sources = paths
+            .iter()
+            .enumerate()
+            .map(|(index, path)| {
+                let name = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                PromiseSource::new(mtm, Promise { id, index, name })
+            })
+            .collect();
+        let promised = Promised {
+            paths: paths.to_vec(),
+            delivered: None,
+            sources,
+            asked: Vec::new(),
+            since: Instant::now(),
+        };
+        self.promised.insert(id, promised);
+    }
+
+    /// The app drag `id` dropped on wants item `index` at `to` (if it is
+    /// a path): moved there once the files are all there
+    fn promise_asked(&mut self, id: u64, index: usize, to: Option<PathBuf>, done: Completion) {
+        let Some(promised) = self.promised.get_mut(&id) else {
+            tracing::warn!(id, "a promise asked for after it was given up");
+            complete(&done, false);
+            return;
+        };
+        let (Some(from), Some(to)) = (promised.paths.get(index).cloned(), to) else {
+            complete(&done, false);
+            return;
+        };
+        tracing::info!(id, index, "the app dropped on asks for a promised file");
+        match promised.delivered {
+            None => promised.asked.push((index, to, done)),
+            Some(true) => self.keep(from, to, done),
+            Some(false) => complete(&done, false),
+        }
+    }
+
+    /// The files of drag `id` are all there (`ok`), or not coming: keep or
+    /// break the promises asked for so far
+    fn deliver(&mut self, id: u64, ok: bool) {
+        let Some(promised) = self.promised.get_mut(&id) else {
+            return;
+        };
+        promised.delivered = Some(ok);
+        let asked = std::mem::take(&mut promised.asked);
+        let paths = promised.paths.clone();
+        tracing::info!(
+            id,
+            ok,
+            asked = asked.len(),
+            "the promised files are delivered"
+        );
+        for (index, to, done) in asked {
+            match paths.get(index) {
+                Some(from) if ok => self.keep(from.clone(), to, done),
+                _ => complete(&done, false),
+            }
+        }
+    }
+
+    /// Move `from` to `to` off the main thread, then tell the app with
+    /// `done`
+    fn keep(&mut self, from: PathBuf, to: PathBuf, done: Completion) {
+        self.tickets += 1;
+        let ticket = self.tickets;
+        self.keeping.insert(ticket, done);
+        let moving = std::thread::Builder::new()
+            .name("lanroam-promise".into())
+            .spawn(move || {
+                let moved = move_item(&from, &to);
+                if let Err(e) = &moved {
+                    tracing::warn!(to = %to.display(), "cannot keep a file promise: {e}");
+                }
+                let ok = moved.is_ok();
+                on_main(move |_, state| {
+                    if let Some(done) = state.keeping.remove(&ticket) {
+                        complete(&done, ok);
+                    }
+                });
+            });
+        if let Err(e) = moving {
+            tracing::warn!("cannot keep a file promise: {e}");
+            if let Some(done) = self.keeping.remove(&ticket) {
+                complete(&done, false);
+            }
+        }
+    }
+
+    /// Forget the promises of drags armed too long ago, breaking those
+    /// still asked for
+    fn prune_promises(&mut self) {
+        self.promised.retain(|_, promised| {
+            let keep = promised.since.elapsed() < PROMISE_LIFE;
+            if !keep {
+                for (_, _, done) in promised.asked.drain(..) {
+                    complete(&done, false);
+                }
+            }
+            keep
+        });
     }
 
     /// Hide the catcher once [`CATCHER_GRACE`] is over, unless it was shown
@@ -489,6 +660,9 @@ define_class!(
                 if let Some(source) = &state.source {
                     source.orderOut(None);
                 }
+                if !dropped {
+                    state.promised.remove(&id);
+                }
                 tracing::info!(id, dropped, "the drag ended");
                 (state.sink)(Event::Ended { id, dropped });
             });
@@ -497,24 +671,43 @@ define_class!(
 );
 
 impl SourceView {
-    /// Begin dragging the files armed, with `event` (the press)
+    /// Begin dragging the files armed, or their promises, with `event`
+    /// (the press)
     fn start_drag(&self, event: &NSEvent) {
         let armed = STATE.with(|cell| {
             let mut state = cell.try_borrow_mut().ok()?;
             let state = state.as_mut()?;
-            let (id, paths) = state.armed.take()?;
+            let (id, paths, _) = state.armed.take()?;
             state.dragging = Some(id);
-            Some((id, paths))
+            let sources = state
+                .promised
+                .get(&id)
+                .map(|promised| promised.sources.clone());
+            Some((id, paths, sources))
         });
-        let Some((id, paths)) = armed else {
+        let Some((id, paths, sources)) = armed else {
             tracing::info!("a press on the source panel with nothing armed");
             return;
         };
-        let items: Vec<Retained<NSDraggingItem>> = paths
-            .iter()
-            .enumerate()
-            .map(|(i, path)| dragging_item(path, i))
-            .collect();
+        let items: Vec<Retained<NSDraggingItem>> = match &sources {
+            Some(sources) => paths
+                .iter()
+                .zip(sources)
+                .enumerate()
+                .map(|(i, (path, source))| {
+                    let provider = promise_provider(path, source);
+                    dragging_item(path, i, ProtocolObject::from_ref(&*provider))
+                })
+                .collect(),
+            None => paths
+                .iter()
+                .enumerate()
+                .map(|(i, path)| {
+                    let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
+                    dragging_item(path, i, ProtocolObject::from_ref(&*url))
+                })
+                .collect(),
+        };
         let items = NSArray::from_retained_slice(&items);
         let session = self.beginDraggingSessionWithItems_event_source(
             &items,
@@ -522,15 +715,19 @@ impl SourceView {
             ProtocolObject::from_ref(self),
         );
         session.setAnimatesToStartingPositionsOnCancelOrFail(true);
-        tracing::info!(id, files = paths.len(), "the drag started");
+        let promised = sources.is_some();
+        tracing::info!(id, files = paths.len(), promised, "the drag started");
     }
 }
 
-/// The dragging item of the `i`-th file: its URL, shown as its icon
-fn dragging_item(path: &Path, i: usize) -> Retained<NSDraggingItem> {
+/// The dragging item of the `i`-th file at `path`: `writer` (its URL, or
+/// a promise of it), shown as its icon
+fn dragging_item(
+    path: &Path,
+    i: usize,
+    writer: &ProtocolObject<dyn NSPasteboardWriting>,
+) -> Retained<NSDraggingItem> {
     let path = NSString::from_str(&path.to_string_lossy());
-    let url = NSURL::fileURLWithPath(&path);
-    let writer = ProtocolObject::from_ref(&*url);
     let item = NSDraggingItem::initWithPasteboardWriter(NSDraggingItem::alloc(), writer);
     let icon = NSWorkspace::sharedWorkspace().iconForFile(&path);
     // Stacked a little apart, as Finder does
@@ -542,4 +739,126 @@ fn dragging_item(path: &Path, i: usize) -> Retained<NSDraggingItem> {
     // SAFETY: an image is what the contents of a dragging frame may be
     unsafe { item.setDraggingFrame_contents(frame, Some(&icon)) };
     item
+}
+
+/// A promise of the file or folder at `path`, kept by `source`
+fn promise_provider(path: &Path, source: &PromiseSource) -> Retained<NSFilePromiseProvider> {
+    let kind = if path.is_dir() {
+        FOLDER_TYPE
+    } else {
+        FILE_TYPE
+    };
+    NSFilePromiseProvider::initWithFileType_delegate(
+        NSFilePromiseProvider::alloc(),
+        &NSString::from_str(kind),
+        ProtocolObject::from_ref(source),
+    )
+}
+
+/// Tell an app whether the promise it was dropped was kept
+fn complete(done: &Completion, ok: bool) {
+    if ok {
+        done.call((std::ptr::null_mut(),));
+        return;
+    }
+    // SAFETY: a constant string Foundation defines, and no user info
+    let error = unsafe {
+        NSError::errorWithDomain_code_userInfo(NSCocoaErrorDomain, NSFileWriteUnknownError, None)
+    };
+    done.call((Retained::as_ptr(&error).cast_mut(),));
+}
+
+/// Move what is at `from` to `to`: renamed on the same volume, copied to
+/// another
+fn move_item(from: &Path, to: &Path) -> io::Result<()> {
+    match std::fs::rename(from, to) {
+        Err(e) if e.kind() == io::ErrorKind::CrossesDevices => copy_item(from, to),
+        moved => moved,
+    }
+}
+
+/// Copy the file or folder at `from` to `to`
+fn copy_item(from: &Path, to: &Path) -> io::Result<()> {
+    if !from.is_dir() {
+        return std::fs::copy(from, to).map(|_| ());
+    }
+    std::fs::create_dir(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        copy_item(&entry.path(), &to.join(entry.file_name()))?;
+    }
+    Ok(())
+}
+
+/// Which promise a [`PromiseSource`] keeps
+struct Promise {
+    /// The drag's id
+    id: u64,
+    /// The item's place among the drag's
+    index: usize,
+    /// The item's name, as it lands
+    name: String,
+}
+
+define_class!(
+    /// Keeps the promise of one item of a drag armed before its files were
+    /// all there, on the main thread
+    // SAFETY: NSObject may be subclassed; nothing to drop but the ivars
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "LanroamFilePromise"]
+    #[ivars = Promise]
+    struct PromiseSource;
+
+    unsafe impl NSObjectProtocol for PromiseSource {}
+
+    unsafe impl NSFilePromiseProviderDelegate for PromiseSource {
+        /// The item's name
+        #[unsafe(method_id(filePromiseProvider:fileNameForType:))]
+        fn file_name(
+            &self,
+            _provider: &NSFilePromiseProvider,
+            _file_type: &NSString,
+        ) -> Retained<NSString> {
+            NSString::from_str(&self.ivars().name)
+        }
+
+        /// The app wants the item at `url`: there once the files are
+        #[unsafe(method(filePromiseProvider:writePromiseToURL:completionHandler:))]
+        fn write_promise(
+            &self,
+            _provider: &NSFilePromiseProvider,
+            url: &NSURL,
+            completion: &DynBlock<dyn Fn(*mut NSError)>,
+        ) {
+            let Promise { id, index, .. } = *self.ivars();
+            let to = url.path().map(|path| PathBuf::from(path.to_string()));
+            let done = completion.copy();
+            STATE.with(|cell| match cell.try_borrow_mut() {
+                Ok(mut state) => match state.as_mut() {
+                    Some(state) => state.promise_asked(id, index, to, done),
+                    None => complete(&done, false),
+                },
+                Err(_) => {
+                    tracing::warn!(id, "a promise asked for while busy");
+                    complete(&done, false);
+                }
+            });
+        }
+
+        /// Asked on the main thread, where the promises are kept
+        #[unsafe(method_id(operationQueueForFilePromiseProvider:))]
+        fn queue(&self, _provider: &NSFilePromiseProvider) -> Retained<NSOperationQueue> {
+            NSOperationQueue::mainQueue()
+        }
+    }
+);
+
+impl PromiseSource {
+    /// A delegate keeping `promise`
+    fn new(mtm: MainThreadMarker, promise: Promise) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(promise);
+        // SAFETY: NSObject's designated initializer
+        unsafe { msg_send![super(this), init] }
+    }
 }

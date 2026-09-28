@@ -2500,6 +2500,7 @@ dependencies = [
 name = "lanroam-dnd"
 version = "0.1.0"
 dependencies = [
+ "block2",
  "dispatch2",
  "lanroam-input",
  "objc2",

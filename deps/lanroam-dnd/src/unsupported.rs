@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use lanroam_input::Point;
 
-use crate::{DndError, Sink};
+use crate::{DndError, Listed, Sink};
 
 /// Nothing to drop early
 pub(crate) const DROPS_EARLY: bool = false;
@@ -28,7 +28,10 @@ impl Dnd {
     pub(crate) fn unprobe(&self) {}
 
     /// Nothing to do
-    pub(crate) fn arm(&self, _id: u64, _at: Point, _paths: Vec<PathBuf>) {}
+    pub(crate) fn arm(&self, _id: u64, _at: Point, _paths: Vec<PathBuf>, _ready: bool) {}
+
+    /// Nothing to do
+    pub(crate) fn listed(&self, _id: u64, _entries: Vec<Listed>) {}
 
     /// Nothing to do
     pub(crate) fn cancel(&self, _id: u64) {}

@@ -276,6 +276,16 @@ pub(super) enum InputMsg {
         /// Their folder and paths, or why not
         staged: Result<(PathBuf, Vec<PathBuf>), String>,
     },
+    /// Everything a drag carried here carries, listed before the files
+    /// come
+    DragListed {
+        /// The drag
+        id: u64,
+        /// What it carries
+        entries: Vec<lanroam_dnd::Listed>,
+    },
+    /// A small drag carried here gave its files a moment to arrive
+    DragSettled(u64),
     /// Some of the files of a drag carried here are there
     DragProgress {
         /// The drag
@@ -663,6 +673,8 @@ impl Input {
                 token,
             } => self.described(id, asker, files, token),
             InputMsg::Staged { id, staged } => self.staged(id, staged),
+            InputMsg::DragListed { id, entries } => self.listed(id, entries),
+            InputMsg::DragSettled(id) => self.settled(id),
             InputMsg::DragProgress { id, done, total } => self.progress(id, done, total),
             InputMsg::DragReady(id) => self.ready(id),
             InputMsg::DragFailed { id, reason, detail } => {

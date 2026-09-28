@@ -158,7 +158,7 @@ export const en: Record<TextKey, string> = {
 
   "files.drag": "Drag files",
   "files.dragHint": "Drag files across a screen edge onto another device; both devices need it on",
-  "files.note": "Released before the files are all there, a drag onto a Mac waits where it is and drops once they are (Esc cancels it); onto Windows it drops at once, and the app it lands on waits for them.",
+  "files.note": "Let go before its files are all there, a drag still drops at once and they keep coming in the background. Only Finder, Explorer, the desktop and apps like Mail take it then; others refuse it: drop it on the desktop first.",
 
   "hint.paused": "Paused",
   "hint.pausedSub": "{keys} to resume",

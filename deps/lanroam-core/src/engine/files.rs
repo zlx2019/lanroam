@@ -4,9 +4,11 @@
 //! The device the files are on offers them under a token ([`Offers`]),
 //! which travels with the drag to whichever device drags them on. That
 //! device pulls them over one content stream ([`pull`]; [`serve`] on the
-//! other side): their count and size, then folder by folder and file by
-//! file, each file followed by its BLAKE3. A file lands as `.part` and
-//! takes its name once its hash matches. Paths from the other side are
+//! other side): their count and size, a listing of every folder and file
+//! when asked (what an app a drop lands on before they are all there
+//! learns is coming), then folder by folder and file by file, each file
+//! followed by its BLAKE3. A file lands as `.part` and takes its name once
+//! its hash matches. Paths from the other side are
 //! made safe for this system first: nothing gets out of the folder the
 //! files land in, and no name is one Windows refuses.
 //!
@@ -18,13 +20,11 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use lan_kit::frame::FrameError;
+use lanroam_dnd::{Listed, PART_SUFFIX};
 use serde::de::DeserializeOwned;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::protocol::{DragPart, DragReply, FRAMING, StreamRequest};
-
-/// Suffix of a file still arriving
-const PART_SUFFIX: &str = ".lanroam.part";
 
 /// How much of a file moves at once
 const CHUNK: usize = 256 * 1024;
@@ -251,10 +251,12 @@ fn safe_name(name: &str, windows: bool) -> String {
     clean
 }
 
-/// Answer a content stream asking for the files of `token`
+/// Answer a content stream asking for the files of `token`, listed first
+/// if `listing`
 pub(super) async fn serve(
     mut send: quinn::SendStream,
     token: String,
+    listing: bool,
     offers: Offers,
 ) -> Result<(), FilesError> {
     let Some(paths) = offers.paths(&token) else {
@@ -275,7 +277,7 @@ pub(super) async fn serve(
             return Err(e.into());
         }
     };
-    send_entries(&mut send, &entries).await?;
+    send_entries(&mut send, &entries, listing).await?;
     send.finish()?;
     // Stay until everything is through (or the other side gave up)
     let _ = send.stopped().await;
@@ -283,50 +285,64 @@ pub(super) async fn serve(
 }
 
 /// Pull the files of `token` from the device behind `conn` into `dir`,
-/// telling `progress` the bytes so far and in all
+/// telling `listed` what is coming (unless the other side is older than
+/// that) and `progress` the bytes so far and in all
 pub(super) async fn pull(
     conn: &quinn::Connection,
     token: String,
     dir: &Path,
+    listed: impl FnOnce(Vec<Listed>),
     progress: impl FnMut(u64, u64),
 ) -> Result<(), FilesError> {
     let (mut send, mut recv) = conn.open_bi().await?;
-    FRAMING
-        .write(&mut send, &StreamRequest::Drag { token })
-        .await?;
+    let request = StreamRequest::Drag {
+        token,
+        listing: true,
+    };
+    FRAMING.write(&mut send, &request).await?;
     send.finish()?;
-    receive_entries(&mut recv, dir, progress).await
+    receive_entries(&mut recv, dir, listed, progress).await
 }
 
-/// Write `entries` as a [`DragReply`] and [`DragPart`]s, the files' bytes
-/// in between
-async fn send_entries<W>(w: &mut W, entries: &[Entry]) -> Result<(), FilesError>
+/// Write `entries` as a [`DragReply`] and [`DragPart`]s, listed first if
+/// `listing`, the files' bytes in between
+async fn send_entries<W>(w: &mut W, entries: &[Entry], listing: bool) -> Result<(), FilesError>
 where
     W: AsyncWrite + Unpin,
 {
     let (count, bytes) = totals(entries);
-    FRAMING.write(w, &DragReply::Files { count, bytes }).await?;
+    if listing {
+        FRAMING
+            .write(w, &DragReply::Listing { count, bytes })
+            .await?;
+        for entry in entries {
+            FRAMING.write(w, &header(entry)).await?;
+        }
+        FRAMING.write(w, &DragPart::Listed).await?;
+    } else {
+        FRAMING.write(w, &DragReply::Files { count, bytes }).await?;
+    }
     let mut buf = vec![0u8; CHUNK];
     for entry in entries {
-        match entry {
-            Entry::Dir(path) => {
-                FRAMING
-                    .write(w, &DragPart::Dir { path: path.clone() })
-                    .await?;
-            }
-            Entry::File(from, path, size) => {
-                let part = DragPart::File {
-                    path: path.clone(),
-                    size: *size,
-                };
-                FRAMING.write(w, &part).await?;
-                let hash = send_file(w, from, *size, &mut buf).await?;
-                FRAMING.write(w, &DragPart::Hash { hash }).await?;
-            }
+        FRAMING.write(w, &header(entry)).await?;
+        if let Entry::File(from, _, size) = entry {
+            let hash = send_file(w, from, *size, &mut buf).await?;
+            FRAMING.write(w, &DragPart::Hash { hash }).await?;
         }
     }
     FRAMING.write(w, &DragPart::Done).await?;
     Ok(())
+}
+
+/// The part announcing `entry`
+fn header(entry: &Entry) -> DragPart {
+    match entry {
+        Entry::Dir(path) => DragPart::Dir { path: path.clone() },
+        Entry::File(_, path, size) => DragPart::File {
+            path: path.clone(),
+            size: *size,
+        },
+    }
 }
 
 /// Write `size` bytes of the file at `path`; their hash
@@ -361,10 +377,12 @@ where
     Ok(hasher.finalize().to_hex().to_string())
 }
 
-/// Read what [`send_entries`] writes into `dir`
+/// Read what [`send_entries`] writes into `dir`, telling `listed` about a
+/// listing
 async fn receive_entries<R>(
     r: &mut R,
     dir: &Path,
+    listed: impl FnOnce(Vec<Listed>),
     mut progress: impl FnMut(u64, u64),
 ) -> Result<(), FilesError>
 where
@@ -372,6 +390,10 @@ where
 {
     let total = match read_frame(r).await? {
         DragReply::Files { bytes, .. } => bytes,
+        DragReply::Listing { bytes, .. } => {
+            listed(receive_listing(r).await?);
+            bytes
+        }
         DragReply::Gone => return Err(FilesError::Gone),
     };
     let mut done = 0;
@@ -409,8 +431,29 @@ where
                 settle(&part, &to).await?;
             }
             DragPart::Hash { .. } => return Err(FilesError::Unexpected("hash")),
+            DragPart::Listed => return Err(FilesError::Unexpected("end of a listing")),
             DragPart::Done => return Ok(()),
         }
+    }
+}
+
+/// Read a listing up to its end, each path made safe
+async fn receive_listing<R>(r: &mut R) -> Result<Vec<Listed>, FilesError>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut entries = Vec::new();
+    loop {
+        let (path, size, dir) = match read_frame(r).await? {
+            DragPart::Dir { path } => (path, 0, true),
+            DragPart::File { path, size } => (path, size, false),
+            DragPart::Listed => return Ok(entries),
+            DragPart::Hash { .. } | DragPart::Done => {
+                return Err(FilesError::Unexpected("part in a listing"));
+            }
+        };
+        let path = safe_path(&path)?;
+        entries.push(Listed { path, size, dir });
     }
 }
 
@@ -565,12 +608,20 @@ mod tests {
         let (from, to) = (TempDir::new(), TempDir::new());
         let entries = collect(&tree(&from.0)).unwrap();
         let (mut w, mut r) = tokio::io::duplex(64 * 1024);
-        let sending = tokio::spawn(async move { send_entries(&mut w, &entries).await });
+        let sending = tokio::spawn(async move { send_entries(&mut w, &entries, false).await });
         let mut seen = Vec::new();
-        receive_entries(&mut r, &to.0, |done, total| seen.push((done, total)))
-            .await
-            .unwrap();
+        let mut listing = None;
+        receive_entries(
+            &mut r,
+            &to.0,
+            |entries| listing = Some(entries),
+            |done, total| seen.push((done, total)),
+        )
+        .await
+        .unwrap();
         sending.await.unwrap().unwrap();
+        // Not asked for
+        assert_eq!(listing, None);
 
         let read = |rel: &str| std::fs::read(to.0.join(rel)).unwrap();
         assert_eq!(read("notes.txt"), b"hello");
@@ -585,6 +636,46 @@ mod tests {
                 .flatten()
                 .all(|e| !e.file_name().to_string_lossy().ends_with(PART_SUFFIX))
         );
+    }
+
+    #[tokio::test]
+    async fn a_listing_comes_first() {
+        let (from, to) = (TempDir::new(), TempDir::new());
+        let entries = collect(&tree(&from.0)).unwrap();
+        let expected: Vec<Listed> = entries
+            .iter()
+            .map(|entry| match entry {
+                Entry::Dir(path) => Listed {
+                    path: safe_path(path).unwrap(),
+                    size: 0,
+                    dir: true,
+                },
+                Entry::File(_, path, size) => Listed {
+                    path: safe_path(path).unwrap(),
+                    size: *size,
+                    dir: false,
+                },
+            })
+            .collect();
+        let (mut w, mut r) = tokio::io::duplex(64 * 1024);
+        let sending = tokio::spawn(async move { send_entries(&mut w, &entries, true).await });
+        let mut listing = None;
+        let mut first_bytes = None;
+        receive_entries(
+            &mut r,
+            &to.0,
+            |entries| listing = Some(entries),
+            |done, _| {
+                first_bytes.get_or_insert(done);
+            },
+        )
+        .await
+        .unwrap();
+        sending.await.unwrap().unwrap();
+        assert_eq!(listing, Some(expected));
+        assert!(first_bytes.is_some());
+        assert_eq!(std::fs::read(to.0.join("notes.txt")).unwrap(), b"hello");
+        assert!(to.0.join("photos/empty").is_dir());
     }
 
     #[tokio::test]
@@ -607,7 +698,7 @@ mod tests {
             };
             FRAMING.write(&mut w, &hash).await.unwrap();
         });
-        let got = receive_entries(&mut r, &to.0, |_, _| {}).await;
+        let got = receive_entries(&mut r, &to.0, |_| {}, |_, _| {}).await;
         assert!(
             matches!(got, Err(FilesError::Mismatch(ref path)) if path == "x.bin"),
             "{got:?}"
@@ -620,7 +711,7 @@ mod tests {
         let to = TempDir::new();
         let (mut w, mut r) = tokio::io::duplex(1024);
         FRAMING.write(&mut w, &DragReply::Gone).await.unwrap();
-        let got = receive_entries(&mut r, &to.0, |_, _| {}).await;
+        let got = receive_entries(&mut r, &to.0, |_| {}, |_, _| {}).await;
         assert!(matches!(got, Err(FilesError::Gone)), "{got:?}");
 
         let (mut w, mut r) = tokio::io::duplex(1024);
@@ -632,7 +723,17 @@ mod tests {
             path: "../out".into(),
         };
         FRAMING.write(&mut w, &escape).await.unwrap();
-        let got = receive_entries(&mut r, &to.0, |_, _| {}).await;
+        let got = receive_entries(&mut r, &to.0, |_| {}, |_, _| {}).await;
+        assert!(matches!(got, Err(FilesError::Path(_))), "{got:?}");
+
+        // In a listing too
+        let (mut w, mut r) = tokio::io::duplex(1024);
+        FRAMING
+            .write(&mut w, &DragReply::Listing { count: 0, bytes: 0 })
+            .await
+            .unwrap();
+        FRAMING.write(&mut w, &escape).await.unwrap();
+        let got = receive_entries(&mut r, &to.0, |_| {}, |_, _| {}).await;
         assert!(matches!(got, Err(FilesError::Path(_))), "{got:?}");
     }
 

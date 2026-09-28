@@ -20,13 +20,17 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# The completion handlers of file promises
+block2 = { workspace = true }
 dispatch2 = { workspace = true }
 objc2 = { workspace = true }
 objc2-app-kit = { workspace = true, features = [
+    "block2",
     "NSColor",
     "NSDragging",
     "NSDraggingItem",
     "NSDraggingSession",
+    "NSFilePromiseProvider",
     "NSGraphics",
     "NSImage",
     "NSPanel",
@@ -39,9 +43,12 @@ objc2-app-kit = { workspace = true, features = [
 ] }
 objc2-core-graphics = { workspace = true }
 objc2-foundation = { workspace = true, features = [
+    "FoundationErrors",
     "NSDictionary",
     "NSEnumerator",
+    "NSError",
     "NSGeometry",
+    "NSOperation",
     "NSURL",
     "NSValue",
 ] }

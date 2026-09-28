@@ -12,12 +12,14 @@
 //!   files are staged, the native side armed at the entry point, and a
 //!   press injected there starts a native drag that follows the pointer;
 //!   meanwhile the files are pulled from where they are, over the
-//!   stand-ins. The release drops them; released before they are all
-//!   there, the drop waits (the pointer stays where it was let go, and the
-//!   user sees how far they are), and lands there once they are. Where the
-//!   native side drops early (Windows), the release drops at once instead,
-//!   and the app it lands on waits for the files: the drag is over, and
-//!   they are delivered in the background.
+//!   stand-ins. The release drops them. A small drag gives its files a
+//!   moment to arrive before it is armed, so that it drags the files
+//!   themselves; one armed before they are all there promises them where
+//!   the native side can ([`lanroam_dnd::Dnd::drops_early`]): the release
+//!   drops at once, the drag is over, and they are delivered in the
+//!   background. Otherwise, and when released before its press, the drop
+//!   waits (the pointer stays where it was let go, and the user sees how
+//!   far they are), and lands there once they are.
 //! - **Cancelled** (Esc, the pointer leaving, the files not arriving): the
 //!   native side refuses the drop first, then the button goes up, and the
 //!   files already there go.
@@ -25,6 +27,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use lanroam_dnd::Listed;
 use lanroam_input::keymap::usage;
 use lanroam_input::switch::{self, Emit};
 use lanroam_input::{MouseButton, Point};
@@ -47,6 +50,15 @@ const CANCEL_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// How often the files' progress is reported while they arrive
 const PROGRESS_EVERY: Duration = Duration::from_millis(100);
+
+/// Up to how many bytes a drag gives its files a moment to arrive before
+/// it is armed ([`SMALL_WAIT`])
+const SMALL_DRAG: u64 = 4 << 20;
+
+/// How long a small drag waits for its files before it is armed anyway:
+/// armed once they are all there, it drags the files themselves, which any
+/// app takes, not a promise of them
+const SMALL_WAIT: Duration = Duration::from_millis(300);
 
 /// Drags of files through this device
 #[derive(Default)]
@@ -112,6 +124,10 @@ struct Carried {
     motion: Option<(u32, Point)>,
     /// The folder the files land in, once staged
     dir: Option<PathBuf>,
+    /// The stand-ins, until armed with them
+    paths: Vec<PathBuf>,
+    /// Everything the drag carries, once listed, until armed
+    listing: Option<Vec<Listed>>,
     /// Staging the stand-ins and pulling the files
     pull: JoinHandle<()>,
     /// What the user sees while the drop waits
@@ -123,6 +139,9 @@ struct Carried {
 enum Stage {
     /// Stand-ins for its files are being staged
     Staging,
+    /// Staged: a small drag gives its files a moment to arrive (see
+    /// [`SMALL_WAIT`])
+    Settling,
     /// The native side is getting ready for the press
     Arming,
     /// The press went in: the native drag runs
@@ -282,7 +301,7 @@ impl Input {
             return false;
         }
         match carried.stage {
-            Stage::Staging | Stage::Arming => {
+            Stage::Staging | Stage::Settling | Stage::Arming => {
                 carried.motion = Some((seq, at));
                 true
             }
@@ -350,11 +369,13 @@ impl Input {
         };
         match staged {
             Ok((dir, paths)) if !paths.is_empty() => {
-                carried.stage = Stage::Arming;
                 carried.dir = Some(dir);
-                let at = carried.at;
-                if let Some(native) = &self.drags.native {
-                    native.arm(id, at, paths);
+                carried.paths = paths;
+                if !carried.ready && carried.receiving.total <= SMALL_DRAG {
+                    carried.stage = Stage::Settling;
+                    self.after(SMALL_WAIT, InputMsg::DragSettled(id));
+                } else {
+                    self.arm_carried();
                 }
             }
             Ok((dir, _)) => {
@@ -366,6 +387,25 @@ impl Input {
                 tracing::warn!(id, "cannot stage the files of a drag: {e}");
                 self.give_up();
             }
+        }
+    }
+
+    /// Drag `id` gave its files a moment to arrive: arm it, there or not
+    pub(super) fn settled(&mut self, id: u64) {
+        if self.carried_at(id, Stage::Settling).is_some() {
+            self.arm_carried();
+        }
+    }
+
+    /// Drag `id` carries `entries`: the native side learns of them once it
+    /// is armed
+    pub(super) fn listed(&mut self, id: u64, entries: Vec<Listed>) {
+        if let Some(carried) = self.drags.carried.as_mut().filter(|c| c.id == id)
+            && matches!(carried.stage, Stage::Staging | Stage::Settling)
+        {
+            carried.listing = Some(entries);
+        } else if let Some(native) = &self.drags.native {
+            native.listed(id, entries);
         }
     }
 
@@ -386,8 +426,9 @@ impl Input {
         }
     }
 
-    /// The files of drag `id` are all there: a drop waiting for them
-    /// happens, or the app it was dropped on early gets them
+    /// The files of drag `id` are all there: a small drag is armed with
+    /// them, a drop waiting for them happens, or the app it was dropped on
+    /// early gets them
     pub(super) fn ready(&mut self, id: u64) {
         if let Some(native) = &self.drags.native {
             native.deliver(id, true);
@@ -405,10 +446,10 @@ impl Input {
             "the files of a drag are here"
         );
         carried.ready = true;
-        if carried.stage == Stage::Pressed
-            && let Some(at) = carried.release
-        {
-            self.drop_carried(at);
+        match (carried.stage, carried.release) {
+            (Stage::Settling, _) => self.arm_carried(),
+            (Stage::Pressed, Some(at)) => self.drop_carried(at),
+            _ => {}
         }
     }
 
@@ -448,7 +489,7 @@ impl Input {
             name,
         });
         match carried.stage {
-            Stage::Staging | Stage::Arming => self.give_up(),
+            Stage::Staging | Stage::Settling | Stage::Arming => self.give_up(),
             Stage::Pressed if release.is_some() => {
                 self.cancel_carried(controller.as_deref(), false, release);
             }
@@ -462,7 +503,7 @@ impl Input {
             return;
         };
         match carried.stage {
-            Stage::Staging | Stage::Arming => {
+            Stage::Staging | Stage::Settling | Stage::Arming => {
                 tracing::warn!(id, "a drag carried here was not ready in time");
                 self.give_up();
             }
@@ -643,10 +684,32 @@ impl Input {
             release: None,
             motion: None,
             dir: None,
+            paths: Vec::new(),
+            listing: None,
             pull,
             receiving,
         });
         self.after(ARM_TIMEOUT, InputMsg::DragTimeout(id));
+    }
+
+    /// Arm the native side with the drag carried here: its stand-ins, and
+    /// what it carries when its files are not all there yet
+    fn arm_carried(&mut self) {
+        let Some(carried) = self.drags.carried.as_mut() else {
+            return;
+        };
+        carried.stage = Stage::Arming;
+        let (id, at, ready) = (carried.id, carried.at, carried.ready);
+        let paths = std::mem::take(&mut carried.paths);
+        let listing = carried.listing.take();
+        let Some(native) = &self.drags.native else {
+            return;
+        };
+        tracing::info!(id, ready, "arming a drag carried here");
+        native.arm(id, at, paths, ready);
+        if let Some(entries) = listing.filter(|_| !ready) {
+            native.listed(id, entries);
+        }
     }
 
     /// The native side is ready for drag `id`: press at the entry point,
@@ -796,7 +859,7 @@ impl Input {
         let id = carried.id;
         carried.pull.abort();
         match carried.stage {
-            Stage::Staging | Stage::Arming => {
+            Stage::Staging | Stage::Settling | Stage::Arming => {
                 tracing::info!(id, "a drag carried here is cancelled before it started");
                 self.give_up();
                 false
@@ -963,7 +1026,10 @@ async fn pull_files(
         staged: Ok((dir.clone(), paths)),
     });
     let mut last = Instant::now();
-    let pulled = files::pull(&conn, token, &dir, |done, total| {
+    let listed = |entries| {
+        let _ = inbox.send(InputMsg::DragListed { id, entries });
+    };
+    let pulled = files::pull(&conn, token, &dir, listed, |done, total| {
         if last.elapsed() >= PROGRESS_EVERY || done == total {
             last = Instant::now();
             let _ = inbox.send(InputMsg::DragProgress { id, done, total });

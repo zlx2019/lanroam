@@ -16,6 +16,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use lanroam_dnd::Listed;
 use lanroam_input::Point;
 
 pub use lanroam_dnd::Event as DragEvent;
@@ -39,8 +40,8 @@ pub mod failed {
     pub const TRANSFER: &str = "transfer";
 }
 
-/// Files dragged here still arriving while their drop waits, or while the
-/// app they were dropped on waits for them
+/// Files dragged here still arriving while their drop waits, or after they
+/// were dropped (promised to the app they landed on)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Receiving {
     /// Where they will land (this device's coordinates)
@@ -76,12 +77,15 @@ pub trait Dragging: Send {
     fn probe(&self, id: u64);
     /// The press probed is over
     fn unprobe(&self);
-    /// Get ready to drag `paths` from `at`
-    fn arm(&self, id: u64, at: Point, paths: Vec<PathBuf>);
+    /// Get ready to drag `paths` from `at`, their files all there or not
+    /// (`ready`)
+    fn arm(&self, id: u64, at: Point, paths: Vec<PathBuf>, ready: bool);
+    /// Everything drag `id` carries (see [`lanroam_dnd::Dnd::listed`])
+    fn listed(&self, _id: u64, _entries: Vec<Listed>) {}
     /// Cancel the drag armed with `id`
     fn cancel(&self, id: u64);
-    /// Whether a drag drops as soon as the button goes up, before its
-    /// files are all there (see [`lanroam_dnd::Dnd::drops_early`])
+    /// Whether a drag armed before its files are all there drops as soon
+    /// as the button goes up (see [`lanroam_dnd::Dnd::drops_early`])
     fn drops_early(&self) -> bool {
         false
     }
@@ -112,8 +116,12 @@ impl Dragging for lanroam_dnd::Dnd {
         lanroam_dnd::Dnd::unprobe(self);
     }
 
-    fn arm(&self, id: u64, at: Point, paths: Vec<PathBuf>) {
-        lanroam_dnd::Dnd::arm(self, id, at, paths);
+    fn arm(&self, id: u64, at: Point, paths: Vec<PathBuf>, ready: bool) {
+        lanroam_dnd::Dnd::arm(self, id, at, paths, ready);
+    }
+
+    fn listed(&self, id: u64, entries: Vec<Listed>) {
+        lanroam_dnd::Dnd::listed(self, id, entries);
     }
 
     fn cancel(&self, id: u64) {

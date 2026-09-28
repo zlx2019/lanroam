@@ -1235,8 +1235,8 @@ async fn answer_stream(
         StreamRequest::Clipboard { hash } => {
             let _ = clip.send(ClipMsg::Stream { from, send, hash });
         }
-        StreamRequest::Drag { token } => {
-            if let Err(e) = files::serve(send, token, offers).await {
+        StreamRequest::Drag { token, listing } => {
+            if let Err(e) = files::serve(send, token, listing, offers).await {
                 tracing::info!("cannot send the files of a drag: {e}");
             }
         }

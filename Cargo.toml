@@ -116,6 +116,9 @@ objc2-core-graphics = { version = "0.3.2", default-features = false, features = 
 ] }
 # The main queue, where AppKit windows live (drags of files)
 dispatch2 = "0.3"
+# Objective-C blocks: the completion handlers of file promises (the version
+# objc2 0.6 uses)
+block2 = "0.6"
 # OLE drag and drop needs COM interfaces implemented in Rust (drags of
 # files); the same version Tauri uses
 windows = { version = "0.62", features = [
@@ -125,6 +128,7 @@ windows = { version = "0.62", features = [
     "Win32_System_Com_StructuredStorage",
     "Win32_System_DataExchange",
     "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
     "Win32_System_Ole",
     "Win32_System_SystemServices",
     "Win32_UI_HiDpi",

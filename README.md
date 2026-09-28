@@ -144,8 +144,8 @@ While you control another device, media and volume keys go there. To keep them o
 **A drag of files stops at the edge.**
 Files cross only where the pointer can, and only between devices that both have dragging on (**Settings → Files**). A drag of anything else, such as selected text or a window, stays at the edge as before.
 
-**I dropped files and the pointer stopped moving.**
-On a Mac, a drop let go before all the files arrived waits where you released it and lands once they are there; a card next to it shows how far they are. The pointer holds still meanwhile, and Esc cancels the drop. Only large drags wait long. On Windows the drop happens at once and the app it lands on waits for the files instead (Explorer in the background), so the pointer stays free.
+**A large drag of files won't drop into some apps.**
+Until all its files are there, a drag carries a promise of them: it drops as soon as you let go, the files keep coming in the background (a card next to it shows how far they are), and the pointer stays free. Finder, Explorer, the desktop and apps like Mail take such a drop; others, such as browsers and chat apps, only take files already on the computer, and the drag slides back. Drop it on the desktop or in a folder first, then drag it on from there. Small drags arrive as you cross and are not affected.
 
 **Pasting gives what was on the clipboard before.**
 Copied files come over in the background as the pointer arrives; a paste before they are there gives the older content, and a hint says when they are ready. Files over 32 MB are not fetched ahead: drag them over instead.
