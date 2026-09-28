@@ -69,46 +69,72 @@ enum DragCall {
 }
 
 /// Drag and drop driven by the test: probes find its files (set with
-/// [`FakeDrag::holds`]), and arming and cancelling succeed at once
+/// [`FakeDrag::holds`]), cancelling succeeds at once, and so does arming
+/// unless the test holds it back ([`FakeDrag::arm_later`])
 #[derive(Default)]
-struct FakeDrag {
+struct FakeDrag(Arc<FakeDragState>);
+
+/// What [`FakeDrag`] and its running side share
+#[derive(Default)]
+struct FakeDragState {
     /// The files a probe finds
-    files: Arc<Mutex<Vec<std::path::PathBuf>>>,
+    files: Mutex<Vec<std::path::PathBuf>>,
     /// Calls so far
-    calls: Arc<Mutex<Vec<DragCall>>>,
+    calls: Mutex<Vec<DragCall>>,
+    /// Arming waits for [`FakeDrag::arm_now`]: the id waiting, if any
+    later: Mutex<Option<Option<u64>>>,
+    /// Where events go, once started
+    sink: Mutex<Option<Arc<DragSink>>>,
 }
 
 impl FakeDrag {
     /// Let probes find `files` from now on
     fn holds(&self, files: &[std::path::PathBuf]) {
-        *self.files.lock().unwrap() = files.to_vec();
+        *self.0.files.lock().unwrap() = files.to_vec();
+    }
+
+    /// Calls so far
+    fn calls(&self) -> Vec<DragCall> {
+        self.0.calls.lock().unwrap().clone()
+    }
+
+    /// Hold arming back until [`Self::arm_now`]
+    fn arm_later(&self) {
+        *self.0.later.lock().unwrap() = Some(None);
+    }
+
+    /// Report the drag held back as armed, and arm at once from now on
+    fn arm_now(&self) {
+        let waiting = self.0.later.lock().unwrap().take().flatten();
+        let sink = self.0.sink.lock().unwrap().clone();
+        if let (Some(id), Some(sink)) = (waiting, sink) {
+            sink(DragEvent::Armed { id });
+        }
     }
 }
 
 impl DragBackend for FakeDrag {
     fn start(&self, sink: DragSink) -> Result<Box<dyn Dragging>, String> {
-        Ok(Box::new(FakeDragging {
-            files: Arc::clone(&self.files),
-            calls: Arc::clone(&self.calls),
-            sink,
-        }))
+        *self.0.sink.lock().unwrap() = Some(Arc::new(sink));
+        Ok(Box::new(FakeDragging(Arc::clone(&self.0))))
     }
 }
 
 /// The running side of [`FakeDrag`]
-struct FakeDragging {
-    /// The files a probe finds
-    files: Arc<Mutex<Vec<std::path::PathBuf>>>,
-    /// Calls so far
-    calls: Arc<Mutex<Vec<DragCall>>>,
-    /// Where events go
-    sink: DragSink,
-}
+struct FakeDragging(Arc<FakeDragState>);
 
 impl FakeDragging {
     /// Note a call
     fn note(&self, call: DragCall) {
-        self.calls.lock().unwrap().push(call);
+        self.0.calls.lock().unwrap().push(call);
+    }
+
+    /// Report `event`
+    fn report(&self, event: DragEvent) {
+        let sink = self.0.sink.lock().unwrap().clone();
+        if let Some(sink) = sink {
+            sink(event);
+        }
     }
 }
 
@@ -118,19 +144,25 @@ impl Dragging for FakeDragging {
     }
     fn probe(&self, id: u64) {
         self.note(DragCall::Probe(id));
-        let files = self.files.lock().unwrap().clone();
-        (self.sink)(DragEvent::Probed { id, files });
+        let files = self.0.files.lock().unwrap().clone();
+        self.report(DragEvent::Probed { id, files });
     }
     fn unprobe(&self) {
         self.note(DragCall::Unprobe);
     }
     fn arm(&self, id: u64, at: Point, paths: Vec<std::path::PathBuf>) {
         self.note(DragCall::Arm(id, at, paths));
-        (self.sink)(DragEvent::Armed { id });
+        let mut later = self.0.later.lock().unwrap();
+        if let Some(waiting) = later.as_mut() {
+            *waiting = Some(id);
+            return;
+        }
+        drop(later);
+        self.report(DragEvent::Armed { id });
     }
     fn cancel(&self, id: u64) {
         self.note(DragCall::Cancel(id));
-        (self.sink)(DragEvent::Cancelling { id });
+        self.report(DragEvent::Cancelling { id });
     }
 }
 
@@ -199,6 +231,13 @@ impl FakeInput {
             button: MouseButton::Left,
             down,
         })
+    }
+
+    /// Whether the switch holds the pointer for a waiting drop
+    fn awaiting_drop(&self) -> bool {
+        let capture = self.capture.lock().unwrap();
+        let (switch, _) = capture.as_ref().unwrap();
+        switch::lock(switch).is_awaiting_drop()
     }
 
     /// Devices the switch knows of
@@ -1404,7 +1443,7 @@ impl TestEngine {
     async fn dragged(&self, want: impl Fn(&DragCall) -> bool) -> Vec<DragCall> {
         let deadline = tokio::time::Instant::now() + WAIT;
         loop {
-            let calls = self.drag.calls.lock().unwrap().clone();
+            let calls = self.drag.calls();
             if calls.iter().any(&want) {
                 return calls;
             }
@@ -1651,4 +1690,49 @@ async fn a_cancelled_drag_leaves_nothing() {
         assert!(tokio::time::Instant::now() < deadline, "{folder:?} stays");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+/// A drop waiting on b holds the pointer on a: it neither moves nor clicks
+/// there, nor goes back to a (which would cancel the drop); once dropped,
+/// it moves again
+#[tokio::test]
+async fn a_waiting_drop_holds_the_pointer() {
+    let (a, b, _c) = row_of_three().await;
+    b.drag.arm_later();
+    a.drag.holds(&[a.file_to_drag("hold.txt")]);
+    a.input.left(true);
+    a.push_until(5.0, parked).await;
+    // Let go before b is ready: the drop waits
+    a.input.left(false);
+    b.armed().await;
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while !a.input.awaiting_drop() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the pointer is not held"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(!released(&a.input.push((0, 0), -5000.0, 0.0)));
+    a.input.left(true);
+    a.input.left(false);
+
+    b.drag.arm_now();
+    let injected = b
+        .injected(&Injected::Button(MouseButton::Left, false))
+        .await;
+    let presses = injected
+        .iter()
+        .filter(|i| **i == Injected::Button(MouseButton::Left, true))
+        .count();
+    assert_eq!(presses, 1, "{injected:?}");
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while a.input.awaiting_drop() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the pointer stays held"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(released(&a.input.push((0, 0), -5000.0, 0.0)));
 }

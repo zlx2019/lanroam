@@ -203,6 +203,10 @@ impl Input {
             Control::DragCancel { .. } if controlled => {
                 self.cancel_carried(Some(from), false, None);
             }
+            // The drop waits there: the pointer holds still
+            Control::DropWaiting { on } if self.target.as_deref() == Some(from) => {
+                switch::lock(&self.switch).set_awaiting_drop(on);
+            }
             _ => {}
         }
     }
@@ -211,6 +215,15 @@ impl Input {
     /// drag may start, or the one probed is over. True when the event is
     /// taken care of here (the release of a drag carried here)
     pub(super) fn on_controller_left(&mut self, from: &str, down: bool, at: Point) -> bool {
+        // A drop waits here: a click would move it
+        let waiting = self
+            .drags
+            .carried
+            .as_ref()
+            .is_some_and(|c| c.controller.as_deref() == Some(from) && c.release.is_some());
+        if waiting {
+            return true;
+        }
         if down {
             if let Some(native) = &self.drags.native {
                 native.pressed();
@@ -612,7 +625,7 @@ impl Input {
             .drags
             .carried
             .as_mut()
-            .filter(|c| c.controller.as_deref() == controller)
+            .filter(|c| c.controller.as_deref() == controller && c.release.is_none())
         else {
             return;
         };
@@ -629,9 +642,13 @@ impl Input {
                 );
                 carried.release = Some(at);
                 carried.receiving.at = at;
-                if controller.is_none() {
-                    // Esc here cancels it now
-                    switch::lock(&self.switch).set_awaiting_drop(true);
+                // The pointer holds still where it lands, and Esc cancels
+                // it: the switch driving it sees to that
+                match controller {
+                    Some(controller) => {
+                        self.send(controller, Control::DropWaiting { on: true });
+                    }
+                    None => switch::lock(&self.switch).set_awaiting_drop(true),
                 }
                 self.show_receiving();
             }
@@ -735,8 +752,11 @@ impl Input {
         let carried = self.drags.carried.take()?;
         carried.pull.abort();
         if carried.release.is_some() {
-            if carried.controller.is_none() {
-                switch::lock(&self.switch).set_awaiting_drop(false);
+            match &carried.controller {
+                Some(controller) => {
+                    self.send(controller, Control::DropWaiting { on: false });
+                }
+                None => switch::lock(&self.switch).set_awaiting_drop(false),
             }
             let _ = self.events.send(EngineEvent::Receiving(None));
         }

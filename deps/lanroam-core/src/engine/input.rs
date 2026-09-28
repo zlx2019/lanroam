@@ -830,7 +830,8 @@ impl Input {
             msg @ (Control::DragProbe { .. }
             | Control::DragFiles { .. }
             | Control::DragEnter { .. }
-            | Control::DragCancel { .. }) => self.on_drag_control(from, msg),
+            | Control::DragCancel { .. }
+            | Control::DropWaiting { .. }) => self.on_drag_control(from, msg),
             // From a device that is not in control (any more), or not input
             _ => {}
         }

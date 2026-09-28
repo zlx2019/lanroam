@@ -314,6 +314,13 @@ pub enum Control {
         /// The drag's id
         id: u64,
     },
+    /// The drop of a drag carried to the sender waits for its files, or not
+    /// any more (controlled → controller): the pointer holds still there
+    /// meanwhile (since 2.4)
+    DropWaiting {
+        /// Waiting
+        on: bool,
+    },
     /// One PIN attempt begins (sponsor → joiner): the sponsor's SPAKE2
     /// message
     JoinChallenge {
@@ -371,6 +378,7 @@ impl Control {
             Self::DragFiles { .. } => "drag_files",
             Self::DragEnter { .. } => "drag_enter",
             Self::DragCancel { .. } => "drag_cancel",
+            Self::DropWaiting { .. } => "drop_waiting",
             Self::JoinChallenge { .. } => "join_challenge",
             Self::JoinAnswer { .. } => "join_answer",
             Self::JoinAccepted { .. } => "join_accepted",
@@ -692,6 +700,7 @@ mod tests {
                 token: "ab".repeat(16),
             },
             Control::DragCancel { id: 3 },
+            Control::DropWaiting { on: true },
         ];
         let (mut a, mut b) = tokio::io::duplex(64 * 1024);
         for msg in &samples {

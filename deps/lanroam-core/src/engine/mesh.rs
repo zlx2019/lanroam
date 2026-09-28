@@ -691,7 +691,8 @@ impl Mesh {
             | Control::DragProbe { .. }
             | Control::DragFiles { .. }
             | Control::DragEnter { .. }
-            | Control::DragCancel { .. }) => {
+            | Control::DragCancel { .. }
+            | Control::DropWaiting { .. }) => {
                 let _ = self.wiring.input.send(InputMsg::Control { from: fp, msg });
             }
             Control::ClipOffer { kind, size, hash } => {
