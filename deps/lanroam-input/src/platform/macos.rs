@@ -247,6 +247,7 @@ fn capture_thread(switch: Arc<Mutex<Switch>>, sink: EmitSink, stop: &AtomicBool,
         port: None,
         out: Vec::with_capacity(8),
         parked: false,
+        frozen: false,
     }));
     // SAFETY: `context` comes from Box::into_raw and is reclaimed only below,
     // after `run_tap` has returned
@@ -254,8 +255,10 @@ fn capture_thread(switch: Arc<Mutex<Switch>>, sink: EmitSink, stop: &AtomicBool,
     // SAFETY: `run_tap` never created the tap or has invalidated it, so the
     // callback can no longer reach `context`
     let mut tap = unsafe { Box::from_raw(context) };
-    // Stopped while controlling the target: show the cursor again
+    // Stopped while controlling the target, or during a drop: give the
+    // cursor back
     tap.unpark();
+    tap.thaw();
     if let Err(e) = result {
         let _ = ready.send(Err(e));
     }
@@ -392,6 +395,8 @@ struct Tap {
     out: Vec<Emit>,
     /// Whether the local cursor is hidden and frozen (target controlled)
     parked: bool,
+    /// Whether the local cursor is frozen, still shown (a drop waits here)
+    frozen: bool,
 }
 
 impl Tap {
@@ -436,6 +441,7 @@ impl Tap {
         match decision.cursor {
             Some(CursorAction::Park) => self.park(),
             Some(CursorAction::Release(at)) => self.release(at),
+            Some(CursorAction::Freeze) => self.freeze(),
             None => {}
         }
         decision.verdict
@@ -459,9 +465,28 @@ impl Tap {
         );
     }
 
+    /// Keep the local cursor where it is, still shown: the mouse no longer
+    /// moves it (a tap cannot hold it back by dropping its events)
+    fn freeze(&mut self) {
+        tracing::debug!("freezing the local cursor for a drop");
+        self.frozen = true;
+        warn_on_error(
+            CGAssociateMouseAndMouseCursorPosition(false),
+            "freeze the cursor",
+        );
+    }
+
+    /// Give a frozen cursor back to the mouse
+    fn thaw(&mut self) {
+        if std::mem::take(&mut self.frozen) {
+            CGAssociateMouseAndMouseCursorPosition(true);
+        }
+    }
+
     /// Put the local cursor at `at` and give it back to the mouse
     fn release(&mut self, at: Point) {
         tracing::debug!(?at, "releasing the local cursor");
+        self.frozen = false;
         CGAssociateMouseAndMouseCursorPosition(true);
         CGWarpMouseCursorPosition(CGPoint {
             x: f64::from(at.x),

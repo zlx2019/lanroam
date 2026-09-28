@@ -81,6 +81,9 @@ pub enum CursorAction {
     Park,
     /// Control came back: unfreeze the local cursor and put it here
     Release(Point),
+    /// A drop of files here waits: keep the local cursor where it is, still
+    /// shown, until [`CursorAction::Release`]
+    Freeze,
 }
 
 /// Outcome of one event
@@ -403,9 +406,12 @@ pub struct Switch {
     /// The drag of files carried to another device, while its button is
     /// held
     carry: Option<Carry>,
-    /// A drop of files here waits for them to arrive (set by the engine):
-    /// Esc cancels it
+    /// A drop of files waits for them to arrive where the pointer is, here
+    /// or on the device controlled (set by the engine): the pointer holds
+    /// still, clicks go nowhere, Esc cancels it
     awaiting_drop: bool,
+    /// The local cursor is frozen for a drop waiting here
+    frozen: bool,
     /// Hand control back at the next event (set from outside the capture)
     release_requested: bool,
     /// Requests to carry out at the next event (set from outside the
@@ -459,6 +465,7 @@ impl Switch {
             probe: Probe::None,
             carry: None,
             awaiting_drop: false,
+            frozen: false,
             release_requested: false,
             requests: Vec::new(),
             swapped: HashSet::new(),
@@ -626,10 +633,19 @@ impl Switch {
         self.local_travel = 0.0;
     }
 
-    /// Whether a drop of files here waits for them to arrive: meanwhile Esc
-    /// cancels it ([`Emit::DragCancel`] for this device)
+    /// Whether a drop of files waits for them to arrive where the pointer
+    /// is (this machine, or the device controlled): meanwhile the pointer
+    /// holds still (from the next event on here), clicks and scrolling go
+    /// nowhere, and Esc cancels it ([`Emit::DragCancel`] for this device;
+    /// the device controlled hears Esc itself). Over once the pointer goes
+    /// to another device
     pub fn set_awaiting_drop(&mut self, waiting: bool) {
         self.awaiting_drop = waiting;
+    }
+
+    /// Whether a drop of files waits where the pointer is
+    pub fn is_awaiting_drop(&self) -> bool {
+        self.awaiting_drop
     }
 
     /// The drag of the press `press` ([`Emit::DragAtEdge`]) drags files: it
@@ -652,6 +668,7 @@ impl Switch {
         for request in std::mem::take(&mut self.requests) {
             self.run_request(request, out, &mut cursor);
         }
+        self.freeze_for_drop(&mut cursor);
         if self.controlled && self.remote.is_none() && self.used_locally(&event) {
             self.controlled = false;
             out.push(Emit::Takeover);
@@ -663,6 +680,21 @@ impl Switch {
             InputEvent::Key { usage, down } => self.key(usage, down, out, &mut cursor),
         };
         Decision { verdict, cursor }
+    }
+
+    /// Freeze the local cursor while a drop here waits, and let it go after
+    /// (only the capture may move it, hence at an event)
+    fn freeze_for_drop(&mut self, cursor: &mut Option<CursorAction>) {
+        if cursor.is_some() || self.remote.is_some() {
+            return;
+        }
+        if self.awaiting_drop && !self.frozen {
+            self.frozen = true;
+            *cursor = Some(CursorAction::Freeze);
+        } else if !self.awaiting_drop && self.frozen {
+            self.frozen = false;
+            *cursor = Some(CursorAction::Release(self.local_at));
+        }
     }
 
     /// Whether `event` shows someone using this machine's own devices
@@ -687,6 +719,10 @@ impl Switch {
         cursor: &mut Option<CursorAction>,
     ) -> Verdict {
         let Some(remote) = self.remote.clone() else {
+            // Held where a drop waits
+            if self.frozen {
+                return Verdict::Swallow;
+            }
             self.local_at = at;
             // No crossing right after a forced release, or a motion that
             // arrives with it would take control straight back
@@ -708,6 +744,10 @@ impl Switch {
             // Gone from the layout; the release is already requested
             return Verdict::Swallow;
         };
+        // Held where a drop waits there
+        if self.awaiting_drop {
+            return Verdict::Swallow;
+        }
         // Same physical travel on every device (source units to logical
         // pixels to the target's units), at the target's pointer speed
         let local_scale = self.world.device(&self.local).map_or(1.0, |d| d.scale);
@@ -995,8 +1035,11 @@ impl Switch {
 
     /// Take control of `device` with its cursor at `at`
     fn enter(&mut self, device: String, at: Point, out: &mut Vec<Emit>) {
-        // A drag carried to this machine does not follow
+        // A drag carried to this machine does not follow, nor a drop
+        // waiting here
         self.cancel_carry(out);
+        self.awaiting_drop = false;
+        self.frozen = false;
         tracing::debug!(%device, "control moves to another device");
         out.push(Emit::Enter {
             device: device.clone(),
@@ -1035,6 +1078,11 @@ impl Switch {
             self.buttons[button.index()] = None;
             return self.drop_carry(out);
         }
+        // A drop waits where the pointer is: a click would move it
+        if down && self.awaiting_drop {
+            self.buttons[button.index()] = Some(Owner::Dropped);
+            return Verdict::Swallow;
+        }
         let side = self.side();
         let slot = &mut self.buttons[button.index()];
         let owner = if down {
@@ -1066,8 +1114,11 @@ impl Switch {
         })
     }
 
-    /// Scrolling follows the current side
+    /// Scrolling follows the current side (nowhere while a drop waits)
     fn wheel(&mut self, dx: i32, dy: i32, out: &mut Vec<Emit>) -> Verdict {
+        if self.awaiting_drop {
+            return Verdict::Swallow;
+        }
         let Some(remote) = &self.remote else {
             return Verdict::Pass;
         };
@@ -1388,8 +1439,10 @@ impl Switch {
     /// Stop controlling the current device, remembering where its cursor
     /// was; returns it
     fn leave_remote(&mut self, out: &mut Vec<Emit>) -> Option<String> {
-        // A drag carried there stays behind, cancelled
+        // A drag carried there stays behind, cancelled, and so does a drop
+        // waiting there
         self.cancel_carry(out);
+        self.awaiting_drop = false;
         let remote = self.remote.take()?;
         self.last.insert(remote.device.clone(), remote.pixel());
         out.push(Emit::Leave {
@@ -1817,12 +1870,69 @@ mod tests {
         assert_eq!(out, [Emit::LocalPress { down: false }]);
     }
 
+    /// A drop waiting here freezes the cursor until it is over; clicks and
+    /// scrolling go nowhere meanwhile
+    #[test]
+    fn a_waiting_drop_holds_the_pointer_here() {
+        let mut sw = switch();
+        feed(&mut sw, motion(700, 300, 1.0, 0.0));
+        sw.set_awaiting_drop(true);
+        let (d, out) = feed(&mut sw, motion(1511, 300, 900.0, 0.0));
+        assert_eq!(
+            (d.verdict, d.cursor),
+            (Verdict::Swallow, Some(CursorAction::Freeze))
+        );
+        assert_eq!(out, []);
+        let (d, out) = cross_to_pc(&mut sw, 300);
+        assert_eq!((d.verdict, d.cursor, out), (Verdict::Swallow, None, vec![]));
+        let (d, out) = feed(&mut sw, button(MouseButton::Left, true));
+        assert_eq!((d.verdict, out), (Verdict::Swallow, vec![]));
+        assert_eq!(
+            feed(&mut sw, button(MouseButton::Left, false)).0.verdict,
+            Verdict::Swallow
+        );
+        let wheel = InputEvent::Wheel { dx: 0, dy: -120 };
+        assert_eq!(feed(&mut sw, wheel).0.verdict, Verdict::Swallow);
+
+        sw.set_awaiting_drop(false);
+        let (d, _) = feed(&mut sw, motion(700, 300, 1.0, 0.0));
+        assert_eq!(d.cursor, Some(CursorAction::Release(Point::new(700, 300))));
+        assert_eq!(cross_to_pc(&mut sw, 300).0.cursor, Some(CursorAction::Park));
+    }
+
+    /// A drop waiting on the device controlled holds the pointer there,
+    /// until it is over or the pointer jumps away
+    #[test]
+    fn a_waiting_drop_holds_the_pointer_there() {
+        let mut sw = switch();
+        cross_to_pc(&mut sw, 400);
+        sw.set_awaiting_drop(true);
+        let (d, out) = feed(&mut sw, motion(0, 0, -5000.0, 0.0));
+        assert_eq!((d.verdict, d.cursor, out), (Verdict::Swallow, None, vec![]));
+        assert_eq!(feed(&mut sw, button(MouseButton::Left, true)).1, []);
+        // Esc reaches the device, which cancels the drop itself
+        let (_, out) = feed(&mut sw, key(usage::ESCAPE, true));
+        assert!(matches!(&out[..], [Emit::Key { device, .. }] if device == "pc"));
+        sw.set_awaiting_drop(false);
+        let (_, out) = feed(&mut sw, motion(0, 0, 10.0, 0.0));
+        assert!(matches!(&out[..], [Emit::Motion { .. }]), "{out:?}");
+
+        sw.set_awaiting_drop(true);
+        sw.request(Request::Jump("mac".into()));
+        let (d, _) = feed(&mut sw, motion(0, 0, 1.0, 0.0));
+        assert!(matches!(d.cursor, Some(CursorAction::Release(_))));
+        assert_eq!(
+            feed(&mut sw, motion(700, 300, 1.0, 0.0)).0.verdict,
+            Verdict::Pass
+        );
+    }
+
     /// Esc cancels a drop here waiting for its files, once
     #[test]
     fn esc_cancels_a_waiting_drop() {
         let mut sw = switch();
-        sw.set_awaiting_drop(true);
         feed(&mut sw, motion(700, 300, 1.0, 0.0));
+        sw.set_awaiting_drop(true);
         let (d, out) = feed(&mut sw, key(usage::ESCAPE, true));
         assert_eq!(d.verdict, Verdict::Swallow);
         assert_eq!(

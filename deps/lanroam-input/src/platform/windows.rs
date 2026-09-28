@@ -359,7 +359,8 @@ impl Hooks {
     fn decide(&mut self, event: Option<InputEvent>) -> Verdict {
         let decision = super::decide(&self.switch, event, &mut self.out, &mut self.sink);
         match decision.cursor {
-            Some(CursorAction::Park) => self.parked = Some(self.last),
+            // Held where it is: the hook swallows the motion
+            Some(CursorAction::Park | CursorAction::Freeze) => self.parked = Some(self.last),
             Some(CursorAction::Release(at)) => {
                 self.parked = None;
                 self.last = at;
