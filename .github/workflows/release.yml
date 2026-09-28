@@ -1,9 +1,14 @@
 name: Release
 
+# A version tag publishes a release: the app for macOS (dmg, Apple Silicon
+# and Intel) and Windows (NSIS installer), plus the command-line node. Run by
+# hand, it is a trial: the same packages are built and kept as workflow
+# artifacts, and nothing is published.
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -11,17 +16,41 @@ permissions:
 jobs:
   changelog:
     name: Changelog
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
+    # The bundle jobs feed the changelog back to tauri-action: on an existing
+    # release it always PATCHes name+body with its own inputs, so leaving
+    # releaseBody unset would have every bundle job wipe the changelog this
+    # job just wrote (seen in Lanecho)
+    outputs:
+      content: ${{ steps.cliff.outputs.content }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
+      - name: Verify tag matches the versions
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          app=$(jq -r '.version' apps/desktop/package.json)
+          cli=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "lanroam-cli") | .version')
+          for ver in "$app" "$cli"; do
+            if [ "v$ver" != "${TAG%%-*}" ] && [ "v$ver" != "$TAG" ]; then
+              echo "::error::Tag $TAG does not match version $ver (app $app, CLI $cli)"
+              exit 1
+            fi
+          done
+
       - name: Generate changelog
+        id: cliff
         uses: orhun/git-cliff-action@v4
         with:
           config: cliff.toml
-          args: ${{ contains(github.ref_name, '-') && format('--unreleased --tag {0}', github.ref_name) || '--latest' }} --strip header
+          # --current, not --latest: --latest is the newest tag in the
+          # repository whatever is checked out, so a re-run after newer tags
+          # would write another version's changelog onto this release
+          args: ${{ contains(github.ref_name, '-') && format('--unreleased --tag {0}', github.ref_name) || '--current' }} --strip header
         env:
           OUTPUT: CHANGES.md
           GITHUB_REPO: ${{ github.repository }}
@@ -33,40 +62,105 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           prerelease: ${{ contains(github.ref_name, '-') }}
 
-  meta:
-    name: Resolve package metadata
-    if: github.repository != 'zlx2019/rust-template'
-    runs-on: ubuntu-latest
-    outputs:
-      bin: ${{ steps.meta.outputs.bin }}
-      has_bin: ${{ steps.meta.outputs.has_bin }}
+  bundle:
+    name: App ${{ matrix.name }}
+    needs: changelog
+    # Also when the changelog was skipped (a trial run)
+    if: ${{ !failure() && !cancelled() }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (Apple Silicon)
+            os: macos-latest
+            args: --target aarch64-apple-darwin
+            rust-target: aarch64-apple-darwin
+            asset_name_pattern: Lanroam-[version]-macos-[arch][setup][ext]
+          - name: macOS (Intel)
+            os: macos-latest
+            args: --target x86_64-apple-darwin
+            rust-target: x86_64-apple-darwin
+            asset_name_pattern: Lanroam-[version]-macos-[arch][setup][ext]
+          - name: Windows
+            os: windows-latest
+            args: ""
+            rust-target: ""
+            asset_name_pattern: Lanroam-[version]-windows-[arch][setup][ext]
     steps:
       - uses: actions/checkout@v7
-      - id: meta
-        shell: bash
-        run: |
-          meta=$(cargo metadata --no-deps --format-version 1)
-          echo "bin=$(jq -r '.packages[0].name' <<< "$meta")" >> "$GITHUB_OUTPUT"
-          echo "has_bin=$(jq -r '[.packages[0].targets[] | select(.kind[] == "bin")] | length > 0' <<< "$meta")" >> "$GITHUB_OUTPUT"
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: apps/desktop/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+      - name: Install frontend dependencies
+        working-directory: apps/desktop
+        run: pnpm install --frozen-lockfile
 
-  build:
-    name: Build ${{ matrix.target }}
-    needs: [changelog, meta]
-    if: needs.meta.outputs.has_bin == 'true'
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.rust-target }}
+
+      # Ad-hoc signed until there is a certificate (see Tauri.toml); with
+      # these secrets set, the app is signed and notarized instead
+      - name: Enable Apple code signing (optional)
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            echo "APPLE_CERTIFICATE not configured: an ad-hoc signed package"
+            exit 0
+          fi
+          for var in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            {
+              echo "${var}<<__APPLE_EOF__"
+              printenv "$var"
+              echo "__APPLE_EOF__"
+            } >> "$GITHUB_ENV"
+          done
+
+      # On a tag the packages go to the release; on a trial run tagName is
+      # empty, so they are only kept as workflow artifacts
+      - name: Build the packages
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: apps/desktop
+          args: ${{ matrix.args }}
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          releaseAssetNamePattern: ${{ matrix.asset_name_pattern }}
+          # tauri-action PATCHes name+body onto the existing release whatever
+          # happens: hand it the same changelog, title and prerelease flag
+          releaseName: ${{ github.ref_name }}
+          releaseBody: ${{ needs.changelog.outputs.content }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          uploadWorkflowArtifacts: ${{ github.ref_type != 'tag' }}
+
+  cli:
+    name: CLI ${{ matrix.target }}
+    needs: changelog
+    if: ${{ !failure() && !cancelled() }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-          - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-          - target: x86_64-apple-darwin
-            os: macos-latest
           - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
             os: macos-latest
           - target: x86_64-pc-windows-msvc
             os: windows-latest
@@ -75,45 +169,28 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           target: ${{ matrix.target }}
-      - name: Setup cross toolchain
-        if: runner.os == 'Linux'
-        uses: taiki-e/setup-cross-toolchain-action@v1
-        with:
-          target: ${{ matrix.target }}
-      - name: Build and upload
+      - name: Build and upload to the release
+        if: github.ref_type == 'tag'
         uses: taiki-e/upload-rust-binary-action@v1
         with:
-          bin: ${{ needs.meta.outputs.bin }}
+          bin: lanroam-cli
           target: ${{ matrix.target }}
           archive: $bin-$tag-$target
           include: README.md,LICENSE
           leading-dir: true
           checksum: sha256
+          locked: true
           token: ${{ secrets.GITHUB_TOKEN }}
-
-  publish:
-    name: Publish to crates.io
-    needs: [meta, build]
-    if: ${{ !failure() && !cancelled() && needs.meta.result == 'success' && !contains(github.ref_name, '-') }}
-    runs-on: ubuntu-latest
-    env:
-      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-    steps:
-      - name: Skip notice
-        if: env.CARGO_REGISTRY_TOKEN == ''
-        run: echo "::notice::未配置 CARGO_REGISTRY_TOKEN secret，跳过 crates.io 发布"
-      - uses: actions/checkout@v7
-        if: env.CARGO_REGISTRY_TOKEN != ''
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        if: env.CARGO_REGISTRY_TOKEN != ''
-      - name: Verify tag matches package version
-        if: env.CARGO_REGISTRY_TOKEN != ''
-        run: |
-          pkg=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
-          if [ "v$pkg" != "${{ github.ref_name }}" ]; then
-            echo "::error::tag ${{ github.ref_name }} 与 Cargo.toml 版本 $pkg 不一致"
-            exit 1
-          fi
-      - name: Publish
-        if: env.CARGO_REGISTRY_TOKEN != ''
-        run: cargo publish --locked
+      - name: Build (trial run)
+        if: github.ref_type != 'tag'
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo build --release --locked -p lanroam-cli --target "$TARGET"
+      - name: Keep the binary (trial run)
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v7
+        with:
+          name: lanroam-cli-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/lanroam-cli${{ runner.os == 'Windows' && '.exe' || '' }}
+          if-no-files-found: error
+          retention-days: 14
