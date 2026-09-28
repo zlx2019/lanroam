@@ -403,6 +403,9 @@ pub struct Switch {
     /// The drag of files carried to another device, while its button is
     /// held
     carry: Option<Carry>,
+    /// A drop of files here waits for them to arrive (set by the engine):
+    /// Esc cancels it
+    awaiting_drop: bool,
     /// Hand control back at the next event (set from outside the capture)
     release_requested: bool,
     /// Requests to carry out at the next event (set from outside the
@@ -455,6 +458,7 @@ impl Switch {
             press: 0,
             probe: Probe::None,
             carry: None,
+            awaiting_drop: false,
             release_requested: false,
             requests: Vec::new(),
             swapped: HashSet::new(),
@@ -620,6 +624,12 @@ impl Switch {
     pub fn set_controlled(&mut self, controlled: bool) {
         self.controlled = controlled;
         self.local_travel = 0.0;
+    }
+
+    /// Whether a drop of files here waits for them to arrive: meanwhile Esc
+    /// cancels it ([`Emit::DragCancel`] for this device)
+    pub fn set_awaiting_drop(&mut self, waiting: bool) {
+        self.awaiting_drop = waiting;
     }
 
     /// The drag of the press `press` ([`Emit::DragAtEdge`]) drags files: it
@@ -1086,9 +1096,18 @@ impl Switch {
             return Verdict::Swallow;
         }
         // Esc cancels a drag of files carried to another device, and goes
-        // nowhere itself
+        // nowhere itself; so does a drop here waiting for its files
         if down && key == usage::ESCAPE && self.carry.is_some() {
             self.cancel_carry(out);
+            self.keys.insert(key, (Owner::Dropped, key));
+            return Verdict::Swallow;
+        }
+        if down && key == usage::ESCAPE && self.awaiting_drop && self.remote.is_none() {
+            self.awaiting_drop = false;
+            out.push(Emit::DragCancel {
+                device: self.local.clone(),
+                at: self.local_at,
+            });
             self.keys.insert(key, (Owner::Dropped, key));
             return Verdict::Swallow;
         }
@@ -1796,6 +1815,31 @@ mod tests {
         let (d, out) = feed(&mut sw, button(MouseButton::Left, false));
         assert_eq!(d.verdict, Verdict::Pass);
         assert_eq!(out, [Emit::LocalPress { down: false }]);
+    }
+
+    /// Esc cancels a drop here waiting for its files, once
+    #[test]
+    fn esc_cancels_a_waiting_drop() {
+        let mut sw = switch();
+        sw.set_awaiting_drop(true);
+        feed(&mut sw, motion(700, 300, 1.0, 0.0));
+        let (d, out) = feed(&mut sw, key(usage::ESCAPE, true));
+        assert_eq!(d.verdict, Verdict::Swallow);
+        assert_eq!(
+            out,
+            [Emit::DragCancel {
+                device: "mac".into(),
+                at: Point::new(700, 300)
+            }]
+        );
+        assert_eq!(
+            feed(&mut sw, key(usage::ESCAPE, false)).0.verdict,
+            Verdict::Swallow
+        );
+        assert_eq!(
+            feed(&mut sw, key(usage::ESCAPE, true)).0.verdict,
+            Verdict::Pass
+        );
     }
 
     /// Files carried here from another device are cancelled here when the
