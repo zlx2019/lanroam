@@ -14,6 +14,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::mpsc;
 
 use crate::dto::{GroupDto, InputDto, JoinEndedDto, JoinPromptDto, SelfDto, Snapshot};
+use crate::overlay::{self, Hint};
 use crate::settings::Settings;
 use crate::state::{AppState, lock};
 use crate::{indicators, tray};
@@ -147,6 +148,16 @@ async fn on_event(app: &AppHandle, event: EngineEvent) {
                     admitted,
                 },
             );
+        }
+        EngineEvent::Receiving(receiving) => {
+            overlay::receiving(app, receiving);
+            return;
+        }
+        // Said wherever the pointer is, whatever the hint setting: the
+        // user expects the files
+        EngineEvent::DragFailed { reason, name } => {
+            overlay::hint(app, Hint::DragFailed { reason, name }, None);
+            return;
         }
         EngineEvent::Control(event) => {
             let (was, changed) = {

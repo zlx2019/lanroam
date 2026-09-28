@@ -1482,6 +1482,69 @@ main {
     transform: translate(-50%, 0);
   }
 }
+.ov-receiving {
+  position: absolute;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  box-sizing: border-box;
+  padding: 11px 14px;
+  border-radius: 14px;
+  color: #fff;
+  font-size: 13px;
+  background: rgba(16, 20, 34, 0.82);
+  backdrop-filter: blur(20px);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+  animation: ov-receiving 0.18s ease-out;
+}
+.ov-receiving > svg {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  color: #3ccfbe;
+}
+.ov-receiving-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ov-receiving-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.ov-receiving-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ov-receiving small {
+  color: #aab1cc;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+.ov-bar {
+  height: 4px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.14);
+}
+.ov-bar > div {
+  height: 100%;
+  border-radius: 2px;
+  background: #3ccfbe;
+  transition: width 0.2s ease-out;
+}
+@keyframes ov-receiving {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
 .ov-glow {
   position: absolute;
   opacity: 0;

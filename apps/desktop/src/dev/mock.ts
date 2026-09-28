@@ -113,7 +113,7 @@ for (let i = 0; i < 9; i++) keyNames[0x1e + i] = `Digit${i + 1}`;
 keyNames[0x27] = "Digit0";
 
 /** What an overlay window shows at first */
-const scene: SceneDto = { identify: null, hint: null, glow: null, dim: false };
+const scene: SceneDto = { identify: null, hint: null, glow: null, dim: false, receiving: null };
 
 /** Numbers in reading order, as the engine assigns them */
 function renumber() {

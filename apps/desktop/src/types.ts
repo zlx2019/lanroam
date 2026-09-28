@@ -247,10 +247,21 @@ export type Hint =
   | { kind: "unresponsive"; name: string }
   | { kind: "lost"; name: string }
   | { kind: "letGo"; name: string; reason: string }
-  | { kind: "stillRunning"; platform: string };
+  | { kind: "stillRunning"; platform: string }
+  | { kind: "dragFailed"; reason: string; name: string };
 
 /** A side of a display */
 export type Edge = "left" | "right" | "top" | "bottom";
+
+/** The files of a waiting drop still arriving; `x`, `y`: where it lands on the display (CSS pixels) */
+export interface ReceivingDto {
+  x: number;
+  y: number;
+  name: string;
+  count: number;
+  done: number;
+  total: number;
+}
 
 /** What one display's overlay shows; `id` changes each time a part is shown again */
 export interface SceneDto {
@@ -258,6 +269,7 @@ export interface SceneDto {
   hint: { id: number; hint: Hint } | null;
   glow: { id: number; edge: Edge } | null;
   dim: boolean;
+  receiving: ReceivingDto | null;
 }
 
 /** What the window asks the keyboard and mouse to do */

@@ -184,6 +184,16 @@ export function CrossIcon() {
   );
 }
 
+/** Files coming in */
+export function IncomingIcon() {
+  return (
+    <svg viewBox="0 0 16 16">
+      <path d="M8 1.8v7.4M4.9 6.3L8 9.4l3.1-3.1" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M2.2 10.2v2.3c0 .9.7 1.6 1.6 1.6h8.4c.9 0 1.6-.7 1.6-1.6v-2.3" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 /** Warning */
 export function WarnIcon() {
   return (

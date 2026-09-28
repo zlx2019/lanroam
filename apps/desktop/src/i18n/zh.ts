@@ -175,6 +175,13 @@ export const zh = {
   "hint.runningMenuBarSub": "点菜单栏图标可重新打开",
   "hint.runningTray": "Lanroam 仍在托盘运行",
   "hint.runningTraySub": "点托盘图标可重新打开",
+  "hint.dragNoSpace": "空间不足，{name} 没能拖过来",
+  "hint.dragFailed": "{name} 没能传过来",
+  "hint.dragNothing": "什么都没有放下",
+
+  "drop.more": "{name} 等 {count} 项",
+  "drop.receiving": "正在接收 {done} / {total}",
+  "drop.cancel": "Esc 取消",
 
   "about.version": "版本",
   "about.fingerprint": "本机指纹",

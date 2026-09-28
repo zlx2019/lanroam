@@ -4,8 +4,9 @@
 //!
 //! What they show is a scene per display, made of parts that come and go
 //! on their own: this device's number (every display), a hint and a lit
-//! edge (one display each, for a moment) and a dimmed screen (every
-//! display, until turned off). A window is shown while its scene has
+//! edge (one display each, for a moment), a dimmed screen (every display,
+//! until turned off) and the files of a waiting drop still arriving (one
+//! display, until they are there). A window is shown while its scene has
 //! anything in it.
 //!
 //! The windows are created on first use and then only shown and hidden. A
@@ -16,6 +17,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use lanroam_core::engine::Receiving;
 use lanroam_core::lanroam_input::Point;
 use serde::Serialize;
 use tauri::{
@@ -116,6 +118,13 @@ pub enum Hint {
         /// Menu bar (`macos`) or tray
         platform: String,
     },
+    /// A drag of files could not come here
+    DragFailed {
+        /// Why (an engine `drag_failed` code)
+        reason: String,
+        /// The first file or folder dragged
+        name: String,
+    },
 }
 
 /// A hint on one display
@@ -152,6 +161,24 @@ pub struct GlowDto {
     pub edge: Edge,
 }
 
+/// The files of a drop still arriving, next to where it lands
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReceivingDto {
+    /// Where the drop lands, from the display's left (CSS pixels)
+    pub x: f64,
+    /// Where the drop lands, from the display's top (CSS pixels)
+    pub y: f64,
+    /// The first file or folder dragged
+    pub name: String,
+    /// How many were dragged
+    pub count: usize,
+    /// Bytes there so far
+    pub done: u64,
+    /// Bytes in all
+    pub total: u64,
+}
+
 /// What one display's overlay shows
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -164,12 +191,18 @@ pub struct SceneDto {
     pub glow: Option<GlowDto>,
     /// Darkened
     pub dim: bool,
+    /// Files of a waiting drop still arriving
+    pub receiving: Option<ReceivingDto>,
 }
 
 impl SceneDto {
     /// Nothing to show
     fn is_empty(&self) -> bool {
-        self.identify.is_none() && self.hint.is_none() && self.glow.is_none() && !self.dim
+        self.identify.is_none()
+            && self.hint.is_none()
+            && self.glow.is_none()
+            && !self.dim
+            && self.receiving.is_none()
     }
 }
 
@@ -184,6 +217,8 @@ pub struct Overlays {
     glow: Option<(usize, GlowDto)>,
     /// Every display
     dim: bool,
+    /// On one display, by index
+    receiving: Option<(usize, ReceivingDto)>,
 }
 
 impl Overlays {
@@ -194,6 +229,7 @@ impl Overlays {
             hint: on_display(&self.hint, index),
             glow: on_display(&self.glow, index),
             dim: self.dim,
+            receiving: on_display(&self.receiving, index),
         }
     }
 }
@@ -247,6 +283,26 @@ pub fn dim(app: &AppHandle, on: bool) {
     change(app, |o| std::mem::replace(&mut o.dim, on) != on);
 }
 
+/// Show how far the files of a waiting drop are, next to where it lands;
+/// `None` once it is over
+pub fn receiving(app: &AppHandle, receiving: Option<Receiving>) {
+    let part = receiving.and_then(|receiving| {
+        let (index, x, y) = on_overlay(app, receiving.at)?;
+        let dto = ReceivingDto {
+            x,
+            y,
+            name: receiving.name,
+            count: receiving.count,
+            done: receiving.done,
+            total: receiving.total,
+        };
+        Some((index, dto))
+    });
+    change(app, |o| {
+        std::mem::replace(&mut o.receiving, part.clone()) != part
+    });
+}
+
 /// The scene of the overlay window `label`, for its page that just loaded
 pub fn scene_of(app: &AppHandle, label: &str) -> SceneDto {
     let index = label
@@ -283,6 +339,22 @@ pub fn locate(app: &AppHandle, at: Point) -> Option<(usize, Option<Edge>)> {
             .map(|(_, edge)| edge);
             Some((index, edge))
         })
+}
+
+/// The display holding `at` (device coordinates), and where `at` is on its
+/// overlay, in CSS pixels from its top left
+fn on_overlay(app: &AppHandle, at: Point) -> Option<(usize, f64, f64)> {
+    let (index, _) = locate(app, at)?;
+    let monitor = monitors(app).into_iter().nth(index)?;
+    let (left, top, _, _) = device_rect(&monitor);
+    // Device coordinates are CSS pixels on macOS already, physical pixels
+    // on Windows
+    #[cfg(target_os = "macos")]
+    let scale = 1.0;
+    #[cfg(not(target_os = "macos"))]
+    let scale = monitor.scale_factor();
+    let (x, y) = (f64::from(at.x) - left, f64::from(at.y) - top);
+    Some((index, x / scale, y / scale))
 }
 
 /// A new part number
