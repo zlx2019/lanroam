@@ -173,7 +173,10 @@ fn setup(app: &AppHandle) {
 }
 
 /// Create the main window from its entry in Tauri.toml, over the material;
-/// after the state is managed, which its page's first commands need
+/// after the state is managed, which its page's first commands need. On
+/// Windows it has no title bar: the material would show through the
+/// system's, whatever the page's opacity, so the page's header is the
+/// title bar there, with window buttons of its own
 fn create_main_window(app: &AppHandle) -> tauri::Result<()> {
     let Some(config) = app
         .config()
@@ -185,6 +188,7 @@ fn create_main_window(app: &AppHandle) -> tauri::Result<()> {
         return Ok(());
     };
     WebviewWindowBuilder::from_config(app, config)?
+        .decorations(!cfg!(windows))
         .transparent(true)
         .effects(material::effects())
         .initialization_script(material::MARK)

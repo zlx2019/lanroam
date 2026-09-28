@@ -17,8 +17,9 @@ macOSPrivateApi = true
 csp = "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' data:; style-src 'self' 'unsafe-inline'"
 
 # The main window: devices and settings. Hidden until the setup shows it
-# (not at all when started at login with --hidden). On macOS the header
-# doubles as the title bar, with the traffic lights over its left end. The
+# (not at all when started at login with --hidden). The header doubles as
+# the title bar: on macOS with the traffic lights over its left end, on
+# Windows (no system title bar there) with window buttons of its own. The
 # setup creates it, over the blurred desktop (material.rs)
 [[app.windows]]
 label = "main"

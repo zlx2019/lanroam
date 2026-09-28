@@ -1,12 +1,15 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Core IPC, hiding and dragging windows (close = hide to the tray; the header is the macOS title bar), following the theme",
+  "description": "Core IPC, hiding and dragging windows (close = hide to the tray; the header is the title bar, with window buttons of its own on Windows), following the theme",
   "windows": ["main", "join", "overlay-*"],
   "permissions": [
     "core:default",
     "core:window:allow-hide",
     "core:window:allow-start-dragging",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-close",
     "core:window:allow-set-theme"
   ]
 }

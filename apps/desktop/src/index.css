@@ -129,6 +129,38 @@ svg {
 .top.mac {
   padding-left: 84px;
 }
+/* Window buttons at the right end of the header (Windows, where the window
+   has no title bar of its own) */
+.top.win {
+  padding-right: 0;
+}
+.win-buttons {
+  display: flex;
+  align-self: stretch;
+  margin-left: auto;
+}
+.top .right + .win-buttons {
+  margin-left: 6px;
+}
+.win-buttons button {
+  width: 46px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+}
+.win-buttons button:hover {
+  background: var(--hover);
+}
+.win-buttons button.close:hover {
+  background: #c42b1c;
+  color: #fff;
+}
+.win-buttons svg {
+  width: 10px;
+  height: 10px;
+}
 .brand {
   display: flex;
   align-items: center;

@@ -199,6 +199,43 @@ export function CrossIcon() {
   );
 }
 
+/** Window button (Windows): minimize */
+export function MinimizeIcon() {
+  return (
+    <svg viewBox="0 0 10 10">
+      <path d="M0 5.5h10" stroke="currentColor" />
+    </svg>
+  );
+}
+
+/** Window button (Windows): maximize */
+export function MaximizeIcon() {
+  return (
+    <svg viewBox="0 0 10 10">
+      <rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor" />
+    </svg>
+  );
+}
+
+/** Window button (Windows): restore */
+export function RestoreIcon() {
+  return (
+    <svg viewBox="0 0 10 10">
+      <rect x="0.5" y="2.5" width="7" height="7" fill="none" stroke="currentColor" />
+      <path d="M2.5 2.5v-2h7v7h-2" fill="none" stroke="currentColor" />
+    </svg>
+  );
+}
+
+/** Window button (Windows): close */
+export function CloseIcon() {
+  return (
+    <svg viewBox="0 0 10 10">
+      <path d="M0.5 0.5l9 9M9.5 0.5l-9 9" stroke="currentColor" />
+    </svg>
+  );
+}
+
 /** Files coming in */
 export function IncomingIcon() {
   return (

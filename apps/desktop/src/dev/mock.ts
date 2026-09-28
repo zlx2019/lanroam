@@ -5,7 +5,8 @@
 //
 // `/mock.html?window=overlay-0` is an on-screen overlay instead;
 // `&material=1` puts the main window over a fake material: push it scenes with `window.__emit("overlay-scene", scene)`.
-// `&group=0` starts outside a group. Recording a key combination waits for
+// `&group=0` starts outside a group, `&platform=windows` makes this device
+// a PC (the header's window buttons). Recording a key combination waits for
 // `window.__emit("recorded", chord)`.
 
 import { emit } from "@tauri-apps/api/event";
@@ -190,6 +191,7 @@ const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
 
 const params = new URLSearchParams(location.search);
 if (params.get("group") === "0") state.group = null;
+if (params.get("platform") === "windows") state.device.platform = "windows";
 if (params.get("scene") === "three") addThird();
 if (params.get("material") === "1") document.documentElement.dataset.material = "1";
 mockWindows(params.get("window") ?? "main");

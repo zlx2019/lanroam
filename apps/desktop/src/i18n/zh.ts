@@ -5,6 +5,11 @@ export const zh = {
   "tab.arrange": "排列",
   "tab.settings": "设置",
 
+  "window.minimize": "最小化",
+  "window.maximize": "最大化",
+  "window.restore": "还原",
+  "window.close": "关闭",
+
   "state.active": "活跃",
   "state.paused": "已暂停",
   "state.inactive": "未活跃",
