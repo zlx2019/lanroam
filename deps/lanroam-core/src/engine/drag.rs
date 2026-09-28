@@ -3,9 +3,10 @@
 //! coming here are put.
 //!
 //! The files themselves do not travel yet: a drag coming here drags
-//! stand-ins, empty files and folders with their names, which are ready to
-//! drop after a stand-in transfer ([`STAND_IN_TRANSFER`]). That is enough
-//! to try the drag itself on every desktop.
+//! stand-ins, empty files and folders with their names, ready to drop at
+//! once. That is enough to try the drag itself on every desktop. Tests give
+//! the stand-ins a transfer time ([`STAND_IN_TRANSFER`]), so that a release
+//! before the files are ready is covered too.
 
 use std::fs;
 use std::io;
@@ -21,7 +22,7 @@ use crate::protocol::DragItem;
 /// How long the stand-in transfer of a drag coming here takes: released
 /// sooner, its drop waits until then
 #[cfg(not(test))]
-pub(super) const STAND_IN_TRANSFER: Duration = Duration::from_secs(2);
+pub(super) const STAND_IN_TRANSFER: Duration = Duration::ZERO;
 /// How long the stand-in transfer takes in tests
 #[cfg(test)]
 pub(super) const STAND_IN_TRANSFER: Duration = Duration::from_millis(200);

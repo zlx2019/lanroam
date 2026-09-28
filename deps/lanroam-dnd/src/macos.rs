@@ -13,6 +13,8 @@
 //!
 //! Both panels are nearly transparent (fully transparent pixels would let
 //! the pointer through), sit above everything and never activate the app.
+//! The window server takes a moment to put a panel where it was ordered:
+//! whatever must land on one waits until a press there would hit it.
 
 // AppKit through objc2: every unsafe block says why it holds
 #![allow(unsafe_code)]
@@ -21,7 +23,7 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicIsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dispatch2::{DispatchQueue, DispatchTime};
 use lanroam_input::{INJECTED_MARKER, Point};
@@ -33,7 +35,7 @@ use objc2_app_kit::{
     NSDraggingInfo, NSDraggingItem, NSDraggingSession, NSDraggingSource, NSEvent, NSPanel,
     NSPasteboard, NSPasteboardNameDrag, NSPasteboardTypeFileURL, NSPasteboardTypeString,
     NSPasteboardTypeURL, NSPasteboardURLReadingFileURLsOnlyKey, NSPopUpMenuWindowLevel, NSView,
-    NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
+    NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
 };
 use objc2_core_graphics::{
     CGDisplayBounds, CGEvent, CGEventSource, CGEventSourceStateID, CGEventTapLocation, CGEventType,
@@ -61,6 +63,13 @@ const NEARLY_CLEAR: f64 = 1.0 / 255.0;
 /// How long the catcher stays after the press it served is over: the
 /// release it refuses may still be on its way
 const CATCHER_GRACE: Duration = Duration::from_millis(800);
+
+/// How long to wait for the window server to put a panel under a point
+/// before going ahead anyway
+const HIT_WAIT: Duration = Duration::from_millis(300);
+
+/// How often to ask the window server meanwhile
+const HIT_POLL: Duration = Duration::from_millis(4);
 
 /// Drag pasteboard change count before any press was seen
 const NO_PRESS: isize = isize::MIN;
@@ -128,8 +137,11 @@ impl Dnd {
         on_main(move |mtm, state| {
             let files = dragged_files(baseline);
             tracing::info!(id, files = files.len(), "probed the drag held here");
-            state.show_catcher(mtm, NSEvent::mouseLocation());
-            nudge();
+            let at = NSEvent::mouseLocation();
+            let catcher = state.show_catcher(mtm, at);
+            // The drag looks again at what it is over once the catcher is
+            // there
+            once_hit(catcher, at, |_, _| nudge());
             (state.sink)(Event::Probed { id, files });
         });
     }
@@ -152,9 +164,13 @@ impl Dnd {
             });
             panel.setFrame_display(frame, false);
             panel.orderFrontRegardless();
+            let number = panel.windowNumber();
             tracing::info!(id, files = paths.len(), ?at, "armed a drag");
             state.armed = Some((id, paths));
-            (state.sink)(Event::Armed { id });
+            // The press must land on the panel, not on what lies beneath
+            once_hit(number, centre, move |_, state| {
+                (state.sink)(Event::Armed { id });
+            });
         });
     }
 
@@ -168,19 +184,26 @@ impl Dnd {
                     source.orderOut(None);
                 }
             }
-            if state.dragging == Some(id) {
-                state.show_catcher(mtm, NSEvent::mouseLocation());
-                state.hide_catcher_later();
-            }
             tracing::info!(id, "cancelling the drag");
-            (state.sink)(Event::Cancelling { id });
+            if state.dragging == Some(id) {
+                // The release must land on the catcher, which refuses it
+                let at = NSEvent::mouseLocation();
+                let catcher = state.show_catcher(mtm, at);
+                state.hide_catcher_later();
+                once_hit(catcher, at, move |_, state| {
+                    (state.sink)(Event::Cancelling { id });
+                });
+            } else {
+                (state.sink)(Event::Cancelling { id });
+            }
         });
     }
 }
 
 impl State {
-    /// Show the catcher centred on `at` (Cocoa screen coordinates)
-    fn show_catcher(&mut self, mtm: MainThreadMarker, at: NSPoint) {
+    /// Show the catcher centred on `at` (Cocoa screen coordinates); its
+    /// window number
+    fn show_catcher(&mut self, mtm: MainThreadMarker, at: NSPoint) -> isize {
         let frame = square(at, CATCHER_SIZE);
         let panel = self.catcher.get_or_insert_with(|| {
             // SAFETY: NSView's designated initializer
@@ -200,6 +223,7 @@ impl State {
         panel.setFrame_display(frame, false);
         panel.orderFrontRegardless();
         self.showing += 1;
+        panel.windowNumber()
     }
 
     /// Hide the catcher once [`CATCHER_GRACE`] is over, unless it was shown
@@ -219,6 +243,41 @@ impl State {
             });
         });
     }
+}
+
+/// Work to do with the state on the main thread
+type Work = Box<dyn FnOnce(MainThreadMarker, &mut State) + Send>;
+
+/// Run `then` with the state once a press at `at` (Cocoa screen
+/// coordinates) would hit the window numbered `window`, or after
+/// [`HIT_WAIT`] regardless
+fn once_hit(
+    window: isize,
+    at: NSPoint,
+    then: impl FnOnce(MainThreadMarker, &mut State) + Send + 'static,
+) {
+    poll_hit(window, at, Instant::now() + HIT_WAIT, Box::new(then));
+}
+
+/// Ask the window server again in a moment (see [`once_hit`])
+fn poll_hit(window: isize, at: NSPoint, deadline: Instant, then: Work) {
+    let Ok(when) = DispatchTime::try_from(HIT_POLL) else {
+        return;
+    };
+    let _ = DispatchQueue::main().after(when, move || {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let hit = NSWindow::windowNumberAtPoint_belowWindowWithWindowNumber(at, 0, mtm) == window;
+        if hit || Instant::now() >= deadline {
+            if !hit {
+                tracing::warn!("a drag panel is not under the pointer in time, going ahead");
+            }
+            with_state(then);
+        } else {
+            poll_hit(window, at, deadline, then);
+        }
+    });
 }
 
 /// Run `work` with the state on the main thread, later
