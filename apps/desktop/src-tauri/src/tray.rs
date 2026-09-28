@@ -1,5 +1,5 @@
-//! The tray icon and its menu: where input is, pause and lock, a jump to
-//! any online member, the window, quitting.
+//! The tray icon and its menu: the state, pause and lock, a jump to any
+//! online member, the arrangement panel, the window, quitting.
 //!
 //! The menu is rebuilt from each snapshot: members come and go, and the
 //! texts follow the language setting. The icon's shape follows where input
@@ -16,6 +16,7 @@ use tauri::{AppHandle, Manager, Wry};
 
 use crate::dto::{ControlMode, Snapshot};
 use crate::locale::{self, Lang, Texts};
+use crate::panel;
 use crate::state::{AppState, lock};
 
 /// ID of the tray icon
@@ -29,6 +30,8 @@ mod ids {
     pub const LOCK: &str = "lock";
     /// Prefix of a jump to a device, followed by its fingerprint
     pub const JUMP: &str = "jump:";
+    /// Open the arrangement panel
+    pub const ARRANGE: &str = "arrange";
     /// Show the window
     pub const OPEN: &str = "open";
     /// Quit
@@ -150,21 +153,19 @@ fn texts(app: &AppHandle) -> &'static Texts {
     locale::texts(Lang::from_setting(&language))
 }
 
-/// One line saying where input is
-fn status_line(app: &AppHandle, snapshot: &Snapshot) -> String {
+/// The state word heading the menu, as the main window shows it
+fn status_line(app: &AppHandle, snapshot: &Snapshot) -> &'static str {
     let t = texts(app);
-    let peer = snapshot.control.peer.as_deref().unwrap_or_default();
-    if snapshot.group.is_none() {
-        return t.no_group.to_string();
-    }
-    let locked = snapshot.control.locked;
-    match snapshot.control.mode {
-        ControlMode::Controlling if locked => Texts::fill(t.locked_on, peer),
-        ControlMode::Controlling => Texts::fill(t.controlling, peer),
-        ControlMode::Controlled => Texts::fill(t.controlled, peer),
-        ControlMode::Idle if snapshot.control.paused => t.paused.to_string(),
-        ControlMode::Idle if locked => Texts::fill(t.locked_on, &snapshot.device.name),
-        ControlMode::Idle => t.idle.to_string(),
+    let others_online = snapshot
+        .group
+        .as_ref()
+        .is_some_and(|group| group.devices.iter().any(|d| !d.local && d.online));
+    if !others_online {
+        t.inactive
+    } else if snapshot.control.paused {
+        t.paused
+    } else {
+        t.active
     }
 }
 
@@ -186,12 +187,15 @@ fn build_menu(app: &AppHandle, snapshot: Option<&Snapshot>) -> tauri::Result<Men
                 true,
                 None::<&str>,
             )?)?;
+            // Nothing to lock while paused (the pointer stays here anyway),
+            // but a lock from before can still be undone
+            let locked = snapshot.control.locked || snapshot.control.peer_locked;
             menu.append(&CheckMenuItem::with_id(
                 app,
                 ids::LOCK,
                 t.lock,
-                true,
-                snapshot.control.locked || snapshot.control.peer_locked,
+                !paused || locked,
+                locked,
                 None::<&str>,
             )?)?;
             menu.append(&PredefinedMenuItem::separator(app)?)?;
@@ -202,10 +206,8 @@ fn build_menu(app: &AppHandle, snapshot: Option<&Snapshot>) -> tauri::Result<Men
             };
             for device in group.devices.iter().filter(|d| d.number.is_some()) {
                 let mut label = format!("{}  {}", device.number.unwrap_or_default(), device.name);
-                if device.local {
-                    label.push_str(&format!(" ({})", t.this_device));
-                } else if !device.online {
-                    label.push_str(&format!(" ({})", t.offline));
+                if !device.online {
+                    label.push_str(&format!(" · {}", t.offline));
                 }
                 let current = here.map_or(device.local, |fp| fp == device.fingerprint);
                 let item = CheckMenuItem::with_id(
@@ -219,6 +221,13 @@ fn build_menu(app: &AppHandle, snapshot: Option<&Snapshot>) -> tauri::Result<Men
                 menu.append(&item)?;
             }
             menu.append(&PredefinedMenuItem::separator(app)?)?;
+            menu.append(&MenuItem::with_id(
+                app,
+                ids::ARRANGE,
+                t.arrange,
+                true,
+                None::<&str>,
+            )?)?;
         }
     }
     menu.append(&MenuItem::with_id(
@@ -228,6 +237,7 @@ fn build_menu(app: &AppHandle, snapshot: Option<&Snapshot>) -> tauri::Result<Men
         true,
         None::<&str>,
     )?)?;
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
     menu.append(&MenuItem::with_id(
         app,
         ids::QUIT,
@@ -242,6 +252,12 @@ fn build_menu(app: &AppHandle, snapshot: Option<&Snapshot>) -> tauri::Result<Men
 fn on_menu(app: &AppHandle, id: &str) {
     let request = match id {
         ids::OPEN => return show_main_window(app),
+        ids::ARRANGE => {
+            // Off the event loop: the panel may create its window
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move { panel::show(&app) });
+            return;
+        }
         ids::QUIT => return app.exit(0),
         ids::PAUSE => Request::Pause,
         ids::LOCK => Request::Lock,

@@ -33,30 +33,24 @@ impl Lang {
 
 /// The shell's words in one language
 pub struct Texts {
-    /// Tray: not in a group
-    pub no_group: &'static str,
-    /// Tray: input stays here
-    pub idle: &'static str,
-    /// Tray: controlling `{name}`
-    pub controlling: &'static str,
-    /// Tray: `{name}` controls this device
-    pub controlled: &'static str,
+    /// Tray: sharing works (in a group with another member online)
+    pub active: &'static str,
     /// Tray: crossing is paused
     pub paused: &'static str,
-    /// Tray: the pointer is locked to `{name}`
-    pub locked_on: &'static str,
-    /// Tray: pause sharing
+    /// Tray: nothing to share with (no group, or no member online)
+    pub inactive: &'static str,
+    /// Tray: pause crossing
     pub pause: &'static str,
-    /// Tray: resume sharing
+    /// Tray: resume crossing
     pub resume: &'static str,
     /// Tray: lock the pointer
     pub lock: &'static str,
     /// Tray: heading of the device list
     pub switch_to: &'static str,
-    /// Tray: marks this device in the list
-    pub this_device: &'static str,
     /// Tray: marks an offline device in the list
     pub offline: &'static str,
+    /// Tray: open the arrangement panel
+    pub arrange: &'static str,
     /// Tray: open the window
     pub open: &'static str,
     /// Tray: quit
@@ -65,13 +59,6 @@ pub struct Texts {
     pub start_failed_title: &'static str,
     /// Dialog hint when the engine cannot start
     pub start_failed_hint: &'static str,
-}
-
-impl Texts {
-    /// `template` with `{name}` filled in
-    pub fn fill(template: &str, name: &str) -> String {
-        template.replace("{name}", name)
-    }
 }
 
 /// The words for `lang`
@@ -84,40 +71,34 @@ pub fn texts(lang: Lang) -> &'static Texts {
 
 /// Chinese
 static ZH: Texts = Texts {
-    no_group: "未加入桌面组",
-    idle: "键鼠在本机",
-    controlling: "正在控制 {name}",
-    controlled: "{name} 正在控制本机",
-    paused: "已暂停共享",
-    locked_on: "光标锁定在 {name}",
-    pause: "暂停共享",
-    resume: "恢复共享",
-    lock: "锁定光标",
+    active: "活跃",
+    paused: "已暂停",
+    inactive: "未活跃",
+    pause: "暂停",
+    resume: "恢复",
+    lock: "锁定",
     switch_to: "切换到",
-    this_device: "本机",
     offline: "离线",
-    open: "打开 Lanroam…",
-    quit: "退出 Lanroam",
+    arrange: "排列屏幕…",
+    open: "打开 Lanroam",
+    quit: "退出",
     start_failed_title: "Lanroam 无法启动",
     start_failed_hint: "可能已有另一个 Lanroam 在运行（包括命令行版 lanroam-cli run），请先退出它再打开。",
 };
 
 /// English
 static EN: Texts = Texts {
-    no_group: "Not in a desk group",
-    idle: "Keyboard and mouse here",
-    controlling: "Controlling {name}",
-    controlled: "{name} is controlling this device",
-    paused: "Sharing paused",
-    locked_on: "Pointer locked to {name}",
-    pause: "Pause Sharing",
-    resume: "Resume Sharing",
-    lock: "Lock the Pointer",
+    active: "Active",
+    paused: "Paused",
+    inactive: "Inactive",
+    pause: "Pause",
+    resume: "Resume",
+    lock: "Lock",
     switch_to: "Switch To",
-    this_device: "this device",
     offline: "offline",
-    open: "Open Lanroam…",
-    quit: "Quit Lanroam",
+    arrange: "Arrange Screens…",
+    open: "Open Lanroam",
+    quit: "Quit",
     start_failed_title: "Lanroam cannot start",
     start_failed_hint: "Another Lanroam may be running already (the command-line lanroam-cli run counts too); quit it first.",
 };
