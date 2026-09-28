@@ -12,7 +12,11 @@
 //!   against an edge still moves them outwards. While the target is
 //!   controlled every event is blocked, which keeps the cursor where it
 //!   crossed, and motion is the offset from there (lan-mouse's approach).
-//!   The cursor stays visible meanwhile.
+//!   A nearly clear window of a few pixels under the cursor hides it
+//!   meanwhile (Deskflow's approach): over that window the cursor takes the
+//!   window's, which is none. No process can hide the cursor elsewhere short
+//!   of replacing the system's cursors, which a crash would leave invisible;
+//!   the window goes with the process.
 //!
 //! Injection cannot reach windows of elevated processes (UIPI), the secure
 //! desktop (UAC prompts, Ctrl+Alt+Del) or the lock screen; such calls fail
@@ -27,32 +31,37 @@ use std::ptr::{null, null_mut};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Once};
 
-use windows_sys::Win32::Foundation::{LPARAM, LRESULT, POINT, RECT, TRUE, WPARAM};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, TRUE, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTOPRIMARY, MONITORINFO,
     MonitorFromPoint,
 };
+use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForMonitor, MDT_EFFECTIVE_DPI,
     SetProcessDpiAwarenessContext,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBD_EVENT_FLAGS, KEYBDINPUT,
+    GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBD_EVENT_FLAGS, KEYBDINPUT,
     KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MAPVK_VK_TO_VSC_EX,
     MOUSE_EVENT_FLAGS, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN,
     MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE,
     MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL,
     MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT, MapVirtualKeyW, SendInput, VIRTUAL_KEY,
-    VK_MEDIA_NEXT_TRACK, VK_MEDIA_PLAY_PAUSE, VK_MEDIA_PREV_TRACK, VK_PAUSE, VK_VOLUME_DOWN,
-    VK_VOLUME_MUTE, VK_VOLUME_UP,
+    VK_LBUTTON, VK_MEDIA_NEXT_TRACK, VK_MEDIA_PLAY_PAUSE, VK_MEDIA_PREV_TRACK, VK_PAUSE,
+    VK_RBUTTON, VK_VOLUME_DOWN, VK_VOLUME_MUTE, VK_VOLUME_UP,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, GetCursorPos, GetMessageW, GetSystemMetrics, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT,
-    KillTimer, LLKHF_EXTENDED, LLKHF_UP, MSG, MSLLHOOKSTRUCT, SM_CXVIRTUALSCREEN,
-    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SetCursorPos, SetTimer,
-    SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_XBUTTONDOWN, WM_XBUTTONUP, XBUTTON1, XBUTTON2,
+    CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos,
+    GetMessageW, GetSystemMetrics, HC_ACTION, HHOOK, HWND_TOPMOST, KBDLLHOOKSTRUCT, KillTimer,
+    LLKHF_EXTENDED, LLKHF_UP, LWA_ALPHA, MA_NOACTIVATE, MSG, MSLLHOOKSTRUCT, RegisterClassW,
+    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_HIDE,
+    SWP_NOACTIVATE, SWP_SHOWWINDOW, SetCursor, SetCursorPos, SetLayeredWindowAttributes, SetTimer,
+    SetWindowPos, SetWindowsHookExW, ShowWindow, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEHWHEEL,
+    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_XBUTTONDOWN,
+    WM_XBUTTONUP, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_POPUP, XBUTTON1, XBUTTON2,
 };
 use windows_sys::core::BOOL;
 
@@ -67,6 +76,9 @@ use crate::{INJECTED_MARKER, InputError};
 /// How often the capture thread checks whether it should stop, in
 /// milliseconds
 const STOP_POLL_MS: u32 = 200;
+
+/// Side of the window that hides a parked cursor, in pixels
+const COVER_SIZE: i32 = 3;
 
 thread_local! {
     /// State of the hooks. Low-level hooks run on the thread that installed
@@ -180,6 +192,7 @@ fn capture_thread(switch: Arc<Mutex<Switch>>, sink: EmitSink, stop: &AtomicBool,
         out: Vec::with_capacity(8),
         last: cursor_position(),
         parked: None,
+        cover: Cover::new(),
     }));
     // SAFETY: both procedures follow the HOOKPROC contract, and the hooks are
     // removed below, before this thread ends
@@ -207,6 +220,10 @@ fn capture_thread(switch: Arc<Mutex<Switch>>, sink: EmitSink, stop: &AtomicBool,
         if unsafe { GetMessageW(&mut msg, null_mut(), 0, 0) } <= 0 {
             break;
         }
+        // The cover's messages (a paint left undispatched comes back at
+        // once, spinning the loop)
+        // SAFETY: `msg` was just filled by GetMessageW
+        unsafe { DispatchMessageW(&msg) };
     }
 
     // SAFETY: the timer belongs to this thread
@@ -288,6 +305,8 @@ struct Hooks {
     last: Point,
     /// Where the cursor is held while controlling the target
     parked: Option<Point>,
+    /// Hides the cursor while the target is controlled, if it could be made
+    cover: Option<Cover>,
 }
 
 impl Hooks {
@@ -355,15 +374,29 @@ impl Hooks {
     }
 
     /// Run the switch and apply its cursor change: parking needs nothing
-    /// but the blocking itself; coming back puts the cursor in place
+    /// but the blocking itself, and the cover; coming back puts the cursor
+    /// in place
     fn decide(&mut self, event: Option<InputEvent>) -> Verdict {
         let decision = super::decide(&self.switch, event, &mut self.out, &mut self.sink);
         match decision.cursor {
             // Held where it is: the hook swallows the motion
-            Some(CursorAction::Park | CursorAction::Freeze(_)) => self.parked = Some(self.last),
+            Some(CursorAction::Park) => {
+                self.parked = Some(self.last);
+                // A drag goes along: its own loop has the cursor
+                if let Some(cover) = &self.cover
+                    && !button_held()
+                {
+                    cover.show(self.last);
+                }
+            }
+            // Held and shown: a drop waits here
+            Some(CursorAction::Freeze(_)) => self.parked = Some(self.last),
             Some(CursorAction::Release(at)) => {
                 self.parked = None;
                 self.last = at;
+                if let Some(cover) = &self.cover {
+                    cover.hide();
+                }
                 // SAFETY: plain call
                 unsafe { SetCursorPos(at.x, at.y) };
             }
@@ -371,6 +404,122 @@ impl Hooks {
         }
         decision.verdict
     }
+}
+
+/// A nearly clear window of a few pixels, put under a parked cursor to hide
+/// it; owned by the capture thread, whose loop serves it
+struct Cover(HWND);
+
+impl Cover {
+    /// The window, hidden; `None` if it cannot be made (the cursor then
+    /// stays shown while parked)
+    fn new() -> Option<Self> {
+        let class: Vec<u16> = "LanroamCursorCover\0".encode_utf16().collect();
+        // SAFETY: plain calls; `class` outlives them, and a class registered
+        // by an earlier capture is used as it is
+        let window = unsafe {
+            let instance = GetModuleHandleW(null());
+            let wc = WNDCLASSW {
+                lpfnWndProc: Some(cover_proc),
+                hInstance: instance,
+                lpszClassName: class.as_ptr(),
+                ..Default::default()
+            };
+            RegisterClassW(&wc);
+            CreateWindowExW(
+                WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                class.as_ptr(),
+                null(),
+                WS_POPUP,
+                0,
+                0,
+                COVER_SIZE,
+                COVER_SIZE,
+                null_mut(),
+                null_mut(),
+                instance,
+                null(),
+            )
+        };
+        if window.is_null() {
+            tracing::warn!("cannot make the window that hides the cursor");
+            return None;
+        }
+        // Nearly clear: unseen, yet under the pointer (a fully clear layered
+        // window is not)
+        // SAFETY: a live window of this thread
+        unsafe { SetLayeredWindowAttributes(window, 0, 1, LWA_ALPHA) };
+        Some(Self(window))
+    }
+
+    /// Put the window under the cursor at `at`, which then hides
+    fn show(&self, at: Point) {
+        let half = COVER_SIZE / 2;
+        // SAFETY: a live window of this thread
+        unsafe {
+            SetWindowPos(
+                self.0,
+                HWND_TOPMOST,
+                at.x - half,
+                at.y - half,
+                COVER_SIZE,
+                COVER_SIZE,
+                SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            );
+        }
+        // The cursor takes the window's look at its next motion, which the
+        // hooks block while parked; Lanroam's own they let through
+        if let Err(e) = send(&[mouse(0, 0, MOUSEEVENTF_MOVE, 0)]) {
+            tracing::debug!("cannot nudge the cursor under its cover: {e}");
+        }
+    }
+
+    /// Take the window away; the cursor shows again at its next motion
+    fn hide(&self) {
+        // SAFETY: a live window of this thread
+        unsafe { ShowWindow(self.0, SW_HIDE) };
+    }
+}
+
+impl Drop for Cover {
+    fn drop(&mut self) {
+        // SAFETY: a live window of this thread (dropped with the hooks, on
+        // the capture thread)
+        unsafe { DestroyWindow(self.0) };
+    }
+}
+
+/// Window procedure of the cover: no cursor over it, and it never takes
+/// the focus
+///
+/// # Safety
+///
+/// Called by Windows with a window message.
+unsafe extern "system" fn cover_proc(
+    window: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match message {
+        WM_SETCURSOR => {
+            // SAFETY: plain call; no cursor at all
+            unsafe { SetCursor(null_mut()) };
+            1
+        }
+        WM_MOUSEACTIVATE => MA_NOACTIVATE as LRESULT,
+        // SAFETY: the arguments are passed on unchanged
+        _ => unsafe { DefWindowProcW(window, message, wparam, lparam) },
+    }
+}
+
+/// Whether a mouse button is held: parked with one down, a drag of files
+/// goes along
+fn button_held() -> bool {
+    [VK_LBUTTON, VK_RBUTTON].into_iter().any(|key| {
+        // SAFETY: plain call
+        unsafe { GetAsyncKeyState(i32::from(key)) < 0 }
+    })
 }
 
 /// Signed wheel amount from a hook's `mouseData` (high word)
