@@ -45,7 +45,7 @@ Arrange them once. From then on, move the pointer past the edge of one screen an
 
 ### Hotkeys
 
-The defaults; record your own under **Settings → Switching**. On a Mac, Alt is the Option key.
+The defaults; record your own under **Settings → Control**. On a Mac, Alt is the Option key.
 
 | Keys | Action |
 |---|---|
@@ -134,10 +134,10 @@ Discovery and control need an inbound firewall rule for private networks: the in
 The pointer only crosses where two screens touch in the layout. Open the **Arrange** page (or **Arrange Screens…** in the tray menu): the other devices show their numbers on their screens, so you can tell which is which; drag them to match your desk.
 
 **Scrolling goes the wrong way on the other computer.**
-A Mac with natural scrolling scrolls a PC the other way round. On the computer being controlled, turn on **Settings → Keyboard & mouse → Reverse scrolling**; its scrolling speed is set there too.
+A Mac with natural scrolling scrolls a PC the other way round. On the computer being controlled, turn on **Settings → Control → Reverse scrolling**; its scrolling speed is set there too.
 
 **The volume keys change the other computer's volume.**
-While you control another device, media and volume keys go there. To keep them on the computer in front of you, choose **Keep here** under **Settings → Keyboard & mouse → Media keys**.
+While you control another device, media and volume keys go there. To keep them on the computer in front of you, choose **Keep here** under **Settings → Control → Media keys**.
 
 **Some windows ignore the mouse and keyboard.**
 Secure input is out of reach: on Windows, the lock screen, UAC prompts and windows running as administrator cannot be controlled remotely; on macOS, secure input (password fields, terminals with Secure Keyboard Entry) stops the keyboard from being captured.

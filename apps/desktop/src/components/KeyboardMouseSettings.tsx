@@ -1,7 +1,8 @@
-// Settings → Keyboard and mouse. The Cmd ↔ Ctrl swap and the pointer
-// speed belong to this device's entry in the group (the controlling device
-// follows them), so they need a group; where media keys go and how
-// scrolling is replayed here are this device's own input settings.
+// Settings → Control, second part: the keyboard and the mouse. The
+// Cmd ↔ Ctrl swap and the pointer speed belong to this device's entry in
+// the group (the controlling device follows them), so they need a group;
+// where media keys go and how scrolling is replayed here are this device's
+// own input settings.
 
 import { useEffect, useState } from "react";
 import { api } from "../api";
@@ -15,30 +16,23 @@ const POINTER = { min: 50, max: 200, step: 10 };
 /** Scrolling speed limits in the interface (percent) */
 const SCROLL = { min: 50, max: 300, step: 10 };
 
-/** The keyboard and mouse settings */
+/** The keyboard and mouse settings, over the input settings `settings` */
 export function KeyboardMouseSettings({
   snapshot,
+  settings,
+  save,
   onToast,
 }: {
   snapshot: Snapshot;
+  settings: InputSettings;
+  /** Save and use new input settings */
+  save: (next: InputSettings) => void;
   onToast: (message: string) => void;
 }) {
   const { t } = useI18n();
-  const [settings, setSettings] = useState<InputSettings | null>(null);
   const local = snapshot.group?.devices.find((d) => d.local) ?? null;
   const [swap, setSwap] = useState(local?.swap ?? true);
   useEffect(() => setSwap(local?.swap ?? true), [local?.swap]);
-
-  useEffect(() => {
-    api.getInputSettings().then(setSettings).catch(console.error);
-  }, []);
-
-  /** Save and use new input settings */
-  const save = (next: InputSettings) =>
-    api
-      .saveInputSettings(next)
-      .then(() => setSettings(next))
-      .catch((e) => onToast(formatError(t, e)));
 
   /** Turn the swap on or off, for the group */
   const toggleSwap = (next: boolean) => {
@@ -52,7 +46,6 @@ export function KeyboardMouseSettings({
   /** Set the pointer speed, for the group; the snapshot brings it back */
   const setPointerSpeed = (speed: number) => api.setPointerSpeed(speed).catch((e) => onToast(formatError(t, e)));
 
-  if (!settings) return null;
   const mac = snapshot.device.platform === "macos";
   const [from, to] = mac ? ["Ctrl", "Cmd"] : ["Cmd", "Ctrl"];
   const other = mac ? "Windows" : "Mac";
@@ -61,6 +54,7 @@ export function KeyboardMouseSettings({
 
   return (
     <>
+      <div className="group-h">{t("input.keyboard")}</div>
       <div className="group">
         <Row title={t("input.swap")} hint={noGroup ?? t("input.swapHint", { other, from, to })}>
           <button

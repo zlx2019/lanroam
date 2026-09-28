@@ -4,21 +4,20 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api } from "../api";
 import { formatError, useI18n } from "../i18n";
-import type { SettingsDto, Snapshot } from "../types";
+import type { InputSettings, SettingsDto, Snapshot } from "../types";
 import { applyOpacity } from "../theme";
 import { Row, Seg, Slider, Toggle } from "./controls";
-import { EyeIcon, GearIcon, InfoIcon, KeyboardIcon, SwitchIcon } from "./icons";
+import { EyeIcon, GearIcon, InfoIcon, SwitchIcon } from "./icons";
 import { KeyboardMouseSettings } from "./KeyboardMouseSettings";
 import { SwitchingSettings } from "./SwitchingSettings";
 
 /** Sections of the settings page */
-export type Section = "general" | "switching" | "input" | "look" | "about";
+export type Section = "general" | "control" | "look" | "about";
 
 /** Sections in order, with their icons */
 const SECTIONS: [Section, ReactNode][] = [
   ["general", <GearIcon key="general" />],
-  ["switching", <SwitchIcon key="switching" />],
-  ["input", <KeyboardIcon key="input" />],
+  ["control", <SwitchIcon key="control" />],
   ["look", <EyeIcon key="look" />],
   ["about", <InfoIcon key="about" />],
 ];
@@ -61,10 +60,8 @@ export function SettingsPage({
             onSettings={onSettings}
             onToast={onToast}
           />
-        ) : section === "switching" ? (
-          <SwitchingSettings snapshot={snapshot} onToast={onToast} />
-        ) : section === "input" ? (
-          <KeyboardMouseSettings snapshot={snapshot} onToast={onToast} />
+        ) : section === "control" ? (
+          <Control snapshot={snapshot} onToast={onToast} />
         ) : section === "look" ? (
           <Look settings={settings} onSettings={onSettings} onToast={onToast} />
         ) : (
@@ -179,6 +176,33 @@ function General({
           />
         </Row>
       </div>
+    </>
+  );
+}
+
+/** Switching, then the keyboard and the mouse: both change the one copy of
+ * the input settings held here, which each change saves whole */
+function Control({ snapshot, onToast }: { snapshot: Snapshot; onToast: (message: string) => void }) {
+  const { t } = useI18n();
+  const [settings, setSettings] = useState<InputSettings | null>(null);
+
+  useEffect(() => {
+    api.getInputSettings().then(setSettings).catch(console.error);
+  }, []);
+
+  /** Save and use new input settings */
+  const save = (next: InputSettings) => {
+    api
+      .saveInputSettings(next)
+      .then(() => setSettings(next))
+      .catch((e) => onToast(formatError(t, e)));
+  };
+
+  if (!settings) return null;
+  return (
+    <>
+      <SwitchingSettings snapshot={snapshot} settings={settings} save={save} onToast={onToast} />
+      <KeyboardMouseSettings snapshot={snapshot} settings={settings} save={save} onToast={onToast} />
     </>
   );
 }

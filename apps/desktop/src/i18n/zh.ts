@@ -72,8 +72,7 @@ export const zh = {
   "prompt.ended": "这次加入请求已结束",
 
   "settings.general": "通用",
-  "settings.switching": "切换",
-  "settings.input": "键鼠",
+  "settings.control": "控制",
   "settings.look": "外观",
   "settings.about": "关于",
   "settings.name": "设备名称",
@@ -131,6 +130,7 @@ export const zh = {
   "edges.more": "更多设置",
   "edges.reset": "恢复默认",
 
+  "input.keyboard": "键盘",
   "input.swap": "Cmd ↔ Ctrl 互换",
   "input.swapHint": "{other} 控制本机时，{from} 当 {to} 用",
   "input.media": "媒体键",

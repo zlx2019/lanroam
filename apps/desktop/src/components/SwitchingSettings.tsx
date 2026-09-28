@@ -1,8 +1,8 @@
-// Settings → Switching: the hotkeys, how the pointer crosses edges by
-// default and edge by edge, and the key combinations kept on this machine. Combinations are
-// recorded by the engine from the physical keys (this device's keyboard,
-// or the controlling device's), so even ones the OS or a hotkey would take
-// are seen; changes save at once.
+// Settings → Control, first part: the hotkeys, how the pointer crosses
+// edges by default and edge by edge, and the key combinations kept on this
+// machine. Combinations are recorded by the engine from the physical keys
+// (this device's keyboard, or the controlling device's), so even ones the
+// OS or a hotkey would take are seen; changes save at once.
 
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
@@ -29,36 +29,32 @@ type Target = "pause" | "lock" | "jump" | "step" | "keep";
 /** Dwell limits in the interface (ms) */
 const DWELL = { min: 100, max: 1000, step: 50 };
 
-/** The switching settings */
+/** The switching settings, over the input settings `settings` */
 export function SwitchingSettings({
   snapshot,
+  settings,
+  save,
   onToast,
 }: {
   snapshot: Snapshot;
+  settings: InputSettings;
+  /** Save and use new input settings */
+  save: (next: InputSettings) => void;
   onToast: (message: string) => void;
 }) {
   const { t } = useI18n();
-  const [settings, setSettings] = useState<InputSettings | null>(null);
   const [names, setNames] = useState<Record<string, string>>({});
   const [recording, setRecording] = useState<Target | null>(null);
   const platform = snapshot.device.platform;
 
   useEffect(() => {
-    api.getInputSettings().then(setSettings).catch(console.error);
     api.keyNames().then(setNames).catch(console.error);
   }, []);
-
-  /** Save and use new settings */
-  const save = (next: InputSettings) =>
-    api
-      .saveInputSettings(next)
-      .then(() => setSettings(next))
-      .catch((e) => onToast(formatError(t, e)));
 
   // While recording: the combination arrives as an event; leaving the
   // window or the page stops it, or it would catch keys meant elsewhere
   useEffect(() => {
-    if (!recording || !settings) return;
+    if (!recording) return;
     const unlisten = listen<Chord | null>(EVENTS.RECORDED, (e) => {
       setRecording(null);
       if (e.payload) apply(recording, e.payload);
@@ -88,7 +84,6 @@ export function SwitchingSettings({
 
   /** Put a recorded combination where it was recorded for */
   const apply = (target: Target, chord: Chord) => {
-    if (!settings) return;
     const words = { alt: altKey(platform), meta: platform === "macos" ? "Cmd" : "Win" };
     if (target === "keep") {
       if (settings.keepLocal.some((c) => sameChord(c, chord))) return onToast(t("switch.duplicate"));
@@ -106,7 +101,6 @@ export function SwitchingSettings({
     save({ ...settings, hotkeys: { ...settings.hotkeys, [target]: chord } });
   };
 
-  if (!settings) return null;
   const { hotkeys, switching } = settings;
   const change = (patch: Partial<typeof switching>) => save({ ...settings, switching: { ...switching, ...patch } });
 
