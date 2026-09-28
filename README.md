@@ -32,7 +32,8 @@ Arrange them once. From then on, move the pointer past the edge of one screen an
 - 🎚️ **Crossing on your terms** — cross an edge right away, only while holding a modifier, or after a short dwell against it; a corner guard keeps the pointer home when you aim for a screen corner. Each edge can be closed or cross its own way.
 - 🔀 **Mac ↔ Windows** — Command and Control swap places between a Mac and a PC, so shortcuts stay under the same fingers. The layout is in logical pixels, so a 150% Windows display lines up with a Mac's.
 - 🧩 **Arrange screens** — the Arrange page shows the screens of every device in the group; drag them into place, and the whole group has the new layout. While it is open, the other devices show their numbers on their own screens.
-- 📋 **The clipboard comes along** — copy on one device, move the pointer over and paste on the next; what you copy there comes back with you. Text and images; what a password manager copies never leaves the device, and **Settings → Clipboard** turns sharing or a kind off.
+- 📋 **The clipboard comes along** — copy on one device, move the pointer over and paste on the next; what you copy there comes back with you. Text, images and files: copied files up to 1 GB are fetched ahead as the pointer comes (**Settings → Files** sets the limit). What a password manager copies never leaves the device, and **Settings → Clipboard** turns sharing or a kind off.
+- 📁 **Drag files across** — hold files or folders in Finder or Explorer, drag them past the edge and drop them on the other computer: its desktop, a folder, or an app window. What lands is checked end to end; **Settings → Files** turns dragging off.
 - ⌨️ **Hotkeys** — jump to a device by number or to the neighbour in a direction, lock the pointer to a device, or go home and pause crossing. Record your own combinations in the settings.
 - 📌 **Keys that stay here** — combinations you keep local (switching input methods, screenshots) act on this computer even while you control another. Media and volume keys go to the device you control, or stay here.
 - 🖲️ **Per-device pointer and wheel** — each device sets how fast the pointer and the wheel go on it, and can turn scrolling around for a Mac with natural scrolling.
@@ -66,7 +67,7 @@ The digits, arrows and L need the left Alt: on many layouts, AltGr (Ctrl+right A
 | M2 | Desk groups, screen layout, edge crossing, hotkeys | ✅ |
 | M3 | Desktop app: screen arrangement, pairing, tray, settings | 🚧 |
 | M4 | Clipboard hand-off | 🚧 |
-| M5 | Drag and drop files between devices | |
+| M5 | Drag and drop files between devices | 🚧 |
 
 ## 📥 Install
 
@@ -139,6 +140,15 @@ A Mac with natural scrolling scrolls a PC the other way round. On the computer b
 
 **The volume keys change the other computer's volume.**
 While you control another device, media and volume keys go there. To keep them on the computer in front of you, choose **Keep here** under **Settings → Control → Media keys**.
+
+**A drag of files stops at the edge.**
+Files cross only where the pointer can, and only between devices that both have dragging on (**Settings → Files**). A drag of anything else, such as selected text or a window, stays at the edge as before.
+
+**I dropped files and the pointer stopped moving.**
+Let go before all the files arrived, the drop waits where you released it and lands once they are there; a card next to it shows how far they are. The pointer holds still meanwhile, and Esc cancels the drop. Only large drags wait long.
+
+**Pasting gives what was on the clipboard before.**
+Copied files come over in the background as the pointer arrives; a paste before they are there gives the older content, and a hint says when they are ready. Files over the limit are not fetched ahead: drag them over instead, or raise the limit under **Settings → Files**.
 
 **Some windows ignore the mouse and keyboard.**
 Secure input is out of reach: on Windows, the lock screen, UAC prompts and windows running as administrator cannot be controlled remotely; on macOS, secure input (password fields, terminals with Secure Keyboard Entry) stops the keyboard from being captured.
