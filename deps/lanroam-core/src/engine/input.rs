@@ -11,6 +11,8 @@
 //!   newer one preempts the older, and local input takes it back. Whatever
 //!   a controller holds is released when it leaves, is preempted, or its
 //!   link drops.
+//!
+//! Where the pointer goes, the clipboard actor hears too.
 
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
@@ -26,6 +28,7 @@ use lanroam_input::{InputError, MouseButton, Point, Rect};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use super::EngineEvent;
+use super::clipboard::ClipMsg;
 use crate::protocol::{Control, Datagram, released};
 use crate::settings::InputSettings;
 
@@ -366,6 +369,8 @@ pub(super) struct Input {
     controller: Option<String>,
     /// Scrolling from the controller, as the settings want it here
     wheel: WheelScale,
+    /// The clipboard actor's inbox
+    clip: mpsc::UnboundedSender<ClipMsg>,
 }
 
 impl Input {
@@ -377,6 +382,7 @@ impl Input {
         links: watch::Receiver<Links>,
         events: mpsc::UnboundedSender<EngineEvent>,
         inbox: mpsc::UnboundedSender<InputMsg>,
+        clip: mpsc::UnboundedSender<ClipMsg>,
     ) -> Self {
         let switch = Arc::new(Mutex::new(Switch::new(local)));
         let capture = backend.capture(Arc::clone(&switch), emit_sink(&inbox));
@@ -399,6 +405,7 @@ impl Input {
             home_pending: false,
             controller: None,
             wheel: WheelScale::default(),
+            clip,
         };
         input.took_capture(capture);
         input.took_injection(injection);
@@ -591,6 +598,7 @@ impl Input {
                 self.unresponsive = false;
                 self.seq = 0;
                 self.send(&device, Control::Enter { x: at.x, y: at.y });
+                let _ = self.clip.send(ClipMsg::Entered(device.clone()));
                 let name = self.name(&device);
                 self.notify(ControlEvent::Controlling {
                     name,
@@ -599,6 +607,7 @@ impl Input {
             }
             Emit::Leave { device } => {
                 self.send(&device, Control::Leave);
+                let _ = self.clip.send(ClipMsg::Left(device.clone()));
                 if self.target.as_deref() == Some(device.as_str()) {
                     self.target = None;
                     self.home_pending = true;
@@ -652,6 +661,7 @@ impl Input {
             }
             Emit::Takeover => {
                 if let Some(controller) = self.controller.take() {
+                    let _ = self.clip.send(ClipMsg::TookBack);
                     self.replay(Op::ReleaseAll);
                     self.send(
                         &controller,
@@ -744,6 +754,7 @@ impl Input {
         self.replay(Op::Enter(at));
         switch::lock(&self.switch).set_controlled(true);
         if fresh {
+            let _ = self.clip.send(ClipMsg::ControlledBy(from.to_string()));
             let name = self.name(from);
             self.notify(ControlEvent::ControlledBy {
                 name,
@@ -756,6 +767,7 @@ impl Input {
     /// The controller let go (or its link dropped): release what it held
     fn free(&mut self, from: &str) {
         self.controller = None;
+        let _ = self.clip.send(ClipMsg::Freed(from.to_string()));
         self.replay(Op::ReleaseAll);
         switch::lock(&self.switch).set_controlled(false);
         let name = self.name(from);

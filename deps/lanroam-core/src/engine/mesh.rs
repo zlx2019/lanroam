@@ -16,6 +16,8 @@
 //! - **Input**: input messages and datagrams go to the input actor, which
 //!   also gets the links to send on and the online
 //!   part of the layout: a device that is offline cannot be crossed into
+//! - **Clipboard**: offers and content streams go to the clipboard actor,
+//!   with what every member shares
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -29,9 +31,10 @@ use lanroam_input::world::World;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{Instant, MissedTickBehavior};
 
+use super::clipboard::ClipMsg;
 use super::input::{InputMsg, LinkHandle, Links};
 use super::{EngineError, EngineEvent, Spot, Status};
-use crate::group::{GroupDoc, GroupStore, Profile};
+use crate::group::{ClipboardShare, GroupDoc, GroupStore, Profile};
 use crate::layout;
 use crate::protocol::{Control, Datagram, FRAMING, Purpose, reason_code};
 use crate::transport::{Link, Transport, TransportError, close_code};
@@ -138,6 +141,13 @@ pub(super) enum Msg {
         /// Done
         reply: oneshot::Sender<Result<(), EngineError>>,
     },
+    /// Set what of this device's clipboard is shared
+    SetClipboard {
+        /// What
+        share: ClipboardShare,
+        /// Done
+        reply: oneshot::Sender<Result<(), EngineError>>,
+    },
     /// Set the edge between two members
     SetEdge {
         /// One member
@@ -201,8 +211,10 @@ pub(super) struct Wiring {
     pub(super) advertise: Advertise,
     /// The input actor's inbox
     pub(super) input: mpsc::UnboundedSender<InputMsg>,
-    /// Member links, for the input actor
+    /// Member links, for the input and clipboard actors
     pub(super) links: watch::Sender<Links>,
+    /// The clipboard actor's inbox
+    pub(super) clip: mpsc::UnboundedSender<ClipMsg>,
 }
 
 /// A registered member link
@@ -251,6 +263,8 @@ pub(super) struct Mesh {
     swap_cmd_ctrl: Option<bool>,
     /// The pointer speed, once changed while running
     pointer_speed: Option<u32>,
+    /// What of the clipboard is shared, once changed while running
+    clipboard: Option<ClipboardShare>,
     /// Channels
     wiring: Wiring,
     /// Group ID currently advertised
@@ -287,6 +301,7 @@ impl Mesh {
             screens: None,
             swap_cmd_ctrl: None,
             pointer_speed: None,
+            clipboard: None,
             wiring,
             advertised: None,
             peers: HashMap::new(),
@@ -380,6 +395,17 @@ impl Mesh {
             }
             Msg::SetPointerSpeed { speed, reply } => {
                 let _ = reply.send(self.set_pointer_speed(speed));
+            }
+            Msg::SetClipboard { share, reply } => {
+                let result = match self.doc {
+                    Some(_) => {
+                        self.clipboard = Some(share);
+                        self.commit();
+                        Ok(())
+                    }
+                    None => Err(EngineError::NoGroup),
+                };
+                let _ = reply.send(result);
             }
             Msg::SetEdge {
                 a,
@@ -598,6 +624,11 @@ impl Mesh {
             conn.clone(),
             self.wiring.input.clone(),
         ));
+        tokio::spawn(accept_streams(
+            info.fingerprint.clone(),
+            conn.clone(),
+            self.wiring.clip.clone(),
+        ));
         if let Some(doc) = &self.doc {
             let _ = out.send(Control::Group { doc: doc.clone() });
         }
@@ -651,6 +682,15 @@ impl Mesh {
             | Control::Released { .. }
             | Control::Pong { .. }) => {
                 let _ = self.wiring.input.send(InputMsg::Control { from: fp, msg });
+            }
+            Control::ClipOffer { kind, size, hash } => {
+                let offer = ClipMsg::Offer {
+                    from: fp,
+                    kind,
+                    size,
+                    hash,
+                };
+                let _ = self.wiring.clip.send(offer);
             }
             other => {
                 tracing::debug!(kind = other.kind(), from = %self.name_of(&fp), "ignoring control message");
@@ -776,6 +816,9 @@ impl Mesh {
         if let Some(speed) = self.pointer_speed {
             profile.pointer_speed = speed;
         }
+        if let Some(share) = self.clipboard {
+            profile.clipboard = share;
+        }
         profile
     }
 
@@ -874,6 +917,7 @@ impl Mesh {
         }
         self.publish_links();
         self.publish_world();
+        self.publish_shares();
         self.emit(EngineEvent::Group(Some(shared)));
         self.maintain();
     }
@@ -894,6 +938,7 @@ impl Mesh {
         }
         self.publish_links();
         self.publish_world();
+        self.publish_shares();
         self.announced.clear();
         self.dials.clear();
         self.emit(EngineEvent::Group(None));
@@ -1005,6 +1050,17 @@ impl Mesh {
         });
     }
 
+    /// Hand the clipboard actor what every member shares
+    fn publish_shares(&self) {
+        let shares = self
+            .doc
+            .iter()
+            .flat_map(|doc| doc.members())
+            .map(|(fp, record)| (fp.to_string(), record.profile.clipboard))
+            .collect();
+        let _ = self.wiring.clip.send(ClipMsg::Shares(shares));
+    }
+
     /// A member's name for messages
     fn name_of(&self, fp: &str) -> String {
         self.doc
@@ -1075,6 +1131,25 @@ async fn read_datagrams(
                 }
             }
             None => {}
+        }
+    }
+}
+
+/// Hand the streams a member opens on its link (content streams) to the
+/// clipboard actor
+async fn accept_streams(
+    from: String,
+    conn: quinn::Connection,
+    clip: mpsc::UnboundedSender<ClipMsg>,
+) {
+    while let Ok((send, recv)) = conn.accept_bi().await {
+        let stream = ClipMsg::Stream {
+            from: from.clone(),
+            send,
+            recv,
+        };
+        if clip.send(stream).is_err() {
+            return;
         }
     }
 }

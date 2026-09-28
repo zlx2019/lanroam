@@ -27,21 +27,26 @@ impl MemoryClipboard {
 
     /// The user copies `content` here
     pub fn copy(&self, content: Content) {
-        let mut state = self.lock();
-        state.stamp += 1;
-        state.content = Some(content);
-        state.concealed = false;
+        self.put(content, false);
     }
 
     /// A password manager copies `content` here, marked concealed
     pub fn copy_concealed(&self, content: Content) {
-        self.copy(content);
-        self.lock().concealed = true;
+        self.put(content, true);
     }
 
     /// What the clipboard holds, concealed or not
     pub fn content(&self) -> Option<Content> {
         self.lock().content.clone()
+    }
+
+    /// Hold `content` from now on; the new stamp
+    fn put(&self, content: Content, concealed: bool) -> i64 {
+        let mut state = self.lock();
+        state.stamp += 1;
+        state.content = Some(content);
+        state.concealed = concealed;
+        state.stamp
     }
 
     /// The state, even after a panic elsewhere
@@ -64,8 +69,7 @@ impl Clipboard for MemoryClipboard {
         })
     }
 
-    fn write(&self, content: &Content) -> Result<(), ClipboardError> {
-        self.copy(content.clone());
-        Ok(())
+    fn write(&self, content: &Content) -> Result<Option<i64>, ClipboardError> {
+        Ok(Some(self.put(content.clone(), false)))
     }
 }

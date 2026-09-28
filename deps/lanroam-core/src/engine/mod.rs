@@ -9,8 +9,9 @@
 //! Incoming connections are sorted by the purpose they declare: member links
 //! go to the mesh, joins run a sponsor task that shows a PIN, diagnostics
 //! answer pings. Keyboard and mouse, in both directions, are the input
-//! actor's.
+//! actor's; the clipboard, which follows the pointer, the clipboard actor's.
 
+mod clipboard;
 mod input;
 mod mesh;
 
@@ -24,6 +25,7 @@ use std::time::{Duration, Instant};
 
 use lan_kit::identity::{self, IdentityError};
 use lan_kit::{Peer, PeerEvent, PeerInfo};
+use lanroam_clipboard::Clipboard;
 use lanroam_input::config::{Chord, EdgeSettings};
 use lanroam_input::{Edge, Point};
 use thiserror::Error;
@@ -32,12 +34,13 @@ use tokio::task::JoinHandle;
 
 use crate::diag;
 use crate::group::join::{self, Challenge, JoinError, JoinGate, Verdict};
-use crate::group::{GroupDoc, GroupStore, Standing};
+use crate::group::{ClipboardShare, GroupDoc, GroupStore, Standing};
 use crate::layout::LayoutError;
 use crate::node::{Node, NodeConfig, NodeError};
 use crate::protocol::{Purpose, join_denied, reason_code};
 use crate::settings::InputSettings;
 use crate::transport::{Incoming, Link, Transport, TransportError, closed_because};
+use clipboard::Clip;
 use input::{Input, InputMsg};
 use mesh::{Mesh, Msg, Wiring};
 
@@ -196,11 +199,12 @@ struct Inner {
 
 impl Engine {
     /// Start a node and run it in its desk group (if any), sharing the
-    /// keyboard and mouse of `input`, with the stream of events for the
-    /// user
+    /// keyboard and mouse of `input` and the clipboard `clipboard`, with the
+    /// stream of events for the user
     pub async fn start(
         config: NodeConfig,
         input: Arc<dyn InputBackend>,
+        clipboard: Arc<dyn Clipboard>,
     ) -> Result<(Self, mpsc::UnboundedReceiver<EngineEvent>), EngineError> {
         let store = GroupStore::new(&config.data_dir);
         let data_dir = Some(config.data_dir.clone());
@@ -209,11 +213,21 @@ impl Engine {
         let transport = Arc::clone(node.transport());
         let info = node.info().clone();
         let peers = Some(peer_events);
-        Self::launch(store, data_dir, transport, info, Some(node), peers, input)
+        Self::launch(
+            store,
+            data_dir,
+            transport,
+            info,
+            Some(node),
+            peers,
+            input,
+            clipboard,
+        )
     }
 
-    /// Wire the mesh, the input actor, the accept loop, the display poller
-    /// and the discovery feed around a bound transport
+    /// Wire the mesh, the input and clipboard actors, the accept loop, the
+    /// display poller and the discovery feed around a bound transport
+    #[allow(clippy::too_many_arguments)] // one call site, and the tests
     fn launch(
         store: GroupStore,
         data_dir: Option<PathBuf>,
@@ -222,6 +236,7 @@ impl Engine {
         node: Option<Arc<Node>>,
         peer_events: Option<mpsc::Receiver<PeerEvent>>,
         backend: Arc<dyn InputBackend>,
+        clipboard: Arc<dyn Clipboard>,
     ) -> Result<(Self, mpsc::UnboundedReceiver<EngineEvent>), EngineError> {
         let doc = store.load()?;
         let (events_tx, events) = mpsc::unbounded_channel();
@@ -245,12 +260,20 @@ impl Engine {
         let reject = Arc::new(Notify::new());
         let (input_tx, input_inbox) = mpsc::unbounded_channel();
         let (links_tx, links_rx) = watch::channel(Arc::default());
+        let (clip_tx, clip_inbox) = mpsc::unbounded_channel();
+        let clip = Clip::new(
+            &info.fingerprint,
+            clipboard,
+            links_rx.clone(),
+            clip_tx.clone(),
+        );
         let input = Input::new(
             &info.fingerprint,
             Arc::clone(&backend),
             links_rx,
             events_tx.clone(),
             input_tx.clone(),
+            clip_tx.clone(),
         );
         let input_settings = data_dir
             .as_deref()
@@ -265,11 +288,13 @@ impl Engine {
             advertise: Box::new(advertise),
             input: input_tx.clone(),
             links: links_tx,
+            clip: clip_tx,
         };
         let mesh = Mesh::new(info.clone(), Arc::clone(&transport), store, doc, wiring);
         let mut tasks = vec![
             tokio::spawn(mesh.run(inbox)),
             tokio::spawn(input.run(input_inbox)),
+            tokio::spawn(clip.run(clip_inbox)),
             tokio::spawn(poll_screens(backend, inbox_tx.clone())),
         ];
         tasks.push(tokio::spawn(accept_loop(
@@ -380,6 +405,12 @@ impl Engine {
     pub async fn set_pointer_speed(&self, speed: u32) -> Result<(), EngineError> {
         self.ask(|reply| Msg::SetPointerSpeed { speed, reply })
             .await?
+    }
+
+    /// Set what of this device's clipboard is shared with the group: handed
+    /// over as the pointer leaves, taken in as it comes
+    pub async fn set_clipboard(&self, share: ClipboardShare) -> Result<(), EngineError> {
+        self.ask(|reply| Msg::SetClipboard { share, reply }).await?
     }
 
     /// Remove a member from the group

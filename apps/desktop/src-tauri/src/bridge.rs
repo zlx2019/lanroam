@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use lanroam_core::engine::{Engine, EngineEvent, PlatformInput};
+use lanroam_core::lanroam_clipboard::SystemClipboard;
 use lanroam_core::node::NodeConfig;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
@@ -67,7 +68,8 @@ pub async fn start(
     if let Some(port) = std::env::var(PORT_VAR).ok().and_then(|p| p.parse().ok()) {
         config.port = port;
     }
-    let (engine, events) = Engine::start(config, Arc::new(PlatformInput)).await?;
+    let (engine, events) =
+        Engine::start(config, Arc::new(PlatformInput), Arc::new(SystemClipboard)).await?;
     let settings = Settings::load(&data_dir);
     let state = AppState {
         engine,

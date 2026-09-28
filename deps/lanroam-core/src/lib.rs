@@ -6,7 +6,8 @@
 //! ```text
 //! ┌─ engine    ─ a device in its desk group: member links,
 //! │              group sync, joins, sharing keyboard and mouse
-//! │              with arbitration of who controls whom           (M2)
+//! │              with arbitration of who controls whom (M2), the
+//! │              clipboard following the pointer               (M4)
 //! ├─ node      ─ wiring: identity + transport + discovery        (M0)
 //! ├─ transport ─ QUIC per peer: fingerprint-pinned mutual TLS 1.3,
 //! │              the Hello gate, identity probes for discovery  (M0)
@@ -15,13 +16,13 @@
 //! ├─ group     ─ desk group: membership document, PIN joins      (M2)
 //! ├─ layout    ─ where members' desktops sit on the shared canvas (M2)
 //! ├─ settings  ─ this device's input settings (input.json)      (M3)
-//! ├─ clipboard ─ clipboard hand-off on entering a device          (M4)
 //! └─ dnd       ─ cross-device file drag and drop                  (M5)
 //! ```
 //!
 //! Discovery, device identity, mutual TLS and framing come from [`lan_kit`],
 //! the foundation shared with the sibling apps; keyboard and mouse capture,
-//! injection and edge switching from [`lanroam_input`].
+//! injection and edge switching from [`lanroam_input`]; the system
+//! clipboard from [`lanroam_clipboard`].
 
 use std::net::Ipv4Addr;
 
@@ -40,6 +41,7 @@ pub mod transport;
 mod test_util;
 
 pub use lan_kit;
+pub use lanroam_clipboard;
 pub use lanroam_input;
 
 /// Lanroam's constants on the LAN

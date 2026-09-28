@@ -61,7 +61,7 @@ impl Clipboard for SystemClipboard {
         Ok(to_image(image).map(Content::Image))
     }
 
-    fn write(&self, content: &Content) -> Result<(), ClipboardError> {
+    fn write(&self, content: &Content) -> Result<Option<i64>, ClipboardError> {
         let mut clipboard = arboard::Clipboard::new()?;
         match content {
             Content::Text(text) => clipboard.set_text(text.as_str())?,
@@ -71,7 +71,7 @@ impl Clipboard for SystemClipboard {
                 bytes: Cow::Borrowed(&image.rgba),
             })?,
         }
-        Ok(())
+        Ok(stamp())
     }
 }
 

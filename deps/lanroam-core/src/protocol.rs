@@ -9,6 +9,9 @@
 //! - **Datagrams**: unreliable and unordered, for high-frequency data where
 //!   only the latest value matters (pointer motion). A compact binary
 //!   [`Datagram`] codec; the first byte is the kind
+//! - **Content streams**: a bidirectional stream per transfer, opened by
+//!   the side that wants the content, so a large one never holds up input.
+//!   It opens with a [`StreamRequest`] frame
 //!
 //! Hello declares what the connection is for ([`Purpose`]): a desk group
 //! member's link, a join through a PIN (see [`crate::group::join`]), or
@@ -21,12 +24,18 @@
 //! [`Datagram::Motion`]). The controlled side may end it with
 //! [`Control::Released`]. Displays travel in the group document.
 //!
+//! Clipboards follow the pointer: a member offers its clipboard with
+//! [`Control::ClipOffer`] (a summary), and the receiver fetches the content
+//! over a content stream ([`StreamRequest::Clipboard`], answered with a
+//! [`ClipReply`] and the bytes) unless it holds it already.
+//!
 //! The protocol version is `major.minor`; a different major refuses the
 //! connection, a newer minor only adds messages an older peer may ignore.
 
 use bytes::{BufMut, Bytes, BytesMut};
 use lan_kit::PeerInfo;
 use lan_kit::frame::Framing;
+use lanroam_clipboard::Kind;
 use lanroam_input::MouseButton;
 use lanroam_input::switch::Request;
 use serde::{Deserialize, Serialize};
@@ -34,7 +43,7 @@ use serde::{Deserialize, Serialize};
 use crate::group::GroupDoc;
 
 /// Protocol version (major.minor), checked by the Hello gate
-pub const PROTOCOL_VERSION: &str = "2.1";
+pub const PROTOCOL_VERSION: &str = "2.2";
 
 /// ALPN of the QUIC connections; a client speaking anything else is refused
 /// during the TLS handshake
@@ -242,6 +251,16 @@ pub enum Control {
         /// What
         request: Ask,
     },
+    /// What the sender's clipboard holds, for the receiver to fetch over a
+    /// content stream unless it holds the same (since 2.2)
+    ClipOffer {
+        /// Text or image
+        kind: Kind,
+        /// Bytes before encoding (text, or RGBA pixels)
+        size: u64,
+        /// The content's hash ([`lanroam_clipboard::Content::hash`])
+        hash: String,
+    },
     /// One PIN attempt begins (sponsor → joiner): the sponsor's SPAKE2
     /// message
     JoinChallenge {
@@ -294,12 +313,38 @@ impl Control {
             Self::Identify => "identify",
             Self::PointerLocked { .. } => "pointer_locked",
             Self::Request { .. } => "request",
+            Self::ClipOffer { .. } => "clip_offer",
             Self::JoinChallenge { .. } => "join_challenge",
             Self::JoinAnswer { .. } => "join_answer",
             Self::JoinAccepted { .. } => "join_accepted",
             Self::JoinDenied { .. } => "join_denied",
         }
     }
+}
+
+/// First frame on a content stream: what the opener wants (since 2.2)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum StreamRequest {
+    /// The clipboard content offered with this hash
+    Clipboard {
+        /// Its hash, from the [`Control::ClipOffer`]
+        hash: String,
+    },
+}
+
+/// Answer to [`StreamRequest::Clipboard`]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ClipReply {
+    /// Here it comes: `len` bytes follow, then the stream ends (text as
+    /// UTF-8, an image as PNG)
+    Content {
+        /// How many bytes
+        len: u64,
+    },
+    /// Not held any more, or not for the asker
+    Gone,
 }
 
 /// Whether a peer's protocol version is compatible (same major)
@@ -501,6 +546,11 @@ mod tests {
             },
             Control::JoinDenied {
                 reason_code: join_denied::WRONG_PIN.into(),
+            },
+            Control::ClipOffer {
+                kind: Kind::Image,
+                size: 33_177_600,
+                hash: "ab".repeat(32),
             },
         ];
         let (mut a, mut b) = tokio::io::duplex(64 * 1024);

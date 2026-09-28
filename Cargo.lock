@@ -2446,6 +2446,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "lan-kit",
+ "lanroam-clipboard",
  "lanroam-input",
  "quinn",
  "rustls",

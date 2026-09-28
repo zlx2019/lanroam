@@ -13,6 +13,7 @@ use lanroam_core::engine::{
 use lanroam_core::group::GroupDoc;
 use lanroam_core::group::join::{PIN_ATTEMPTS, normalize_pin};
 use lanroam_core::lan_kit::{Peer, PeerInfo};
+use lanroam_core::lanroam_clipboard::{Clipboard, MemoryClipboard, SystemClipboard};
 use lanroam_core::lanroam_input::Edge;
 use lanroam_core::layout;
 use lanroam_core::node::NodeConfig;
@@ -73,12 +74,13 @@ pub(crate) async fn cmd_run(
     config.port = port;
     config.discovery_port = common.discovery_port;
     config.display_name = name;
-    let input: Arc<dyn InputBackend> = if dry_run {
-        Arc::new(DryRunInput)
+    // A dry run keeps its hands off this machine's clipboard too
+    let (input, clipboard): (Arc<dyn InputBackend>, Arc<dyn Clipboard>) = if dry_run {
+        (Arc::new(DryRunInput), Arc::new(MemoryClipboard::new()))
     } else {
-        Arc::new(PlatformInput)
+        (Arc::new(PlatformInput), Arc::new(SystemClipboard))
     };
-    let (engine, mut events) = Engine::start(config, input)
+    let (engine, mut events) = Engine::start(config, input, clipboard)
         .await
         .context("failed to start the node")?;
     println!(

@@ -10,8 +10,8 @@
 //!   the higher epoch wins, and at equal epochs the removal wins. Kicking
 //!   (or leaving) bumps the epoch and sets `removed`, a tombstone an old
 //!   copy cannot undo; joining again bumps the epoch once more
-//! - **Profile** (name, platform, displays) is written by the device itself
-//!   only and ordered by its own revision counter
+//! - **Profile** (name, platform, displays, what it shares) is written by
+//!   the device itself only and ordered by its own revision counter
 //! - **Placement** (where the device sits on the layout canvas) may be set
 //!   by any member; the latest write wins, ordered by a Lamport clock over
 //!   the document and the writer's fingerprint as tie-break
@@ -31,6 +31,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use lan_kit::PeerInfo;
+use lanroam_clipboard::Kind;
 use lanroam_input::config::{EdgeSettings, edge_key};
 use lanroam_input::{Point, Rect};
 use serde::{Deserialize, Serialize};
@@ -76,6 +77,44 @@ pub struct Profile {
     /// it, in percent
     #[serde(default = "normal_speed")]
     pub pointer_speed: u32,
+    /// What of its clipboard the device hands over and takes in
+    #[serde(default)]
+    pub clipboard: ClipboardShare,
+}
+
+/// What of its clipboard a device shares with the group: it hands over and
+/// takes in only these, and nothing goes to a device that does not take it
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ClipboardShare {
+    /// Sharing at all
+    pub on: bool,
+    /// Text
+    pub text: bool,
+    /// Images
+    pub image: bool,
+}
+
+impl Default for ClipboardShare {
+    /// Everything shared
+    fn default() -> Self {
+        Self {
+            on: true,
+            text: true,
+            image: true,
+        }
+    }
+}
+
+impl ClipboardShare {
+    /// Whether content of `kind` is shared
+    pub fn allows(&self, kind: Kind) -> bool {
+        self.on
+            && match kind {
+                Kind::Text => self.text,
+                Kind::Image => self.image,
+            }
+    }
 }
 
 /// Default of switches that start on
@@ -105,6 +144,7 @@ impl Profile {
             scale: full_scale(),
             swap_cmd_ctrl: enabled(),
             pointer_speed: normal_speed(),
+            clipboard: ClipboardShare::default(),
         }
     }
 
@@ -646,5 +686,23 @@ mod tests {
         fs::write(dir.0.join(GROUP_FILE), b"{not json").unwrap();
         assert_eq!(store.load().unwrap(), None);
         assert!(dir.0.join("group.json.bad").exists());
+    }
+
+    /// A profile from before clipboard sharing shares everything; turning
+    /// sharing or a kind off keeps it
+    #[test]
+    fn clipboard_share() {
+        let old: ClipboardShare = serde_json::from_str("{}").unwrap();
+        assert!(old.allows(Kind::Text) && old.allows(Kind::Image));
+        let off = ClipboardShare {
+            on: false,
+            ..ClipboardShare::default()
+        };
+        assert!(!off.allows(Kind::Text));
+        let no_images = ClipboardShare {
+            image: false,
+            ..ClipboardShare::default()
+        };
+        assert!(no_images.allows(Kind::Text) && !no_images.allows(Kind::Image));
     }
 }

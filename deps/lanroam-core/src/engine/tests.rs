@@ -4,6 +4,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 
 use lan_kit::DeviceIdentity;
+use lanroam_clipboard::{Content, Image, MemoryClipboard};
 use lanroam_input::inject::Injector;
 use lanroam_input::platform::EmitSink;
 use lanroam_input::switch::{self, Decision, Switch};
@@ -128,6 +129,8 @@ struct TestEngine {
     dir: TempDir,
     /// Its keyboard and mouse
     input: Arc<FakeInput>,
+    /// Its clipboard
+    clipboard: Arc<MemoryClipboard>,
 }
 
 impl TestEngine {
@@ -148,6 +151,7 @@ impl TestEngine {
         let transport = Arc::new(Transport::bind(identity, 0).unwrap());
         let input = Arc::new(input);
         let backend = Arc::clone(&input) as Arc<dyn InputBackend>;
+        let clipboard = Arc::new(MemoryClipboard::new());
         let (engine, events) = Engine::launch(
             GroupStore::new(&dir.0),
             Some(dir.0.clone()),
@@ -156,6 +160,7 @@ impl TestEngine {
             None,
             None,
             backend,
+            Arc::clone(&clipboard) as Arc<dyn Clipboard>,
         )
         .unwrap();
         Self {
@@ -163,6 +168,7 @@ impl TestEngine {
             events,
             dir,
             input,
+            clipboard,
         }
     }
 
@@ -1117,4 +1123,163 @@ async fn pointer_wheel_and_media_settings() {
         b.engine.set_pointer_speed(10).await,
         Err(EngineError::InvalidSettings)
     ));
+}
+
+/// Long enough for a hand-over that should not happen to have happened
+const SETTLE: Duration = Duration::from_millis(300);
+
+impl TestEngine {
+    /// Wait until the clipboard holds `want`
+    async fn until_clipboard(&self, want: &Content) {
+        let deadline = tokio::time::Instant::now() + WAIT;
+        loop {
+            let held = self.clipboard.content();
+            if held.as_ref() == Some(want) {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{want:?} not on the clipboard within {WAIT:?}: {held:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// Wait until the group knows what `fp` shares of its clipboard
+    async fn until_share(&self, fp: &str, share: ClipboardShare) {
+        self.until("the clipboard settings", |status| {
+            status
+                .doc
+                .as_ref()
+                .is_some_and(|doc| doc.devices[fp].profile.clipboard == share)
+        })
+        .await;
+    }
+}
+
+/// Controlling b from a: the pointer enters b from the left
+async fn enter_b(a: &TestEngine, b: &TestEngine) {
+    a.input.push((999, 500), 5.0, 0.0);
+    b.injected(&Injected::Move(Point::new(1, 500))).await;
+}
+
+/// The pointer on b comes back to a
+async fn back_to_a(a: &mut TestEngine) {
+    a.input.push((0, 0), -1000.0, 0.0);
+    a.expect("home", |event| {
+        matches!(event, EngineEvent::Control(ControlEvent::Home { .. })).then_some(())
+    })
+    .await;
+}
+
+/// Text of the tests
+fn text(text: &str) -> Content {
+    Content::Text(text.into())
+}
+
+/// What a device copies on its way in arrives; what is copied there comes
+/// back on the way out
+#[tokio::test]
+async fn clipboard_follows_the_pointer() {
+    let (mut a, b, _c) = row_of_three().await;
+    a.clipboard.copy(text("copied on a"));
+    enter_b(&a, &b).await;
+    b.until_clipboard(&text("copied on a")).await;
+
+    b.clipboard.copy(text("copied on b"));
+    back_to_a(&mut a).await;
+    a.until_clipboard(&text("copied on b")).await;
+}
+
+/// Images go over as well, pixel for pixel
+#[tokio::test]
+async fn images_follow_the_pointer() {
+    let (a, b, _c) = row_of_three().await;
+    let rgba = (0..64 * 48 * 4).map(|i| (i % 251) as u8).collect();
+    let image = Content::Image(Image {
+        width: 64,
+        height: 48,
+        rgba,
+    });
+    a.clipboard.copy(image.clone());
+    enter_b(&a, &b).await;
+    b.until_clipboard(&image).await;
+}
+
+/// What b held before the pointer came is not the user's to carry: only a
+/// copy made during the visit goes back
+#[tokio::test]
+async fn only_a_copy_made_there_comes_back() {
+    let (mut a, b, _c) = row_of_three().await;
+    b.clipboard.copy(text("on b all along"));
+    enter_b(&a, &b).await;
+    back_to_a(&mut a).await;
+    tokio::time::sleep(SETTLE).await;
+    assert_eq!(a.clipboard.content(), None);
+}
+
+/// A password manager's copy never leaves; the next plain copy does
+#[tokio::test]
+async fn concealed_content_stays_home() {
+    let (mut a, b, _c) = row_of_three().await;
+    a.clipboard.copy_concealed(text("hunter2"));
+    enter_b(&a, &b).await;
+    tokio::time::sleep(SETTLE).await;
+    assert_eq!(b.clipboard.content(), None);
+
+    back_to_a(&mut a).await;
+    a.clipboard.copy(text("plain"));
+    enter_b(&a, &b).await;
+    b.until_clipboard(&text("plain")).await;
+}
+
+/// A device taking no images gets none (text still comes), and one that
+/// shares nothing hands nothing over
+#[tokio::test]
+async fn clipboard_settings_are_kept() {
+    let (mut a, b, _c) = row_of_three().await;
+    let no_images = ClipboardShare {
+        image: false,
+        ..ClipboardShare::default()
+    };
+    b.engine.set_clipboard(no_images).await.unwrap();
+    a.until_share(&b.fp(), no_images).await;
+    let image = Content::Image(Image {
+        width: 1,
+        height: 1,
+        rgba: vec![1, 2, 3, 4],
+    });
+    a.clipboard.copy(image);
+    enter_b(&a, &b).await;
+    tokio::time::sleep(SETTLE).await;
+    assert_eq!(b.clipboard.content(), None);
+    back_to_a(&mut a).await;
+
+    a.clipboard.copy(text("text is fine"));
+    enter_b(&a, &b).await;
+    b.until_clipboard(&text("text is fine")).await;
+    back_to_a(&mut a).await;
+
+    let off = ClipboardShare {
+        on: false,
+        ..ClipboardShare::default()
+    };
+    b.engine.set_clipboard(off).await.unwrap();
+    a.until_share(&b.fp(), off).await;
+    enter_b(&a, &b).await;
+    b.clipboard.copy(text("stays on b"));
+    back_to_a(&mut a).await;
+    tokio::time::sleep(SETTLE).await;
+    assert_eq!(a.clipboard.content(), Some(text("text is fine")));
+}
+
+/// The pointer goes a → b → c: what was copied on b reaches c, through a
+#[tokio::test]
+async fn a_copy_is_passed_on() {
+    let (a, b, c) = row_of_three().await;
+    enter_b(&a, &b).await;
+    b.clipboard.copy(text("copied on b"));
+    a.input.push((0, 0), 1000.0, 0.0);
+    c.until_clipboard(&text("copied on b")).await;
+    a.until_clipboard(&text("copied on b")).await;
 }

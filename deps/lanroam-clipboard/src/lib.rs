@@ -53,6 +53,7 @@ pub trait Clipboard: Send + Sync {
     /// this device: `None` when it is empty, holds files, is concealed, or
     /// is too large
     fn read(&self) -> Result<Option<Content>, ClipboardError>;
-    /// Put `content` on the clipboard, as a copy here would
-    fn write(&self, content: &Content) -> Result<(), ClipboardError>;
+    /// Put `content` on the clipboard, as a copy here would; the stamp it
+    /// left, read right after
+    fn write(&self, content: &Content) -> Result<Option<i64>, ClipboardError>;
 }

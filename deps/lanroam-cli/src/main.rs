@@ -66,8 +66,9 @@ enum Command {
         /// Display name for this run only
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
-        /// Capture nothing and print the input received instead of
-        /// injecting it (a second instance on the same machine)
+        /// Capture nothing, print the input received instead of injecting
+        /// it, and keep to a clipboard of its own (a second instance on the
+        /// same machine)
         #[arg(long)]
         dry_run: bool,
     },
