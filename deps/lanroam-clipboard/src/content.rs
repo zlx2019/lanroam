@@ -1,7 +1,10 @@
 //! Clipboard content as it travels: the kinds, the hash devices compare,
-//! and the bytes on the wire.
+//! and the bytes on the wire. Copied files travel as files instead (the
+//! engine's file transfer); only their hash is the clipboard's.
 
 use std::io::Cursor;
+use std::path::PathBuf;
+use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +25,8 @@ pub enum Kind {
     Text,
     /// An image
     Image,
+    /// Files copied
+    Files,
 }
 
 /// An image as pixels
@@ -42,6 +47,8 @@ pub enum Content {
     Text(String),
     /// An image
     Image(Image),
+    /// Files copied, where they are on this device
+    Files(Vec<PathBuf>),
 }
 
 impl Content {
@@ -50,21 +57,25 @@ impl Content {
         match self {
             Self::Text(_) => Kind::Text,
             Self::Image(_) => Kind::Image,
+            Self::Files(_) => Kind::Files,
         }
     }
 
-    /// Its size before encoding: bytes of text, or of RGBA pixels
+    /// Its size before encoding: bytes of text, or of RGBA pixels (files:
+    /// none, their bytes are on disk)
     pub fn size(&self) -> usize {
         match self {
             Self::Text(text) => text.len(),
             Self::Image(image) => image.rgba.len(),
+            Self::Files(_) => 0,
         }
     }
 
     /// BLAKE3 of the content, in hex: equal hashes, same content. Text is
     /// hashed as its bytes, an image as its size and pixels (never as an
-    /// encoding, which differs from machine to machine); a kind prefix
-    /// keeps the two apart
+    /// encoding, which differs from machine to machine), files as their
+    /// paths, sizes and modification times (never their bytes); a kind
+    /// prefix keeps them apart
     pub fn hash(&self) -> String {
         let mut hasher = blake3::Hasher::new();
         match self {
@@ -78,6 +89,21 @@ impl Content {
                 hasher.update(&image.height.to_le_bytes());
                 hasher.update(&image.rgba);
             }
+            Self::Files(paths) => {
+                hasher.update(b"f:");
+                for path in paths {
+                    hasher.update(path.to_string_lossy().as_bytes());
+                    let meta = std::fs::metadata(path).ok();
+                    let size = meta.as_ref().map_or(0, std::fs::Metadata::len);
+                    let modified = meta
+                        .and_then(|meta| meta.modified().ok())
+                        .and_then(|at| at.duration_since(UNIX_EPOCH).ok())
+                        .map_or(0, |since| since.as_nanos());
+                    hasher.update(&[0]);
+                    hasher.update(&size.to_le_bytes());
+                    hasher.update(&modified.to_le_bytes());
+                }
+            }
         }
         hasher.finalize().to_hex().to_string()
     }
@@ -87,6 +113,7 @@ impl Content {
         let bytes = match self {
             Self::Text(text) => text.as_bytes().to_vec(),
             Self::Image(image) => encode_png(image)?,
+            Self::Files(_) => return Err(ClipboardError::Files),
         };
         if bytes.len() > MAX_BYTES {
             return Err(ClipboardError::TooLarge(bytes.len()));
@@ -104,6 +131,7 @@ impl Content {
                 .map(Self::Text)
                 .map_err(|_| ClipboardError::Text),
             Kind::Image => decode_png(&bytes).map(Self::Image),
+            Kind::Files => Err(ClipboardError::Files),
         }
     }
 }
@@ -202,6 +230,22 @@ mod tests {
         let decoded = Content::decode(Kind::Image, bytes).unwrap();
         assert_eq!(decoded, original);
         assert_eq!(decoded.hash(), original.hash());
+    }
+
+    #[test]
+    fn files_hash_as_they_are() {
+        let dir = std::env::temp_dir().join(format!("lanroam-clip-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.txt");
+        std::fs::write(&path, b"one").unwrap();
+        let files = Content::Files(vec![path.clone()]);
+        let before = files.hash();
+        assert_eq!(before, Content::Files(vec![path.clone()]).hash());
+        // Changed since: another hash
+        std::fs::write(&path, b"three").unwrap();
+        assert_ne!(before, files.hash());
+        assert!(files.encode().is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

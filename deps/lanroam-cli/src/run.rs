@@ -463,7 +463,10 @@ fn print_event(event: &EngineEvent, seen: &mut Option<Arc<GroupDoc>>) {
         }
         // Only the app records key combinations (its settings), and drags
         // files (it has a desktop to drag on)
-        EngineEvent::Recorded(_) | EngineEvent::Receiving(_) | EngineEvent::DragFailed { .. } => {}
+        EngineEvent::Recorded(_)
+        | EngineEvent::Receiving(_)
+        | EngineEvent::DragFailed { .. }
+        | EngineEvent::CopiedFiles(_) => {}
         EngineEvent::Group(Some(doc)) => {
             let names = |doc: &GroupDoc| -> Vec<String> {
                 doc.members()

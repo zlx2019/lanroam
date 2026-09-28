@@ -13,6 +13,12 @@
 //! - **Passing on**: content taken from one member while this device
 //!   controls another goes on to that one (the pointer went a → b → c: what
 //!   was copied on b reaches c through a)
+//! - **Files**: copied files are offered as a summary
+//!   ([`Control::ClipFiles`]) and fetched ahead of a paste with the file
+//!   transfer of drags, unless they are larger than this device fetches
+//!   ahead. They land in a folder of their own (see [`super::drag`]), which
+//!   the clipboard here then holds; it goes a while after the clipboard
+//!   moves on (a paste may still be copying from it)
 //!
 //! Nothing leaves or enters a device against its settings, and nothing
 //! goes to a member whose settings refuse it (its profile says, see
@@ -21,14 +27,18 @@
 //! always on a blocking thread.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use lan_kit::frame::FrameError;
 use lanroam_clipboard::{Clipboard, ClipboardError, Content, Kind, MAX_BYTES, MAX_PIXEL_BYTES};
 use thiserror::Error;
 use tokio::sync::{mpsc, watch};
 
+use super::EngineEvent;
+use super::drag::{self, KEEP_AFTER_DROP, failed};
+use super::files::{self, Offers};
 use super::input::Links;
 use crate::group::ClipboardShare;
 use crate::protocol::{ClipReply, Control, FRAMING, StreamRequest};
@@ -39,6 +49,59 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 /// Priority of content streams, below the control stream's (0): input goes
 /// out first
 const CONTENT_PRIORITY: i32 = -1;
+
+/// Files fetched ahead taking longer than this are said to be ready: the
+/// user may be waiting to paste them
+const READY_HINT_AFTER: Duration = Duration::from_secs(1);
+
+/// What became of files copied on another member
+/// ([`EngineEvent::CopiedFiles`])
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CopiedFiles {
+    /// Fetched: the clipboard here holds them, ready to paste
+    Ready {
+        /// The first file or folder copied
+        name: String,
+        /// How many were copied
+        count: usize,
+    },
+    /// Larger than this device fetches ahead: left where they are
+    TooLarge {
+        /// The first file or folder copied
+        name: String,
+        /// How many were copied
+        count: usize,
+        /// Bytes in all
+        bytes: u64,
+        /// Most bytes fetched ahead
+        limit: u64,
+    },
+    /// They did not come
+    Failed {
+        /// The first file or folder copied
+        name: String,
+        /// How many were copied
+        count: usize,
+        /// Why (a [`super::drag_failed`] code)
+        reason: &'static str,
+    },
+}
+
+/// Files a member offers, copied there ([`Control::ClipFiles`])
+pub(super) struct FilesOffer {
+    /// The member
+    pub(super) from: String,
+    /// The copy's hash
+    pub(super) hash: String,
+    /// The first file or folder copied
+    pub(super) name: String,
+    /// How many were copied
+    pub(super) count: usize,
+    /// Bytes in all
+    pub(super) bytes: u64,
+    /// What pulls them
+    pub(super) token: String,
+}
 
 /// The clipboard actor's inbox
 pub(super) enum ClipMsg {
@@ -52,6 +115,15 @@ pub(super) enum ClipMsg {
     Freed(String),
     /// Local input took this device back from its controller
     TookBack,
+    /// A member offered files copied there
+    Files(FilesOffer),
+    /// Files being fetched ahead did not come
+    FilesFailed {
+        /// Which fetch
+        number: u64,
+        /// Why (a [`super::drag_failed`] code)
+        reason: &'static str,
+    },
     /// A member offered its clipboard
     Offer {
         /// The member
@@ -82,8 +154,15 @@ pub(super) enum ClipMsg {
         /// The content, if it came
         content: Option<Content>,
     },
-    /// What every member shares, this one included, by fingerprint
-    Shares(HashMap<String, ClipboardShare>),
+    /// What every member shares, this one included, by fingerprint, and
+    /// the most this device fetches ahead of files copied elsewhere (MiB,
+    /// 0 for no limit)
+    Shares {
+        /// What each member shares
+        shares: HashMap<String, ClipboardShare>,
+        /// The limit
+        prefetch: u32,
+    },
 }
 
 /// Why a transfer failed
@@ -152,6 +231,33 @@ struct Pending {
     hash: String,
     /// The clipboard's stamp when the offer came
     stamp: Option<i64>,
+    /// Files being fetched, if that is what was offered
+    files: Option<Fetching>,
+}
+
+/// Files copied elsewhere, being fetched ahead of a paste
+struct Fetching {
+    /// The first file or folder copied
+    name: String,
+    /// How many were copied
+    count: usize,
+    /// Where they land
+    dir: PathBuf,
+    /// The transfer
+    task: tokio::task::AbortHandle,
+    /// Since when
+    since: Instant,
+}
+
+/// Files copied here, as offered to others
+#[derive(Clone)]
+struct Summary {
+    /// The first file or folder copied
+    name: String,
+    /// How many were copied
+    count: usize,
+    /// Bytes in all
+    bytes: u64,
 }
 
 /// The actor
@@ -164,8 +270,21 @@ pub(super) struct Clip {
     links: watch::Receiver<Links>,
     /// The actor's own inbox, for its fetches to report into
     inbox: mpsc::UnboundedSender<ClipMsg>,
+    /// Where the user hears of files copied elsewhere
+    events: mpsc::UnboundedSender<EngineEvent>,
+    /// Files this device offers, by token
+    offers: Offers,
     /// What each member shares
     shares: HashMap<String, ClipboardShare>,
+    /// The most bytes of files copied elsewhere fetched ahead, in MiB; 0
+    /// for no limit
+    prefetch: u32,
+    /// The files copied here last described, by hash
+    described: Option<(String, Summary)>,
+    /// The folder of the files fetched here that the clipboard holds
+    staged: Option<PathBuf>,
+    /// The hash of the latest files too large to fetch ahead, told once
+    skipped: Option<String>,
     /// What the clipboard here holds
     held: Held,
     /// The stamp right after this device last wrote to the clipboard
@@ -189,13 +308,21 @@ impl Clip {
         clipboard: Arc<dyn Clipboard>,
         links: watch::Receiver<Links>,
         inbox: mpsc::UnboundedSender<ClipMsg>,
+        events: mpsc::UnboundedSender<EngineEvent>,
+        offers: Offers,
     ) -> Self {
         Self {
             local: local.to_string(),
             clipboard,
             links,
             inbox,
+            events,
+            offers,
             shares: HashMap::new(),
+            prefetch: crate::group::FileShare::default().prefetch,
+            described: None,
+            staged: None,
+            skipped: None,
             held: Held::default(),
             written: None,
             offered: HashMap::new(),
@@ -237,6 +364,8 @@ impl Clip {
                 }
             }
             ClipMsg::TookBack => self.visit = None,
+            ClipMsg::Files(offer) => self.on_files(offer).await,
+            ClipMsg::FilesFailed { number, reason } => self.on_files_failed(number, reason),
             ClipMsg::Offer {
                 from,
                 kind,
@@ -249,7 +378,10 @@ impl Clip {
                 number,
                 content,
             } => self.on_fetched(&from, number, content).await,
-            ClipMsg::Shares(shares) => self.shares = shares,
+            ClipMsg::Shares { shares, prefetch } => {
+                self.shares = shares;
+                self.prefetch = prefetch;
+            }
         }
     }
 
@@ -266,6 +398,10 @@ impl Clip {
         if !own.allows(kind) || !theirs.allows(kind) {
             return;
         }
+        if let Content::Files(paths) = &*content {
+            self.offer_files(to, hash, paths.clone()).await;
+            return;
+        }
         let size = content.size() as u64;
         self.offered.insert(to.to_string(), hash.clone());
         self.send(to, Control::ClipOffer { kind, size, hash });
@@ -279,6 +415,8 @@ impl Clip {
         let limit = match kind {
             Kind::Text => MAX_BYTES,
             Kind::Image => MAX_PIXEL_BYTES,
+            // Files come as files
+            Kind::Files => return,
         };
         if size > limit as u64 {
             tracing::debug!(size, "skipping an offer too large to take");
@@ -287,18 +425,20 @@ impl Clip {
         let stamp = self.stamp().await;
         if self.current().await.is_some_and(|(held, _)| held == hash) {
             // Superseded: whatever is under way is older
-            self.pending = None;
+            self.drop_pending();
             return;
         }
         let Some(conn) = self.links.borrow().get(&from).map(|l| l.conn.clone()) else {
             return;
         };
+        self.drop_pending();
         self.fetches += 1;
         let number = self.fetches;
         self.pending = Some(Pending {
             number,
             hash: hash.clone(),
             stamp,
+            files: None,
         });
         let inbox = self.inbox.clone();
         tokio::spawn(async move {
@@ -318,15 +458,19 @@ impl Clip {
 
     /// Write fetched content, if it is still wanted, and pass it on
     async fn on_fetched(&mut self, from: &str, number: u64, content: Option<Content>) {
-        let Some(pending) = self.pending.take_if(|p| p.number == number) else {
+        let Some(mut pending) = self.pending.take_if(|p| p.number == number) else {
             return;
         };
+        let fetching = pending.files.take();
         let Some(content) = content else {
             return;
         };
         let now = self.stamp().await;
         if copied_meanwhile(now, pending.stamp, self.written) {
             tracing::debug!("something was copied here meanwhile, keeping it");
+            if let Some(fetching) = fetching {
+                discard_now(fetching.dir);
+            }
             return;
         }
         let content = Arc::new(content);
@@ -337,6 +481,9 @@ impl Clip {
             Ok(Ok(stamp)) => stamp,
             Ok(Err(e)) => {
                 tracing::warn!("cannot write the clipboard: {e}");
+                if let Some(fetching) = fetching {
+                    discard_now(fetching.dir);
+                }
                 return;
             }
             Err(_) => return,
@@ -353,6 +500,16 @@ impl Clip {
             stamp,
             content: Some((pending.hash, content)),
         };
+        if let Some(fetching) = fetching {
+            self.retire_staged();
+            self.staged = Some(fetching.dir);
+            if fetching.since.elapsed() >= READY_HINT_AFTER {
+                self.emit(CopiedFiles::Ready {
+                    name: fetching.name,
+                    count: fetching.count,
+                });
+            }
+        }
         if let Some(visit) = &mut self.visit {
             visit.stamp = stamp;
         }
@@ -394,6 +551,14 @@ impl Clip {
         .await;
         match read {
             Ok(Ok(content)) => {
+                let staged = content.as_ref().is_some_and(|(_, content)| {
+                    self.staged
+                        .as_deref()
+                        .is_some_and(|dir| holds_from(content, dir))
+                });
+                if !staged {
+                    self.retire_staged();
+                }
                 self.held = Held {
                     known: true,
                     stamp,
@@ -407,6 +572,172 @@ impl Clip {
             }
             Err(_) => None,
         }
+    }
+
+    /// Offer the files copied here (`paths`, with `hash`) to `to`: what
+    /// they are, described once per copy, and a new token to pull them with
+    async fn offer_files(&mut self, to: &str, hash: String, paths: Vec<PathBuf>) {
+        let summary = match &self.described {
+            Some((described, summary)) if *described == hash => summary.clone(),
+            _ => {
+                let listed = paths.clone();
+                let Ok(items) = tokio::task::spawn_blocking(move || drag::describe(&listed)).await
+                else {
+                    return;
+                };
+                let Some(first) = items.first() else {
+                    tracing::debug!("none of the files copied here can be read");
+                    return;
+                };
+                let summary = Summary {
+                    name: first.name.clone(),
+                    count: items.len(),
+                    bytes: items.iter().map(|item| item.size).sum(),
+                };
+                self.described = Some((hash.clone(), summary.clone()));
+                summary
+            }
+        };
+        let token = match self.offers.offer(paths) {
+            Ok(token) => token,
+            Err(e) => {
+                tracing::warn!("cannot offer the files copied here: {e}");
+                return;
+            }
+        };
+        self.send(
+            to,
+            Control::ClipFiles {
+                hash,
+                name: summary.name,
+                count: summary.count,
+                bytes: summary.bytes,
+                token,
+            },
+        );
+    }
+
+    /// Fetch files copied elsewhere ahead of a paste, unless the clipboard
+    /// here holds them already, they are on their way, or they are larger
+    /// than this device fetches ahead
+    async fn on_files(&mut self, offer: FilesOffer) {
+        if !self.share(&self.local).allows(Kind::Files) {
+            return;
+        }
+        let limit = (self.prefetch > 0).then(|| u64::from(self.prefetch) << 20);
+        if let Some(limit) = limit.filter(|limit| offer.bytes > *limit) {
+            // Told once per copy: the offer comes again at every visit
+            if self.skipped.as_ref() != Some(&offer.hash) {
+                tracing::info!(
+                    bytes = offer.bytes,
+                    limit,
+                    "copied files too large to fetch ahead"
+                );
+                self.skipped = Some(offer.hash);
+                self.emit(CopiedFiles::TooLarge {
+                    name: offer.name,
+                    count: offer.count,
+                    bytes: offer.bytes,
+                    limit,
+                });
+            }
+            return;
+        }
+        let stamp = self.stamp().await;
+        if self
+            .current()
+            .await
+            .is_some_and(|(held, _)| held == offer.hash)
+        {
+            self.drop_pending();
+            return;
+        }
+        if self.pending.as_ref().is_some_and(|p| p.hash == offer.hash) {
+            return;
+        }
+        let Some(conn) = self.links.borrow().get(&offer.from).map(|l| l.conn.clone()) else {
+            return;
+        };
+        self.drop_pending();
+        self.fetches += 1;
+        let number = self.fetches;
+        let made =
+            tokio::task::spawn_blocking(move || drag::folder(&format!("clip-{number}"))).await;
+        let dir = match made {
+            Ok(Ok(dir)) => dir,
+            Ok(Err(e)) => {
+                tracing::warn!("cannot make a folder for copied files: {e}");
+                return;
+            }
+            Err(_) => return,
+        };
+        tracing::info!(
+            files = offer.count,
+            bytes = offer.bytes,
+            "fetching copied files ahead"
+        );
+        let fetch = fetch_files(
+            self.inbox.clone(),
+            number,
+            offer.from,
+            conn,
+            offer.token,
+            dir.clone(),
+            offer.bytes,
+        );
+        let task = tokio::spawn(fetch).abort_handle();
+        self.pending = Some(Pending {
+            number,
+            hash: offer.hash,
+            stamp,
+            files: Some(Fetching {
+                name: offer.name,
+                count: offer.count,
+                dir,
+                task,
+                since: Instant::now(),
+            }),
+        });
+    }
+
+    /// Files being fetched ahead did not come: what of them came goes
+    fn on_files_failed(&mut self, number: u64, reason: &'static str) {
+        let Some(pending) = self.pending.take_if(|p| p.number == number) else {
+            return;
+        };
+        let Some(fetching) = pending.files else {
+            return;
+        };
+        discard_now(fetching.dir);
+        self.emit(CopiedFiles::Failed {
+            name: fetching.name,
+            count: fetching.count,
+            reason,
+        });
+    }
+
+    /// Give up the fetch under way, and what of its files came
+    fn drop_pending(&mut self) {
+        if let Some(fetching) = self.pending.take().and_then(|pending| pending.files) {
+            fetching.task.abort();
+            discard_now(fetching.dir);
+        }
+    }
+
+    /// The clipboard moved on from the files fetched here: their folder
+    /// goes a while later (a paste may still be copying from it)
+    fn retire_staged(&mut self) {
+        if let Some(dir) = self.staged.take() {
+            tokio::spawn(async move {
+                tokio::time::sleep(KEEP_AFTER_DROP).await;
+                let _ = tokio::task::spawn_blocking(move || drag::discard(&dir)).await;
+            });
+        }
+    }
+
+    /// Tell the user about files copied elsewhere
+    fn emit(&self, copied: CopiedFiles) {
+        let _ = self.events.send(EngineEvent::CopiedFiles(copied));
     }
 
     /// The clipboard's stamp
@@ -429,6 +760,71 @@ impl Clip {
             let _ = link.out.send(msg);
         }
     }
+}
+
+/// Whether `content` is files fetched into `dir`, told by the folder's
+/// name: the clipboard may spell the path to it otherwise (/private/var
+/// for /var on macOS, a `\\?\` prefix on Windows)
+fn holds_from(content: &Content, dir: &Path) -> bool {
+    let Content::Files(paths) = content else {
+        return false;
+    };
+    paths
+        .iter()
+        .any(|path| path.parent().and_then(Path::file_name) == dir.file_name())
+}
+
+/// Remove the folder of files fetched here, off the actor
+fn discard_now(dir: PathBuf) {
+    tokio::task::spawn_blocking(move || drag::discard(&dir));
+}
+
+/// Fetch the files of `token` from `from` into `dir` (`bytes` in all), and
+/// tell the actor how it went: the files at the top of `dir` on the
+/// clipboard, or why not
+async fn fetch_files(
+    inbox: mpsc::UnboundedSender<ClipMsg>,
+    number: u64,
+    from: String,
+    conn: quinn::Connection,
+    token: String,
+    dir: PathBuf,
+    bytes: u64,
+) {
+    let failed = |reason| ClipMsg::FilesFailed { number, reason };
+    let at = dir.clone();
+    let free = tokio::task::spawn_blocking(move || files::available_space(&at))
+        .await
+        .ok()
+        .flatten();
+    if free.is_some_and(|free| free < bytes) {
+        tracing::info!(bytes, ?free, "no space for the copied files");
+        let _ = inbox.send(failed(failed::NO_SPACE));
+        return;
+    }
+    if let Err(e) = files::pull(&conn, token, &dir, |_, _| {}).await {
+        tracing::info!("cannot fetch the copied files: {e}");
+        let _ = inbox.send(failed(failed::TRANSFER));
+        return;
+    }
+    let listed = tokio::task::spawn_blocking(move || top_level(&dir)).await;
+    let _ = inbox.send(match listed {
+        Ok(Ok(paths)) if !paths.is_empty() => ClipMsg::Fetched {
+            from,
+            number,
+            content: Some(Content::Files(paths)),
+        },
+        _ => failed(failed::TRANSFER),
+    });
+}
+
+/// What is at the top of `dir`, by name
+fn top_level(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut paths = std::fs::read_dir(dir)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    paths.sort();
+    Ok(paths)
 }
 
 /// Whether the user copied something since an offer came: the stamp moved
@@ -499,6 +895,16 @@ async fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn files_fetched_here_are_told_by_their_folder() {
+        let dir = Path::new("/var/folders/x/T/lanroam-drops/17-clip-3");
+        let fetched = |path: &str| Content::Files(vec![PathBuf::from(path)]);
+        let spelt = fetched("/private/var/folders/x/T/lanroam-drops/17-clip-3/a.txt");
+        assert!(holds_from(&spelt, dir));
+        assert!(!holds_from(&fetched("/Users/zero/a.txt"), dir));
+        assert!(!holds_from(&Content::Text("a".into()), dir));
+    }
 
     #[test]
     fn a_copy_here_wins_over_an_offer() {

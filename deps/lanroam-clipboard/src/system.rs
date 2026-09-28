@@ -35,14 +35,12 @@ impl Clipboard for SystemClipboard {
         // A fresh handle per call: cheap on macOS and Windows, and nothing
         // to share between threads
         let mut clipboard = arboard::Clipboard::new()?;
-        // Copied files also come with their names as text: leave them all
-        if clipboard
-            .get()
-            .file_list()
-            .is_ok_and(|files| !files.is_empty())
+        // Copied files also come with their names as text: the files are
+        // what was copied
+        if let Ok(files) = clipboard.get().file_list()
+            && !files.is_empty()
         {
-            tracing::debug!("the clipboard holds files, left alone");
-            return Ok(None);
+            return Ok(Some(Content::Files(files)));
         }
         // Text first: what copies both (cells of a spreadsheet, a
         // document with pictures) is text to its user
@@ -67,6 +65,7 @@ impl Clipboard for SystemClipboard {
                 height: image.height as usize,
                 bytes: Cow::Borrowed(&image.rgba),
             })?,
+            Content::Files(paths) => clipboard.set().file_list(paths)?,
         }
         Ok(stamp())
     }

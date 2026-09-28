@@ -1418,7 +1418,90 @@ async fn a_copy_is_passed_on() {
     a.until_clipboard(&text("copied on b")).await;
 }
 
+/// Files copied on a are fetched to b as the pointer comes, b's clipboard
+/// holds them; files copied on b while the pointer is there come back
+#[tokio::test]
+async fn copied_files_come_along() {
+    let (mut a, b, _c) = row_of_three().await;
+    let photos = a.dir.0.join("photos");
+    std::fs::create_dir_all(photos.join("inner")).unwrap();
+    std::fs::write(photos.join("inner/b.jpg"), b"45").unwrap();
+    let report = a.file_to_drag("report.pdf");
+    a.clipboard.copy(Content::Files(vec![report, photos]));
+    enter_b(&a, &b).await;
+    let paths = b.until_files(&["photos", "report.pdf"]).await;
+    assert_eq!(std::fs::read(&paths[1]).unwrap(), b"12345");
+    assert_eq!(std::fs::read(paths[0].join("inner/b.jpg")).unwrap(), b"45");
+
+    b.clipboard
+        .copy(Content::Files(vec![b.file_to_drag("notes.txt")]));
+    back_to_a(&mut a).await;
+    let paths = a.until_files(&["notes.txt"]).await;
+    assert_eq!(std::fs::read(&paths[0]).unwrap(), b"12345");
+}
+
+/// Files larger than b fetches ahead stay where they are, and b says so
+#[tokio::test]
+async fn copied_files_beyond_the_limit_stay() {
+    let (a, mut b, _c) = row_of_three().await;
+    let one_mib = FileShare {
+        prefetch: 1,
+        ..FileShare::default()
+    };
+    b.engine.set_files(one_mib).await.unwrap();
+    tokio::time::sleep(SETTLE).await;
+    let big = a.dir.0.join("big.bin");
+    std::fs::write(&big, vec![0u8; (1 << 20) + 1]).unwrap();
+    a.clipboard.copy(Content::Files(vec![big]));
+    enter_b(&a, &b).await;
+    let told = b
+        .expect("files too large", |event| match event {
+            EngineEvent::CopiedFiles(CopiedFiles::TooLarge {
+                name, bytes, limit, ..
+            }) => Some((name.clone(), *bytes, *limit)),
+            _ => None,
+        })
+        .await;
+    assert_eq!(told, ("big.bin".to_string(), (1 << 20) + 1, 1 << 20));
+    assert_eq!(b.clipboard.content(), None);
+}
+
+/// A device taking no files gets none
+#[tokio::test]
+async fn copied_files_stay_off_devices_without_them() {
+    let (a, b, _c) = row_of_three().await;
+    let no_files = ClipboardShare {
+        files: false,
+        ..ClipboardShare::default()
+    };
+    b.engine.set_clipboard(no_files).await.unwrap();
+    a.until_share(&b.fp(), no_files).await;
+    a.clipboard
+        .copy(Content::Files(vec![a.file_to_drag("report.pdf")]));
+    enter_b(&a, &b).await;
+    tokio::time::sleep(SETTLE).await;
+    assert_eq!(b.clipboard.content(), None);
+}
+
 impl TestEngine {
+    /// Wait until the clipboard holds files with these names; where they
+    /// are
+    async fn until_files(&self, want: &[&str]) -> Vec<std::path::PathBuf> {
+        let deadline = tokio::time::Instant::now() + WAIT;
+        loop {
+            if let Some(Content::Files(paths)) = self.clipboard.content()
+                && names(&paths) == want
+            {
+                return paths;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{want:?} not on the clipboard within {WAIT:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
     /// A file of this engine's to drag
     fn file_to_drag(&self, name: &str) -> std::path::PathBuf {
         let path = self.dir.0.join(name);

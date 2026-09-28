@@ -152,6 +152,7 @@ export interface ClipboardShare {
   on: boolean;
   text: boolean;
   image: boolean;
+  files: boolean;
 }
 
 /** What a device does with files from the group */
@@ -258,7 +259,10 @@ export type Hint =
   | { kind: "lost"; name: string }
   | { kind: "letGo"; name: string; reason: string }
   | { kind: "stillRunning"; platform: string }
-  | { kind: "dragFailed"; reason: string; name: string };
+  | { kind: "dragFailed"; reason: string; name: string }
+  | { kind: "filesReady"; name: string; count: number }
+  | { kind: "filesTooLarge"; name: string; count: number; bytes: number; limit: number }
+  | { kind: "filesFailed"; reason: string; name: string; count: number };
 
 /** A side of a display */
 export type Edge = "left" | "right" | "top" | "bottom";

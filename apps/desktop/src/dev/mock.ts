@@ -48,7 +48,7 @@ function device(
     scale,
     swap: true,
     pointerSpeed: 100,
-    clipboard: { on: true, text: true, image: true },
+    clipboard: { on: true, text: true, image: true, files: true },
     files: { drag: true, prefetch: 1024 },
     rect: { x, y: 0, w: lw, h: lh },
     screens: [{ x, y: 0, w: lw, h: lh }],

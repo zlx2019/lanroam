@@ -53,7 +53,7 @@ use serde::{Deserialize, Serialize};
 use crate::group::GroupDoc;
 
 /// Protocol version (major.minor), checked by the Hello gate
-pub const PROTOCOL_VERSION: &str = "2.4";
+pub const PROTOCOL_VERSION: &str = "2.5";
 
 /// ALPN of the QUIC connections; a client speaking anything else is refused
 /// during the TLS handshake
@@ -271,6 +271,20 @@ pub enum Control {
         /// The content's hash ([`lanroam_clipboard::Content::hash`])
         hash: String,
     },
+    /// The sender's clipboard holds files copied there, for the receiver to
+    /// fetch ahead of a paste unless it holds the same (since 2.5)
+    ClipFiles {
+        /// The copy's hash ([`lanroam_clipboard::Content::hash`])
+        hash: String,
+        /// The first file or folder copied
+        name: String,
+        /// How many were copied (top level)
+        count: usize,
+        /// Bytes in all
+        bytes: u64,
+        /// What pulls the files from the sender ([`StreamRequest::Drag`])
+        token: String,
+    },
     /// Whether the left button held on the receiver drags files: its drag
     /// reached an edge that lets the pointer through (controller →
     /// controlled; since 2.3)
@@ -374,6 +388,7 @@ impl Control {
             Self::PointerLocked { .. } => "pointer_locked",
             Self::Request { .. } => "request",
             Self::ClipOffer { .. } => "clip_offer",
+            Self::ClipFiles { .. } => "clip_files",
             Self::DragProbe { .. } => "drag_probe",
             Self::DragFiles { .. } => "drag_files",
             Self::DragEnter { .. } => "drag_enter",
@@ -408,10 +423,10 @@ pub enum StreamRequest {
         /// Its hash, from the [`Control::ClipOffer`]
         hash: String,
     },
-    /// The files of a drag (since 2.4)
+    /// The files of a drag (since 2.4), or of a copy (since 2.5)
     Drag {
-        /// The drag's token, from [`Control::DragFiles`] or
-        /// [`Control::DragEnter`]
+        /// The token, from [`Control::DragFiles`], [`Control::DragEnter`]
+        /// or [`Control::ClipFiles`]
         token: String,
     },
 }
@@ -676,6 +691,13 @@ mod tests {
                 kind: Kind::Image,
                 size: 33_177_600,
                 hash: "ab".repeat(32),
+            },
+            Control::ClipFiles {
+                hash: "cd".repeat(32),
+                name: "照片".into(),
+                count: 2,
+                bytes: 5 << 30,
+                token: "ef".repeat(16),
             },
             Control::DragProbe { id: 3 },
             Control::DragFiles {

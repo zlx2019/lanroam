@@ -125,6 +125,34 @@ pub enum Hint {
         /// The first file or folder dragged
         name: String,
     },
+    /// Files copied on another device are here, ready to paste
+    FilesReady {
+        /// The first file or folder copied
+        name: String,
+        /// How many were copied
+        count: usize,
+    },
+    /// Files copied on another device are larger than this one fetches
+    /// ahead
+    FilesTooLarge {
+        /// The first file or folder copied
+        name: String,
+        /// How many were copied
+        count: usize,
+        /// Bytes in all
+        bytes: u64,
+        /// Most bytes fetched ahead
+        limit: u64,
+    },
+    /// Files copied on another device did not come
+    FilesFailed {
+        /// Why (an engine `drag_failed` code)
+        reason: String,
+        /// The first file or folder copied
+        name: String,
+        /// How many were copied
+        count: usize,
+    },
 }
 
 /// A hint on one display

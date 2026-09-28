@@ -31,7 +31,7 @@ use lanroam_input::world::World;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{Instant, MissedTickBehavior};
 
-use super::clipboard::ClipMsg;
+use super::clipboard::{ClipMsg, FilesOffer};
 use super::files::{self, Offers};
 use super::input::{InputMsg, LinkHandle, Links};
 use super::{EngineError, EngineEvent, Spot, Status};
@@ -725,6 +725,23 @@ impl Mesh {
                 };
                 let _ = self.wiring.clip.send(offer);
             }
+            Control::ClipFiles {
+                hash,
+                name,
+                count,
+                bytes,
+                token,
+            } => {
+                let offer = ClipMsg::Files(FilesOffer {
+                    from: fp,
+                    hash,
+                    name,
+                    count,
+                    bytes,
+                    token,
+                });
+                let _ = self.wiring.clip.send(offer);
+            }
             other => {
                 tracing::debug!(kind = other.kind(), from = %self.name_of(&fp), "ignoring control message");
             }
@@ -1095,7 +1112,8 @@ impl Mesh {
         });
     }
 
-    /// Hand the clipboard actor what every member shares
+    /// Hand the clipboard actor what every member shares, and how much of
+    /// what is copied elsewhere this device fetches ahead
     fn publish_shares(&self) {
         let shares = self
             .doc
@@ -1103,7 +1121,15 @@ impl Mesh {
             .flat_map(|doc| doc.members())
             .map(|(fp, record)| (fp.to_string(), record.profile.clipboard))
             .collect();
-        let _ = self.wiring.clip.send(ClipMsg::Shares(shares));
+        let prefetch = self
+            .doc
+            .as_ref()
+            .and_then(|doc| doc.devices.get(&self.info.fingerprint))
+            .map_or_else(
+                || FileShare::default().prefetch,
+                |r| r.profile.files.prefetch,
+            );
+        let _ = self.wiring.clip.send(ClipMsg::Shares { shares, prefetch });
     }
 
     /// A member's name for messages

@@ -7,7 +7,9 @@
 //! start, and they fill in as the files arrive (see [`super::files`]).
 //! A folder goes a while after its drop (the app it was dropped on may
 //! still be copying from it), at once when the drag is cancelled, and at
-//! the next start when it is older than a day.
+//! the next start when it is older than a day. Files copied on another
+//! device and fetched ahead of a paste land in folders of the same kind
+//! (see [`super::clipboard`]).
 
 use std::fs;
 use std::io;
@@ -139,14 +141,20 @@ fn root() -> PathBuf {
     std::env::temp_dir().join("lanroam-drops")
 }
 
-/// A new folder for drag `id`, with an empty stand-in for each of `items`
-/// under the name it lands with; the folder, and the stand-ins' paths
-pub(super) fn stage(id: u64, items: &[DragItem]) -> io::Result<(PathBuf, Vec<PathBuf>)> {
+/// A new, empty folder for files coming here, told apart by `name`
+pub(super) fn folder(name: &str) -> io::Result<PathBuf> {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| since.as_millis());
-    let dir = root().join(format!("{stamp}-{id}"));
+    let dir = root().join(format!("{stamp}-{name}"));
     fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+/// A new folder for drag `id`, with an empty stand-in for each of `items`
+/// under the name it lands with; the folder, and the stand-ins' paths
+pub(super) fn stage(id: u64, items: &[DragItem]) -> io::Result<(PathBuf, Vec<PathBuf>)> {
+    let dir = folder(&id.to_string())?;
     let mut paths = Vec::new();
     for item in items {
         // One name each, as the files will arrive under it

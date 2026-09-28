@@ -17,6 +17,7 @@ mod files;
 mod input;
 mod mesh;
 
+pub use clipboard::CopiedFiles;
 pub use drag::{
     DragBackend, DragEvent, DragSink, Dragging, NoDrag, PlatformDrag, Receiving,
     failed as drag_failed,
@@ -153,6 +154,9 @@ pub enum EngineEvent {
         /// The first file or folder dragged
         name: String,
     },
+    /// Files copied on another member were fetched here ahead of a paste,
+    /// or not
+    CopiedFiles(CopiedFiles),
 }
 
 /// Where to put a device on the layout canvas
@@ -286,6 +290,8 @@ impl Engine {
             clipboard,
             links_rx.clone(),
             clip_tx.clone(),
+            events_tx.clone(),
+            offers.clone(),
         );
         let input = Input::new(
             &info.fingerprint,

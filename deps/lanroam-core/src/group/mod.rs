@@ -96,6 +96,8 @@ pub struct ClipboardShare {
     pub text: bool,
     /// Images
     pub image: bool,
+    /// Files copied
+    pub files: bool,
 }
 
 impl Default for ClipboardShare {
@@ -105,6 +107,7 @@ impl Default for ClipboardShare {
             on: true,
             text: true,
             image: true,
+            files: true,
         }
     }
 }
@@ -116,6 +119,7 @@ impl ClipboardShare {
             && match kind {
                 Kind::Text => self.text,
                 Kind::Image => self.image,
+                Kind::Files => self.files,
             }
     }
 }
@@ -730,6 +734,12 @@ mod tests {
             ..ClipboardShare::default()
         };
         assert!(no_images.allows(Kind::Text) && !no_images.allows(Kind::Image));
+        let no_files = ClipboardShare {
+            files: false,
+            ..ClipboardShare::default()
+        };
+        assert!(no_files.allows(Kind::Image) && !no_files.allows(Kind::Files));
+        assert!(old.allows(Kind::Files));
     }
 
     /// A profile from before file settings drags and prefetches up to 1 GiB

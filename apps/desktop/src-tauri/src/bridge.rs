@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context;
-use lanroam_core::engine::{Engine, EngineEvent, PlatformDrag, PlatformInput};
+use lanroam_core::engine::{CopiedFiles, Engine, EngineEvent, PlatformDrag, PlatformInput};
 use lanroam_core::lanroam_clipboard::SystemClipboard;
 use lanroam_core::node::NodeConfig;
 use serde::Serialize;
@@ -157,6 +157,40 @@ async fn on_event(app: &AppHandle, event: EngineEvent) {
         // user expects the files
         EngineEvent::DragFailed { reason, name } => {
             overlay::hint(app, Hint::DragFailed { reason, name }, None);
+            return;
+        }
+        // Where the pointer is; only the files being ready heeds the hint
+        // setting, the rest tells why a paste gives something else
+        EngineEvent::CopiedFiles(copied) => {
+            let hint = match copied {
+                CopiedFiles::Ready { name, count } => {
+                    if !lock(&state.settings).hints {
+                        return;
+                    }
+                    Hint::FilesReady { name, count }
+                }
+                CopiedFiles::TooLarge {
+                    name,
+                    count,
+                    bytes,
+                    limit,
+                } => Hint::FilesTooLarge {
+                    name,
+                    count,
+                    bytes,
+                    limit,
+                },
+                CopiedFiles::Failed {
+                    name,
+                    count,
+                    reason,
+                } => Hint::FilesFailed {
+                    reason: reason.to_string(),
+                    name,
+                    count,
+                },
+            };
+            overlay::hint(app, hint, None);
             return;
         }
         EngineEvent::Control(event) => {

@@ -11,7 +11,17 @@ import { api } from "../api";
 import { EVENTS } from "../events";
 import { altKey, useI18n, type Translate } from "../i18n";
 import type { Hint, ReceivingDto, SceneDto } from "../types";
-import { CursorIcon, IncomingIcon, InfoIcon, LockIcon, OutIcon, PauseIcon, PlayIcon, WarnIcon } from "./icons";
+import {
+  CheckIcon,
+  CursorIcon,
+  IncomingIcon,
+  InfoIcon,
+  LockIcon,
+  OutIcon,
+  PauseIcon,
+  PlayIcon,
+  WarnIcon,
+} from "./icons";
 
 /** The overlay page */
 export function Overlay() {
@@ -61,7 +71,7 @@ function Receiving({ receiving }: { receiving: ReceivingDto }) {
   const { t } = useI18n();
   const { x, y, name, count, done, total } = receiving;
   const percent = total > 0 ? Math.min(100, Math.floor((done / total) * 100)) : 0;
-  const what = count > 1 ? t("drop.more", { name, count, others: count - 1 }) : name;
+  const what = several(name, count, t);
   // Below and right of the drop point, kept on the display
   const left = Math.max(0, Math.min(x + CHIP.offset, window.innerWidth - CHIP.width));
   const top = Math.max(0, Math.min(y + CHIP.offset, window.innerHeight - CHIP.height));
@@ -82,6 +92,11 @@ function Receiving({ receiving }: { receiving: ReceivingDto }) {
       </div>
     </div>
   );
+}
+
+/** The first of `count` files by name, and how many more */
+function several(name: string, count: number, t: Translate): string {
+  return count > 1 ? t("drop.more", { name, count, others: count - 1 }) : name;
 }
 
 /** A size for people: 820 B, 3.4 MB, 1.2 GB (1024-based) */
@@ -147,6 +162,21 @@ function words(hint: Hint, t: Translate): Words {
         icon: <WarnIcon />,
         text: t(hint.reason === "no_space" ? "hint.dragNoSpace" : "hint.dragFailed", { name: hint.name }),
         sub: t("hint.dragNothing"),
+        warn: true,
+      };
+    case "filesReady":
+      return { icon: <CheckIcon />, text: t("hint.filesReady"), sub: several(hint.name, hint.count, t) };
+    case "filesTooLarge":
+      return {
+        icon: <InfoIcon />,
+        text: t("hint.filesTooLarge", { limit: bytes(hint.limit) }),
+        sub: t("hint.filesTooLargeSub", { what: several(hint.name, hint.count, t), size: bytes(hint.bytes) }),
+      };
+    case "filesFailed":
+      return {
+        icon: <WarnIcon />,
+        text: t(hint.reason === "no_space" ? "hint.filesNoSpace" : "hint.filesFailed"),
+        sub: several(hint.name, hint.count, t),
         warn: true,
       };
     case "stillRunning": {

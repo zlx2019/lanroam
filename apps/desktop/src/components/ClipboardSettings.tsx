@@ -9,7 +9,7 @@ import type { ClipboardShare, Snapshot } from "../types";
 import { Row, Toggle } from "./controls";
 
 /** Everything shared, as a device starts */
-const EVERYTHING: ClipboardShare = { on: true, text: true, image: true };
+const EVERYTHING: ClipboardShare = { on: true, text: true, image: true, files: true };
 
 /** Clipboard sharing, and which kinds */
 export function ClipboardSettings({
@@ -23,7 +23,7 @@ export function ClipboardSettings({
   const local = snapshot.group?.devices.find((d) => d.local) ?? null;
   const synced = local?.clipboard ?? EVERYTHING;
   const [share, setShare] = useState(synced);
-  useEffect(() => setShare(synced), [synced.on, synced.text, synced.image]);
+  useEffect(() => setShare(synced), [synced.on, synced.text, synced.image, synced.files]);
 
   /** Change a part, for the group; undone if refused */
   const change = (patch: Partial<ClipboardShare>) => {
@@ -48,6 +48,9 @@ export function ClipboardSettings({
         </Row>
         <Row title={t("clip.image")} hint={t("clip.imageHint")}>
           <Toggle on={share.image} label={t("clip.image")} disabled={kinds} onChange={(image) => change({ image })} />
+        </Row>
+        <Row title={t("clip.files")} hint={t("clip.filesHint")}>
+          <Toggle on={share.files} label={t("clip.files")} disabled={kinds} onChange={(files) => change({ files })} />
         </Row>
       </div>
       <p className="note">{t("clip.note")}</p>

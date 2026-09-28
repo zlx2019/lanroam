@@ -1,17 +1,18 @@
 //! lanroam-clipboard: the clipboard layer of Lanroam.
 //!
 //! ```text
-//! ┌─ content ─ what a clipboard holds, in a form that can travel: text, or
-//! │            an image as RGBA pixels; its hash, what devices compare,
-//! │            and its bytes on the wire (text as UTF-8, images as PNG)
+//! ┌─ content ─ what a clipboard holds, in a form that can travel: text, an
+//! │            image as RGBA pixels, or the paths of files copied; its
+//! │            hash, what devices compare, and its bytes on the wire (text
+//! │            as UTF-8, images as PNG; files travel as files)
 //! ├─ system  ─ this machine's clipboard: read, write, the change stamp,
 //! │            and the concealed marker password managers set; on macOS
 //! │            images are decoded by the system and made sRGB (pasteboard)
 //! └─ memory  ─ a clipboard in memory, for tests
 //! ```
 //!
-//! Only text and images: files on the clipboard are left alone, they come
-//! with file transfer. Content a password manager marks as concealed is
+//! Text, images and copied files (as their paths: the engine moves the
+//! files themselves). Content a password manager marks as concealed is
 //! never read. No networking lives here: the engine (`lanroam-core`)
 //! decides when a clipboard goes where.
 
@@ -43,6 +44,9 @@ pub enum ClipboardError {
     /// Too big to hand over (see [`MAX_BYTES`], [`MAX_PIXEL_BYTES`])
     #[error("clipboard content too large: {0} bytes")]
     TooLarge(usize),
+    /// Copied files have no bytes on the wire: they travel as files
+    #[error("copied files travel as files")]
+    Files,
 }
 
 /// A clipboard: this machine's ([`SystemClipboard`]) or a test's
@@ -52,9 +56,9 @@ pub trait Clipboard: Send + Sync {
     /// A number that changes whenever the clipboard does, cheap to read
     /// (the content is not touched); `None` where the system has none
     fn stamp(&self) -> Option<i64>;
-    /// What the clipboard holds, if it is text or an image that may leave
-    /// this device: `None` when it is empty, holds files, is concealed, or
-    /// is too large
+    /// What the clipboard holds, if it is text, an image or files that may
+    /// leave this device: `None` when it is empty, is concealed, or is too
+    /// large
     fn read(&self) -> Result<Option<Content>, ClipboardError>;
     /// Put `content` on the clipboard, as a copy here would; the stamp it
     /// left, read right after
