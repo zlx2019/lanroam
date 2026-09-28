@@ -262,6 +262,9 @@ pub struct ControlDto {
     pub locked: bool,
     /// The device controlling this one locked the pointer to it
     pub peer_locked: bool,
+    /// Where the pointer is, as far as this device can tell: another
+    /// device's fingerprint, `None` for this one
+    pub pointer: Option<String>,
 }
 
 /// Where input goes right now
@@ -287,6 +290,7 @@ impl ControlDto {
                 self.peer = Some(name.clone());
                 self.peer_fingerprint = Some(fingerprint.clone());
                 self.peer_locked = false;
+                self.pointer = Some(fingerprint.clone());
             }
             ControlEvent::ControlledBy {
                 name, fingerprint, ..
@@ -295,18 +299,22 @@ impl ControlDto {
                 self.peer = Some(name.clone());
                 self.peer_fingerprint = Some(fingerprint.clone());
                 self.peer_locked = false;
+                self.pointer = None;
+            }
+            // The controller let go: the pointer went back to it (or on to
+            // another device it drives, which only it knows)
+            ControlEvent::Freed { fingerprint, .. } => {
+                self.release();
+                self.pointer = Some(fingerprint.clone());
             }
             // Control is back here, or about to come back at the next input
             ControlEvent::Home { .. }
-            | ControlEvent::Freed { .. }
             | ControlEvent::TookBack { .. }
             | ControlEvent::LetGo { .. }
             | ControlEvent::Unresponsive { .. }
             | ControlEvent::Lost { .. } => {
-                self.mode = ControlMode::Idle;
-                self.peer = None;
-                self.peer_fingerprint = None;
-                self.peer_locked = false;
+                self.release();
+                self.pointer = None;
             }
             ControlEvent::Paused { on } => self.paused = *on,
             ControlEvent::Locked { on } => self.locked = *on,
@@ -314,6 +322,14 @@ impl ControlDto {
             ControlEvent::Unavailable { .. } => {}
         }
         *self != before
+    }
+
+    /// Nothing controls anything any more: this device's input is its own
+    fn release(&mut self) {
+        self.mode = ControlMode::Idle;
+        self.peer = None;
+        self.peer_fingerprint = None;
+        self.peer_locked = false;
     }
 }
 
@@ -451,5 +467,59 @@ impl From<EngineError> for CommandError {
 impl From<anyhow::Error> for CommandError {
     fn from(e: anyhow::Error) -> Self {
         Self::new("internal", format!("{e:#}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use lanroam_core::lanroam_input::Point;
+
+    use super::*;
+
+    #[test]
+    fn pointer_goes_back_to_the_controller() {
+        let mut control = ControlDto::default();
+        control.apply(&ControlEvent::ControlledBy {
+            name: "Mac".into(),
+            fingerprint: "mac".into(),
+            at: Point::new(0, 0),
+        });
+        assert_eq!(control.pointer, None);
+
+        assert!(control.apply(&ControlEvent::Freed {
+            name: "Mac".into(),
+            fingerprint: "mac".into(),
+        }));
+        assert_eq!(control.mode, ControlMode::Idle);
+        assert_eq!(control.pointer.as_deref(), Some("mac"));
+
+        // Local input here takes it: the pointer is on this device again
+        control.apply(&ControlEvent::ControlledBy {
+            name: "Mac".into(),
+            fingerprint: "mac".into(),
+            at: Point::new(0, 0),
+        });
+        control.apply(&ControlEvent::TookBack {
+            name: "Mac".into(),
+            fingerprint: "mac".into(),
+        });
+        assert_eq!(control.pointer, None);
+    }
+
+    #[test]
+    fn pointer_follows_this_device_out_and_home() {
+        let mut control = ControlDto::default();
+        control.apply(&ControlEvent::Controlling {
+            name: "PC".into(),
+            fingerprint: "pc".into(),
+        });
+        assert_eq!(control.pointer.as_deref(), Some("pc"));
+
+        control.apply(&ControlEvent::Home {
+            at: Point::new(0, 0),
+            jumped: false,
+        });
+        assert_eq!(control.mode, ControlMode::Idle);
+        assert_eq!(control.pointer, None);
     }
 }

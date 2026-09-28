@@ -84,9 +84,9 @@ function Members({
   const { t } = useI18n();
   const [menu, setMenu] = useState<string | null>(null);
   const online = devices.filter((d) => d.online).length;
-  const { control } = snapshot;
-  // Where the pointer is: the device controlled from here, or this one
-  const here = control.mode === "controlling" ? control.peerFingerprint : snapshot.device.fingerprint;
+  // Where the pointer is: the device it went to (while that is online), or this one
+  const pointer = devices.find((d) => d.fingerprint === snapshot.control.pointer && d.online);
+  const here = pointer?.fingerprint ?? snapshot.device.fingerprint;
 
   // A press outside the open menu closes it
   useEffect(() => {

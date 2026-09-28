@@ -155,6 +155,9 @@ export interface ControlDto {
   locked: boolean;
   /** The device controlling this one locked the pointer to it */
   peerLocked: boolean;
+  /** Where the pointer is, as far as this device can tell: another
+   * device's fingerprint, null for this one */
+  pointer: string | null;
 }
 
 /** Why capture or injection does not run (null: it runs) */

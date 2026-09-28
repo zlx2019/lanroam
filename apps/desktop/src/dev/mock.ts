@@ -62,7 +62,7 @@ const state: Snapshot = {
     ],
     edges: [],
   },
-  control: { mode: "idle", peer: null, peerFingerprint: null, paused: false, locked: false, peerLocked: false },
+  control: { mode: "idle", peer: null, peerFingerprint: null, paused: false, locked: false, peerLocked: false, pointer: null },
   input: { capture: null, injection: null },
 };
 
