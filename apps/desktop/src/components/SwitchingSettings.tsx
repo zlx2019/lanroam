@@ -139,7 +139,7 @@ export function SwitchingSettings({
 
       <div className="group-h">{t("switch.edges")}</div>
       <div className="group">
-        <Row title={t("switch.mode")}>
+        <Row title={t("switch.mode")} hint={t("switch.modeHint")}>
           <Seg<SwitchMode>
             options={[
               ["direct", t("switch.direct")],
@@ -173,7 +173,9 @@ export function SwitchingSettings({
         </Row>
       </div>
 
-      <div className="group-h">{t("edges.title")}</div>
+      <div className="group-h">
+        {t("edges.title")} <span className="muted">· {t("edges.titleHint")}</span>
+      </div>
       <EdgeList group={snapshot.group} defaults={switching} onToast={onToast} />
 
       <div className="group-h">{t("switch.keepLocal")}</div>

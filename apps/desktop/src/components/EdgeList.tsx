@@ -1,7 +1,7 @@
-// Settings → Switching → Each edge: one row for every pair of devices whose
-// screens touch, with its own switch; unfolded, how it crosses and its
-// corner guard. They belong to the group: every member follows them, both
-// ways.
+// Settings → Control → Neighbours: one row for every pair of devices whose
+// screens touch, saying in words whether the pointer crosses there and how,
+// with a switch; unfolded, how it crosses and its corner guard, over the
+// defaults. They belong to the group: every member follows them, both ways.
 
 import { useState } from "react";
 import { api } from "../api";
@@ -86,14 +86,14 @@ function Edge({
     modifier: t("switch.modifier"),
     dwell: t("switch.dwell"),
   };
-  const summary = !settings.crossable
-    ? t("edges.closed")
-    : [
-        settings.mode ? modes[settings.mode] : t("edges.default"),
-        settings.cornerPx !== null ? t("edges.corner", { n: settings.cornerPx }) : "",
-      ]
-        .filter(Boolean)
-        .join(" · ");
+  // What happens there, in words: its own settings, or the defaults
+  const own = [
+    settings.mode ? modes[settings.mode] : "",
+    settings.cornerPx !== null ? t("edges.corner", { n: settings.cornerPx }) : "",
+  ].filter(Boolean);
+  const summary = settings.crossable
+    ? [t("edges.open"), ...(own.length ? own : [t("edges.followsDefault")])].join(" · ")
+    : t("edges.closed");
   const custom = settings.cornerPx !== null || settings.mode !== null || !settings.crossable;
   return (
     <>
