@@ -36,9 +36,6 @@ use crate::protocol::{ClipReply, Control, FRAMING, StreamRequest};
 /// Longest a fetch may take, content included
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// How long the opener of a content stream has to say what it wants
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
-
 /// Priority of content streams, below the control stream's (0): input goes
 /// out first
 const CONTENT_PRIORITY: i32 = -1;
@@ -66,14 +63,15 @@ pub(super) enum ClipMsg {
         /// The content's hash
         hash: String,
     },
-    /// A member opened a content stream
+    /// A member opened a content stream asking for the content with this
+    /// hash
     Stream {
         /// The member
         from: String,
         /// Our half
         send: quinn::SendStream,
-        /// Theirs
-        recv: quinn::RecvStream,
+        /// What it asks for
+        hash: String,
     },
     /// A fetch ended
     Fetched {
@@ -245,7 +243,7 @@ impl Clip {
                 size,
                 hash,
             } => self.on_offer(from, kind, size, hash).await,
-            ClipMsg::Stream { from, send, recv } => self.on_stream(&from, send, recv),
+            ClipMsg::Stream { from, send, hash } => self.on_stream(&from, send, hash),
             ClipMsg::Fetched {
                 from,
                 number,
@@ -365,16 +363,17 @@ impl Clip {
         }
     }
 
-    /// Serve a member's content stream with what the clipboard held when
-    /// last read, if it was offered to that member and both sides share it
-    fn on_stream(&self, from: &str, send: quinn::SendStream, recv: quinn::RecvStream) {
+    /// Serve a member's content stream asking for `hash` with what the
+    /// clipboard held when last read, if it was offered to that member and
+    /// both sides share it
+    fn on_stream(&self, from: &str, send: quinn::SendStream, hash: String) {
         let (own, theirs) = (self.share(&self.local), self.share(from));
         let offered = self.offered.get(from);
         let held = self.held.content.clone().filter(|(hash, content)| {
             offered == Some(hash) && own.allows(content.kind()) && theirs.allows(content.kind())
         });
         tokio::spawn(async move {
-            if let Err(e) = serve(send, recv, held).await {
+            if let Err(e) = serve(send, hash, held).await {
                 tracing::debug!("cannot serve the clipboard: {e}");
             }
         });
@@ -470,16 +469,13 @@ async fn fetch(
     .map_err(|_| TransferError::Interrupted)?
 }
 
-/// Answer a content stream: the content asked for if it is `held`
+/// Answer a content stream asking for `hash`: the content, if it is the
+/// one `held`
 async fn serve(
     mut send: quinn::SendStream,
-    mut recv: quinn::RecvStream,
+    hash: String,
     held: Option<(String, Arc<Content>)>,
 ) -> Result<(), TransferError> {
-    let request = tokio::time::timeout(REQUEST_TIMEOUT, FRAMING.read(&mut recv))
-        .await
-        .map_err(|_| TransferError::Timeout)??;
-    let StreamRequest::Clipboard { hash } = request;
     let Some(content) = held.filter(|(held, _)| *held == hash).map(|(_, c)| c) else {
         FRAMING.write(&mut send, &ClipReply::Gone).await?;
         send.finish()?;

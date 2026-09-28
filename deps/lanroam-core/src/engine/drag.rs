@@ -1,31 +1,56 @@
 //! Drags of files carried from one device to another: the native side (the
-//! platform's drag and drop, or a test's), and where the files of a drag
-//! coming here are put.
+//! platform's drag and drop, or a test's), and the folders the files of a
+//! drag coming here land in.
 //!
-//! The files themselves do not travel yet: a drag coming here drags
-//! stand-ins, empty files and folders with their names, ready to drop at
-//! once. That is enough to try the drag itself on every desktop. Tests give
-//! the stand-ins a transfer time ([`STAND_IN_TRANSFER`]), so that a release
-//! before the files are ready is covered too.
+//! Each drag coming here gets a folder of its own, with an empty stand-in
+//! for each file and folder dragged: the native drag needs them from the
+//! start, and they fill in as the files arrive (see [`super::files`]).
+//! A folder goes a while after its drop (the app it was dropped on may
+//! still be copying from it), at once when the drag is cancelled, and at
+//! the next start when it is older than a day.
 
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use lanroam_input::Point;
 
 pub use lanroam_dnd::Event as DragEvent;
 
+use super::files;
 use crate::protocol::DragItem;
 
-/// How long the stand-in transfer of a drag coming here takes: released
-/// sooner, its drop waits until then
-#[cfg(not(test))]
-pub(super) const STAND_IN_TRANSFER: Duration = Duration::ZERO;
-/// How long the stand-in transfer takes in tests
-#[cfg(test)]
-pub(super) const STAND_IN_TRANSFER: Duration = Duration::from_millis(200);
+/// How long the folder of a drop stays
+pub(super) const KEEP_AFTER_DROP: Duration = Duration::from_secs(10 * 60);
+
+/// Folders of drags older than this are left over: swept at start
+const LEFT_OVER: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Why a drag of files did not come here
+/// ([`super::EngineEvent::DragFailed`])
+pub mod failed {
+    /// Not enough free space for the files
+    pub const NO_SPACE: &str = "no_space";
+    /// The files did not arrive (the link dropped, or they changed or went
+    /// away meanwhile)
+    pub const TRANSFER: &str = "transfer";
+}
+
+/// Files dragged here still arriving while their drop waits
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Receiving {
+    /// Where they will land (this device's coordinates)
+    pub at: Point,
+    /// The first file or folder dragged
+    pub name: String,
+    /// How many were dragged
+    pub count: usize,
+    /// Bytes there so far
+    pub done: u64,
+    /// Bytes in all
+    pub total: u64,
+}
 
 /// Hands what the native side reports to the engine; called on any thread
 pub type DragSink = Box<dyn Fn(DragEvent) + Send + Sync>;
@@ -93,43 +118,44 @@ impl DragBackend for NoDrag {
     }
 }
 
-/// What each of `paths` is, as the device a drag goes to shows it; paths
-/// that cannot be read are left out
+/// What each of `paths` is, as the device a drag goes to shows it (a
+/// folder with the size of everything in it); paths that cannot be read
+/// are left out
 pub(super) fn describe(paths: &[PathBuf]) -> Vec<DragItem> {
     paths
         .iter()
         .filter_map(|path| {
             let name = path.file_name()?.to_string_lossy().into_owned();
-            let meta = fs::metadata(path).ok()?;
-            let dir = meta.is_dir();
-            Some(DragItem {
-                name,
-                size: if dir { 0 } else { meta.len() },
-                dir,
-            })
+            let entries = files::collect(std::slice::from_ref(path)).ok()?;
+            let dir = matches!(entries.first(), Some(files::Entry::Dir(_)));
+            let (_, size) = files::totals(&entries);
+            Some(DragItem { name, size, dir })
         })
         .collect()
 }
 
-/// Put stand-ins for the files of drag `id` in a folder of their own:
-/// empty files and folders with their names. Their paths; names that are
-/// not safe to use are left out
-pub(super) fn stage_stand_ins(id: u64, items: &[DragItem]) -> io::Result<Vec<PathBuf>> {
+/// Where the folders of drags coming here go
+fn root() -> PathBuf {
+    std::env::temp_dir().join("lanroam-drops")
+}
+
+/// A new folder for drag `id`, with an empty stand-in for each of `items`
+/// under the name it lands with; the folder, and the stand-ins' paths
+pub(super) fn stage(id: u64, items: &[DragItem]) -> io::Result<(PathBuf, Vec<PathBuf>)> {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| since.as_millis());
-    let dir = std::env::temp_dir()
-        .join("lanroam-drops")
-        .join(format!("{stamp}-{id}"));
+    let dir = root().join(format!("{stamp}-{id}"));
     fs::create_dir_all(&dir)?;
     let mut paths = Vec::new();
     for item in items {
-        let Some(name) = safe_name(&item.name) else {
-            tracing::warn!(name = %item.name, "a dragged file with an unsafe name is left out");
+        // One name each, as the files will arrive under it
+        let Ok(name) = files::safe_path(&item.name) else {
+            tracing::warn!(name = %item.name, "a dragged file with no usable name is left out");
             continue;
         };
         let path = dir.join(name);
-        if path.exists() {
+        if path.parent() != Some(dir.as_path()) || path.exists() {
             continue;
         }
         if item.dir {
@@ -139,71 +165,89 @@ pub(super) fn stage_stand_ins(id: u64, items: &[DragItem]) -> io::Result<Vec<Pat
         }
         paths.push(path);
     }
-    Ok(paths)
+    Ok((dir, paths))
 }
 
-/// `name` if it is a plain file name that is safe to put in a folder on
-/// any system: no separators or parent, no control characters, nothing
-/// Windows would trim
-fn safe_name(name: &str) -> Option<&str> {
-    let unsafe_char = |c: char| matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|');
-    let bad = name.is_empty()
-        || name.len() > 255
-        || name == "."
-        || name == ".."
-        || name.ends_with(['.', ' '])
-        || name.chars().any(|c| c.is_control() || unsafe_char(c));
-    (!bad).then_some(name)
+/// Remove the folder of a drag, and what it holds
+pub(super) fn discard(dir: &Path) {
+    if let Err(e) = fs::remove_dir_all(dir)
+        && e.kind() != io::ErrorKind::NotFound
+    {
+        tracing::debug!(folder = %dir.display(), "cannot remove the folder of a drag: {e}");
+    }
+}
+
+/// Remove the folders of drags left over from earlier runs
+pub(super) fn sweep() {
+    let Ok(read) = fs::read_dir(root()) else {
+        return;
+    };
+    for entry in read.flatten() {
+        let old = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age > LEFT_OVER);
+        if old {
+            discard(&entry.path());
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util::TempDir;
 
     /// A file item
-    fn file(name: &str) -> DragItem {
+    fn file(name: &str, size: u64) -> DragItem {
         DragItem {
             name: name.into(),
-            size: 7,
+            size,
             dir: false,
-        }
-    }
-
-    #[test]
-    fn only_plain_names_are_safe() {
-        for name in ["报告 final.pdf", ".hidden", "a..b", "photos"] {
-            assert_eq!(safe_name(name), Some(name));
-        }
-        for name in [
-            "", ".", "..", "../x", "a/b", "a\\b", "C:x", "x\n", "tail.", "tail ",
-        ] {
-            assert_eq!(safe_name(name), None, "{name:?}");
         }
     }
 
     #[test]
     fn stand_ins_take_the_names() {
         let items = [
-            file("notes.txt"),
+            file("notes.txt", 7),
             DragItem {
                 name: "photos".into(),
                 size: 0,
                 dir: true,
             },
-            file("../escape.txt"),
-            file("notes.txt"),
+            file("../escape.txt", 1),
+            file("a/b.txt", 1),
+            file("notes.txt", 7),
         ];
-        let paths = stage_stand_ins(u64::MAX, &items).unwrap();
-        let dir = paths[0].parent().unwrap().to_path_buf();
+        let (dir, paths) = stage(u64::MAX, &items).unwrap();
         assert_eq!(paths, [dir.join("notes.txt"), dir.join("photos")]);
         assert!(paths[0].is_file() && paths[1].is_dir());
+        discard(&dir);
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn folders_are_described_by_what_they_hold() {
+        let dir = TempDir::new();
+        let photos = dir.0.join("photos");
+        fs::create_dir_all(photos.join("inner")).unwrap();
+        fs::write(photos.join("a.jpg"), b"123").unwrap();
+        fs::write(photos.join("inner/b.jpg"), b"45").unwrap();
+        fs::write(dir.0.join("notes.txt"), b"hello").unwrap();
+        let paths = [photos, dir.0.join("notes.txt"), dir.0.join("missing")];
         assert_eq!(
             describe(&paths),
-            [file("notes.txt"), items[1].clone()].map(|mut item| {
-                item.size = 0;
-                item
-            })
+            [
+                DragItem {
+                    name: "photos".into(),
+                    size: 5,
+                    dir: true
+                },
+                file("notes.txt", 5)
+            ]
         );
-        fs::remove_dir_all(dir).unwrap();
     }
 }

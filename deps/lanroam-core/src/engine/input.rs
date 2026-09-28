@@ -32,6 +32,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use super::EngineEvent;
 use super::clipboard::ClipMsg;
 use super::drag::{DragBackend, DragEvent};
+use super::files::Offers;
 use crate::protocol::{Control, Datagram, DragItem, released};
 
 mod carry;
@@ -252,8 +253,9 @@ pub(super) enum InputMsg {
     Shutdown(oneshot::Sender<()>),
     /// The native drag and drop reported something
     Drag(DragEvent),
-    /// What the files a probe found are (read off the runtime), for whoever
-    /// asked (`None`: this device's switch)
+    /// What the files a probe found are (read off the runtime), and the
+    /// token they are offered under, for whoever asked (`None`: this
+    /// device's switch)
     Described {
         /// The probe
         id: u64,
@@ -261,16 +263,37 @@ pub(super) enum InputMsg {
         asker: Option<String>,
         /// The files
         files: Vec<DragItem>,
+        /// Their token
+        token: String,
     },
-    /// The files of a drag carried here are staged, or could not be
+    /// Stand-ins for the files of a drag carried here are staged, or could
+    /// not be
     Staged {
         /// The drag
         id: u64,
-        /// Their paths, or why not
-        paths: Result<Vec<PathBuf>, String>,
+        /// Their folder and paths, or why not
+        staged: Result<(PathBuf, Vec<PathBuf>), String>,
     },
-    /// The files of a drag carried here are ready to drop
+    /// Some of the files of a drag carried here are there
+    DragProgress {
+        /// The drag
+        id: u64,
+        /// Bytes there so far
+        done: u64,
+        /// Bytes in all
+        total: u64,
+    },
+    /// The files of a drag carried here are all there
     DragReady(u64),
+    /// The files of a drag carried here will not arrive
+    DragFailed {
+        /// The drag
+        id: u64,
+        /// Why, for the user (a `drag_failed` code)
+        reason: &'static str,
+        /// Why, for the log
+        detail: String,
+    },
     /// A drag carried here took too long to get ready, or to refuse its
     /// drop
     DragTimeout(u64),
@@ -413,6 +436,7 @@ impl Input {
     /// Start capture, injection and native drag and drop as far as the
     /// platform allows; problems are reported as
     /// [`ControlEvent::Unavailable`]
+    #[allow(clippy::too_many_arguments)] // one call site
     pub(super) fn new(
         local: &str,
         backend: Arc<dyn InputBackend>,
@@ -421,11 +445,12 @@ impl Input {
         inbox: mpsc::UnboundedSender<InputMsg>,
         clip: mpsc::UnboundedSender<ClipMsg>,
         drag: &dyn DragBackend,
+        offers: Offers,
     ) -> Self {
         let switch = Arc::new(Mutex::new(Switch::new(local)));
         let capture = backend.capture(Arc::clone(&switch), emit_sink(&inbox));
         let injection = start_injection(backend.as_ref());
-        let drags = carry::Drags::start(drag, &inbox);
+        let drags = carry::Drags::start(drag, &inbox, offers);
         let mut input = Self {
             switch,
             backend,
@@ -627,9 +652,18 @@ impl Input {
                 let _ = reply.send(self.status());
             }
             InputMsg::Drag(event) => self.on_drag_event(event),
-            InputMsg::Described { id, asker, files } => self.described(id, asker, files),
-            InputMsg::Staged { id, paths } => self.staged(id, paths),
+            InputMsg::Described {
+                id,
+                asker,
+                files,
+                token,
+            } => self.described(id, asker, files, token),
+            InputMsg::Staged { id, staged } => self.staged(id, staged),
+            InputMsg::DragProgress { id, done, total } => self.progress(id, done, total),
             InputMsg::DragReady(id) => self.ready(id),
+            InputMsg::DragFailed { id, reason, detail } => {
+                self.transfer_failed(id, reason, &detail);
+            }
             InputMsg::DragTimeout(id) => self.timed_out(id),
             // Handled by the run loop
             InputMsg::Restart(_) | InputMsg::Shutdown(_) => {}
@@ -740,6 +774,10 @@ impl Input {
             Control::Enter { x, y } => self.on_enter(from, Point::new(x, y)),
             Control::Leave if controlled => self.free(from),
             Control::Key { usage, down } if controlled => {
+                // Esc cancels a drop waiting here
+                if self.on_controller_escape(from, usage, down) {
+                    return;
+                }
                 // Recording here with the controller's keyboard: the keys
                 // make the combination instead of typing
                 let mut switch = switch::lock(&self.switch);

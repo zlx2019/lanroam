@@ -31,6 +31,7 @@ tokio = { version = "1", features = [
     "rt-multi-thread",
     "macros",
     "net",
+    "fs",
     "io-util",
     "sync",
     "time",
@@ -70,6 +71,8 @@ getrandom = "0.4"
 hostname = "0.4"
 os_info = { version = "3", default-features = false }
 clap = { version = "4", features = ["derive"] }
+# Free space where the files of a drag land (the same version as Deskmate)
+fs4 = "1"
 # The clipboard: arboard reads and writes it on every OS, images travel as
 # PNG
 arboard = "3"

@@ -13,10 +13,14 @@
 
 mod clipboard;
 mod drag;
+mod files;
 mod input;
 mod mesh;
 
-pub use drag::{DragBackend, DragEvent, DragSink, Dragging, NoDrag, PlatformDrag};
+pub use drag::{
+    DragBackend, DragEvent, DragSink, Dragging, NoDrag, PlatformDrag, Receiving,
+    failed as drag_failed,
+};
 pub use input::{ControlEvent, InputBackend, InputStatus, PlatformInput};
 pub use lanroam_input::switch::Request;
 
@@ -138,6 +142,16 @@ pub enum EngineEvent {
         joiner: PeerInfo,
         /// Whether it got in
         admitted: bool,
+    },
+    /// Files dragged here are still arriving while their drop waits: show
+    /// how far, where they will land; `None` once the drop is over
+    Receiving(Option<Receiving>),
+    /// A drag of files could not come here
+    DragFailed {
+        /// Why (a [`drag_failed`] code)
+        reason: String,
+        /// The first file or folder dragged
+        name: String,
     },
 }
 
@@ -266,6 +280,7 @@ impl Engine {
         let (input_tx, input_inbox) = mpsc::unbounded_channel();
         let (links_tx, links_rx) = watch::channel(Arc::default());
         let (clip_tx, clip_inbox) = mpsc::unbounded_channel();
+        let offers = files::Offers::default();
         let clip = Clip::new(
             &info.fingerprint,
             clipboard,
@@ -280,6 +295,7 @@ impl Engine {
             input_tx.clone(),
             clip_tx.clone(),
             drag.as_ref(),
+            offers.clone(),
         );
         let input_settings = data_dir
             .as_deref()
@@ -295,6 +311,7 @@ impl Engine {
             input: input_tx.clone(),
             links: links_tx,
             clip: clip_tx,
+            offers,
         };
         let mesh = Mesh::new(info.clone(), Arc::clone(&transport), store, doc, wiring);
         let mut tasks = vec![
@@ -302,6 +319,8 @@ impl Engine {
             tokio::spawn(input.run(input_inbox)),
             tokio::spawn(clip.run(clip_inbox)),
             tokio::spawn(poll_screens(backend, inbox_tx.clone())),
+            // Folders of drags left over from earlier runs
+            tokio::task::spawn_blocking(drag::sweep),
         ];
         tasks.push(tokio::spawn(accept_loop(
             Arc::clone(&transport),

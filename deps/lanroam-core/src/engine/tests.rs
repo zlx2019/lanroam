@@ -62,8 +62,8 @@ enum DragCall {
     Probe(u64),
     /// Probe over
     Unprobe,
-    /// Armed with this id, at, with these file names
-    Arm(u64, Point, Vec<String>),
+    /// Armed with this id, at, with these files
+    Arm(u64, Point, Vec<std::path::PathBuf>),
     /// Cancel this id
     Cancel(u64),
 }
@@ -125,11 +125,7 @@ impl Dragging for FakeDragging {
         self.note(DragCall::Unprobe);
     }
     fn arm(&self, id: u64, at: Point, paths: Vec<std::path::PathBuf>) {
-        let names = paths
-            .iter()
-            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
-            .collect();
-        self.note(DragCall::Arm(id, at, names));
+        self.note(DragCall::Arm(id, at, paths));
         (self.sink)(DragEvent::Armed { id });
     }
     fn cancel(&self, id: u64) {
@@ -1391,6 +1387,18 @@ impl TestEngine {
         path
     }
 
+    /// Wait until the drag and drop was armed; where, with what
+    async fn armed(&self) -> (Point, Vec<std::path::PathBuf>) {
+        let calls = self.dragged(|call| matches!(call, DragCall::Arm(..))).await;
+        calls
+            .into_iter()
+            .find_map(|call| match call {
+                DragCall::Arm(_, at, paths) => Some((at, paths)),
+                _ => None,
+            })
+            .unwrap()
+    }
+
     /// Wait until the drag and drop was asked for `want` (and return
     /// everything so far)
     async fn dragged(&self, want: impl Fn(&DragCall) -> bool) -> Vec<DragCall> {
@@ -1425,6 +1433,14 @@ impl TestEngine {
     }
 }
 
+/// The file names of `paths`
+fn names(paths: &[std::path::PathBuf]) -> Vec<String> {
+    paths
+        .iter()
+        .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect()
+}
+
 /// Whether a decision moved control elsewhere
 fn parked(decision: &Decision) -> bool {
     decision.cursor == Some(switch::CursorAction::Park)
@@ -1445,23 +1461,17 @@ async fn files_dragged_from_here_go_along() {
     a.input.left(true);
     a.dragged(|call| *call == DragCall::Pressed).await;
     a.push_until(5.0, parked).await;
-    let calls = b.dragged(|call| matches!(call, DragCall::Arm(..))).await;
-    let arm = calls.iter().find(|call| matches!(call, DragCall::Arm(..)));
-    assert_eq!(
-        arm,
-        Some(&DragCall::Arm(
-            1,
-            Point::new(1, 500),
-            vec!["report.pdf".into()]
-        ))
-    );
+    let (at, paths) = b.armed().await;
+    assert_eq!(at, Point::new(1, 500));
+    assert_eq!(names(&paths), ["report.pdf"]);
     b.injected(&Injected::Button(MouseButton::Left, true)).await;
 
-    // Let go at once: the drop waits for the stand-in transfer
     let decision = a.input.left(false);
     assert_eq!(decision.verdict, switch::Verdict::Pass);
     b.injected(&Injected::Button(MouseButton::Left, false))
         .await;
+    // What lands is the file itself
+    assert_eq!(std::fs::read(&paths[0]).unwrap(), b"12345");
     a.dragged(|call| *call == DragCall::Unprobe).await;
 }
 
@@ -1499,17 +1509,13 @@ async fn files_dragged_there_come_home() {
     // b lets go of its drag (on its catcher)
     b.injected(&Injected::Button(MouseButton::Left, false))
         .await;
-    let calls = a.dragged(|call| matches!(call, DragCall::Arm(..))).await;
-    assert!(
-        calls
-            .iter()
-            .any(|call| matches!(call, DragCall::Arm(1, _, names) if names == &["photos.zip"])),
-        "{calls:?}"
-    );
+    let (_, paths) = a.armed().await;
+    assert_eq!(names(&paths), ["photos.zip"]);
     a.injected(&Injected::Button(MouseButton::Left, true)).await;
     a.input.left(false);
     a.injected(&Injected::Button(MouseButton::Left, false))
         .await;
+    assert_eq!(std::fs::read(&paths[0]).unwrap(), b"12345");
 }
 
 /// Esc cancels a drag carried to b: it refuses the drop, then the button
@@ -1553,4 +1559,96 @@ async fn esc_cancels_a_drag_carried_home() {
     assert_eq!(injected[up - 1], Injected::Move(Point::new(990, 480)));
     // The release then goes nowhere
     assert_eq!(a.input.left(false).verdict, switch::Verdict::Swallow);
+}
+
+/// A folder goes over whole, empty folders included; released before it
+/// is all there, its drop waits (pressed first, then let go), and b says
+/// how far it is meanwhile
+#[tokio::test]
+async fn a_folder_goes_over_whole() {
+    let (a, mut b, _c) = row_of_three().await;
+    let folder = a.dir.0.join("shots");
+    std::fs::create_dir_all(folder.join("2026/empty")).unwrap();
+    let big: Vec<u8> = (0..24u32 << 20).map(|i| (i % 251) as u8).collect();
+    std::fs::write(folder.join("2026/big.bin"), &big).unwrap();
+    std::fs::write(folder.join("note.txt"), b"hi").unwrap();
+    a.drag.holds(std::slice::from_ref(&folder));
+    a.input.left(true);
+    a.push_until(5.0, parked).await;
+    // Let go at once: nothing is there yet
+    a.input.left(false);
+    let (_, paths) = b.armed().await;
+    assert_eq!(names(&paths), ["shots"]);
+
+    b.expect("the drop", |event| match event {
+        EngineEvent::Receiving(Some(receiving)) => {
+            assert_eq!((receiving.name.as_str(), receiving.count), ("shots", 1));
+            assert_eq!(receiving.total, (24 << 20) + 2);
+            None
+        }
+        EngineEvent::Receiving(None) => Some(()),
+        _ => None,
+    })
+    .await;
+    let injected = b
+        .injected(&Injected::Button(MouseButton::Left, false))
+        .await;
+    let press = injected
+        .iter()
+        .position(|i| *i == Injected::Button(MouseButton::Left, true));
+    assert!(press.is_some(), "{injected:?}");
+    let landed = &paths[0];
+    assert_eq!(std::fs::read(landed.join("2026/big.bin")).unwrap(), big);
+    assert_eq!(std::fs::read(landed.join("note.txt")).unwrap(), b"hi");
+    assert!(landed.join("2026/empty").is_dir());
+}
+
+/// Files gone since they were dragged do not arrive: b says so, and the
+/// release drops nothing
+#[tokio::test]
+async fn files_gone_meanwhile_fail() {
+    let (a, mut b, _c) = row_of_three().await;
+    let file = a.file_to_drag("gone.txt");
+    a.drag.holds(std::slice::from_ref(&file));
+    a.input.left(true);
+    a.input.push((999, 500), 5.0, 0.0);
+    a.dragged(|call| matches!(call, DragCall::Probe(_))).await;
+    // Offered by now: the probe is answered at once
+    tokio::time::sleep(SETTLE).await;
+    std::fs::remove_file(&file).unwrap();
+    a.push_until(5.0, parked).await;
+    let failure = b
+        .expect("the failure", |event| match event {
+            EngineEvent::DragFailed { reason, name } => Some((reason.clone(), name.clone())),
+            _ => None,
+        })
+        .await;
+    assert_eq!(
+        failure,
+        (drag_failed::TRANSFER.to_string(), "gone.txt".into())
+    );
+    a.input.left(false);
+    b.dragged(|call| matches!(call, DragCall::Cancel(1))).await;
+    b.injected(&Injected::Button(MouseButton::Left, false))
+        .await;
+}
+
+/// The files of a cancelled drag go
+#[tokio::test]
+async fn a_cancelled_drag_leaves_nothing() {
+    let (a, b, _c) = row_of_three().await;
+    a.drag.holds(&[a.file_to_drag("draft.txt")]);
+    a.input.left(true);
+    a.push_until(5.0, parked).await;
+    let (_, paths) = b.armed().await;
+    b.injected(&Injected::Button(MouseButton::Left, true)).await;
+    a.input.key(usage::ESCAPE, true);
+    b.injected(&Injected::Button(MouseButton::Left, false))
+        .await;
+    let folder = paths[0].parent().unwrap().to_path_buf();
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while folder.exists() {
+        assert!(tokio::time::Instant::now() < deadline, "{folder:?} stays");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }

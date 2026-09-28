@@ -34,6 +34,10 @@
 //! ([`Control::DragProbe`], answered with [`Control::DragFiles`]), and the
 //! device the pointer takes it to drags the files on from there
 //! ([`Control::DragEnter`], or [`Control::DragCancel`] to let go of them).
+//! That device pulls the files from where they are over a content stream
+//! ([`StreamRequest::Drag`], answered with a [`DragReply`] and the files
+//! part by part, see [`DragPart`]), naming the drag by a token only the
+//! devices it went through know.
 //!
 //! The protocol version is `major.minor`; a different major refuses the
 //! connection, a newer minor only adds messages an older peer may ignore.
@@ -49,7 +53,7 @@ use serde::{Deserialize, Serialize};
 use crate::group::GroupDoc;
 
 /// Protocol version (major.minor), checked by the Hello gate
-pub const PROTOCOL_VERSION: &str = "2.3";
+pub const PROTOCOL_VERSION: &str = "2.4";
 
 /// ALPN of the QUIC connections; a client speaking anything else is refused
 /// during the TLS handshake
@@ -281,6 +285,10 @@ pub enum Control {
         id: u64,
         /// What is dragged (top level)
         files: Vec<DragItem>,
+        /// What pulls the files from the sender ([`StreamRequest::Drag`]);
+        /// empty before 2.4
+        #[serde(default)]
+        token: String,
     },
     /// A drag of files comes here with the pointer (right after
     /// [`Control::Enter`]): drag them on from (`x`, `y`) until the button
@@ -296,6 +304,10 @@ pub enum Control {
         y: i32,
         /// What is dragged (top level)
         files: Vec<DragItem>,
+        /// What pulls the files from `origin` ([`StreamRequest::Drag`]);
+        /// empty before 2.4
+        #[serde(default)]
+        token: String,
     },
     /// Let go of the drag carried here without dropping anything (Esc)
     DragCancel {
@@ -373,7 +385,7 @@ impl Control {
 pub struct DragItem {
     /// File name
     pub name: String,
-    /// Size in bytes (0 for a folder)
+    /// Size in bytes (a folder: of everything in it)
     pub size: u64,
     /// A folder
     pub dir: bool,
@@ -387,6 +399,12 @@ pub enum StreamRequest {
     Clipboard {
         /// Its hash, from the [`Control::ClipOffer`]
         hash: String,
+    },
+    /// The files of a drag (since 2.4)
+    Drag {
+        /// The drag's token, from [`Control::DragFiles`] or
+        /// [`Control::DragEnter`]
+        token: String,
     },
 }
 
@@ -402,6 +420,48 @@ pub enum ClipReply {
     },
     /// Not held any more, or not for the asker
     Gone,
+}
+
+/// Answer to [`StreamRequest::Drag`] (since 2.4)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum DragReply {
+    /// Here they come, as [`DragPart`]s up to [`DragPart::Done`]
+    Files {
+        /// How many files (folders not counted)
+        count: u64,
+        /// Their bytes in all
+        bytes: u64,
+    },
+    /// Not dragged any more, or never by this token
+    Gone,
+}
+
+/// One part of the files of a drag, after [`DragReply::Files`]; paths are
+/// relative, `/`-separated, starting with the name of what was dragged
+/// (since 2.4)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum DragPart {
+    /// A folder (empty ones included)
+    Dir {
+        /// Its path
+        path: String,
+    },
+    /// A file: `size` bytes follow, then its [`DragPart::Hash`]
+    File {
+        /// Its path
+        path: String,
+        /// How many bytes
+        size: u64,
+    },
+    /// BLAKE3 of the file just sent, in hex
+    Hash {
+        /// The hash
+        hash: String,
+    },
+    /// Nothing more
+    Done,
 }
 
 /// Whether a peer's protocol version is compatible (same major)
@@ -617,6 +677,7 @@ mod tests {
                     size: 1 << 20,
                     dir: false,
                 }],
+                token: "ab".repeat(16),
             },
             Control::DragEnter {
                 id: 3,
@@ -628,6 +689,7 @@ mod tests {
                     size: 0,
                     dir: true,
                 }],
+                token: "ab".repeat(16),
             },
             Control::DragCancel { id: 3 },
         ];
@@ -636,6 +698,42 @@ mod tests {
             FRAMING.write(&mut a, msg).await.unwrap();
             let got: Control = FRAMING.read(&mut b).await.unwrap();
             assert_eq!(&got, msg);
+        }
+    }
+
+    /// A 2.3 drag carries no token; content streams and drag parts
+    /// roundtrip
+    #[test]
+    fn drag_messages() {
+        let old = r#"{"type":"drag_files","id":3,"files":[]}"#;
+        let parsed: Control = serde_json::from_str(old).unwrap();
+        assert_eq!(
+            parsed,
+            Control::DragFiles {
+                id: 3,
+                files: vec![],
+                token: String::new()
+            }
+        );
+        let request = StreamRequest::Drag { token: "t".into() };
+        let json = serde_json::to_string(&request).unwrap();
+        assert_eq!(
+            serde_json::from_str::<StreamRequest>(&json).unwrap(),
+            request
+        );
+        for part in [
+            DragPart::Dir {
+                path: "photos/2026".into(),
+            },
+            DragPart::File {
+                path: "photos/a.jpg".into(),
+                size: 7,
+            },
+            DragPart::Hash { hash: "ab".into() },
+            DragPart::Done,
+        ] {
+            let json = serde_json::to_string(&part).unwrap();
+            assert_eq!(serde_json::from_str::<DragPart>(&json).unwrap(), part);
         }
     }
 

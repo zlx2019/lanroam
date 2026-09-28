@@ -32,11 +32,12 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{Instant, MissedTickBehavior};
 
 use super::clipboard::ClipMsg;
+use super::files::{self, Offers};
 use super::input::{InputMsg, LinkHandle, Links};
 use super::{EngineError, EngineEvent, Spot, Status};
 use crate::group::{ClipboardShare, GroupDoc, GroupStore, Profile};
 use crate::layout;
-use crate::protocol::{Control, Datagram, FRAMING, Purpose, reason_code};
+use crate::protocol::{Control, Datagram, FRAMING, Purpose, StreamRequest, reason_code};
 use crate::transport::{Link, Transport, TransportError, close_code};
 
 /// First retry delay after a failed dial or a lost link
@@ -61,6 +62,9 @@ const TICK: Duration = Duration::from_secs(1);
 
 /// How long a closing link may take to deliver its last messages
 const LINGER: Duration = Duration::from_secs(1);
+
+/// How long a content stream may take to say what it wants
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The mesh's inbox
 pub(super) enum Msg {
@@ -215,6 +219,8 @@ pub(super) struct Wiring {
     pub(super) links: watch::Sender<Links>,
     /// The clipboard actor's inbox
     pub(super) clip: mpsc::UnboundedSender<ClipMsg>,
+    /// Files this device offers for drags
+    pub(super) offers: Offers,
 }
 
 /// A registered member link
@@ -628,6 +634,7 @@ impl Mesh {
             info.fingerprint.clone(),
             conn.clone(),
             self.wiring.clip.clone(),
+            self.wiring.offers.clone(),
         ));
         if let Some(doc) = &self.doc {
             let _ = out.send(Control::Group { doc: doc.clone() });
@@ -1139,21 +1146,48 @@ async fn read_datagrams(
     }
 }
 
-/// Hand the streams a member opens on its link (content streams) to the
-/// clipboard actor
+/// Take a member's content streams, each answered on its own
 async fn accept_streams(
     from: String,
     conn: quinn::Connection,
     clip: mpsc::UnboundedSender<ClipMsg>,
+    offers: Offers,
 ) {
     while let Ok((send, recv)) = conn.accept_bi().await {
-        let stream = ClipMsg::Stream {
-            from: from.clone(),
-            send,
-            recv,
-        };
-        if clip.send(stream).is_err() {
+        let answer = answer_stream(from.clone(), send, recv, clip.clone(), offers.clone());
+        tokio::spawn(answer);
+    }
+}
+
+/// Read what a content stream wants, and have it answered: clipboard
+/// content by the clipboard actor, the files of a drag from `offers`
+async fn answer_stream(
+    from: String,
+    send: quinn::SendStream,
+    mut recv: quinn::RecvStream,
+    clip: mpsc::UnboundedSender<ClipMsg>,
+    offers: Offers,
+) {
+    let request = tokio::time::timeout(REQUEST_TIMEOUT, FRAMING.read(&mut recv)).await;
+    let request = match request {
+        Ok(Ok(request)) => request,
+        Ok(Err(e)) => {
+            tracing::debug!("a content stream asked for nothing known: {e}");
             return;
+        }
+        Err(_) => {
+            tracing::debug!("a content stream did not say what it wants");
+            return;
+        }
+    };
+    match request {
+        StreamRequest::Clipboard { hash } => {
+            let _ = clip.send(ClipMsg::Stream { from, send, hash });
+        }
+        StreamRequest::Drag { token } => {
+            if let Err(e) = files::serve(send, token, offers).await {
+                tracing::info!("cannot send the files of a drag: {e}");
+            }
         }
     }
 }

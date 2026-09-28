@@ -29,6 +29,7 @@ uuid = { workspace = true }
 spake2 = { workspace = true }
 hex = { workspace = true }
 getrandom = { workspace = true }
+fs4 = { workspace = true }
 
 [lints]
 workspace = true
