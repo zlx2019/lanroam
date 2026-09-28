@@ -31,7 +31,8 @@ Arrange them once. From then on, move the pointer past the edge of one screen an
 - 🖱️ **Edge crossing** — push the pointer past an edge your screen shares with another device and you control that device. Carry on across further devices and back, in any direction; positions map proportionally along the shared edges.
 - 🎚️ **Crossing on your terms** — cross an edge right away, only while holding a modifier, or after a short dwell against it; a corner guard keeps the pointer home when you aim for a screen corner. Each edge can be closed or cross its own way.
 - 🔀 **Mac ↔ Windows** — Command and Control swap places between a Mac and a PC, so shortcuts stay under the same fingers. The layout is in logical pixels, so a 150% Windows display lines up with a Mac's.
-- 🧩 **Arrange screens** — the Arrange page shows the screens of every device in the group; drag them into place, and the whole group has the new layout. While it is open, the other devices show their numbers on their own screens. While it is open, the other devices show their numbers on their own screens.
+- 🧩 **Arrange screens** — the Arrange page shows the screens of every device in the group; drag them into place, and the whole group has the new layout. While it is open, the other devices show their numbers on their own screens.
+- 📋 **The clipboard comes along** — copy on one device, move the pointer over and paste on the next; what you copy there comes back with you. Text and images; what a password manager copies never leaves the device, and **Settings → Clipboard** turns sharing or a kind off.
 - ⌨️ **Hotkeys** — jump to a device by number or to the neighbour in a direction, lock the pointer to a device, or go home and pause crossing. Record your own combinations in the settings.
 - 📌 **Keys that stay here** — combinations you keep local (switching input methods, screenshots) act on this computer even while you control another. Media and volume keys go to the device you control, or stay here.
 - 🖲️ **Per-device pointer and wheel** — each device sets how fast the pointer and the wheel go on it, and can turn scrolling around for a Mac with natural scrolling.
@@ -64,7 +65,7 @@ The digits, arrows and L need the left Alt: on many layouts, AltGr (Ctrl+right A
 | M1 | Input capture and injection (macOS ↔ Windows) | ✅ |
 | M2 | Desk groups, screen layout, edge crossing, hotkeys | ✅ |
 | M3 | Desktop app: screen arrangement, pairing, tray, settings | 🚧 |
-| M4 | Clipboard hand-off | |
+| M4 | Clipboard hand-off | 🚧 |
 | M5 | Drag and drop files between devices | |
 
 ## 📥 Install
