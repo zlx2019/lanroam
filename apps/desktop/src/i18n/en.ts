@@ -69,6 +69,7 @@ export const en: Record<TextKey, string> = {
   "settings.general": "General",
   "settings.control": "Control",
   "settings.clipboard": "Clipboard",
+  "settings.files": "Files",
   "settings.look": "Appearance",
   "settings.about": "About",
   "settings.name": "Device name",
@@ -148,6 +149,12 @@ export const en: Record<TextKey, string> = {
   "clip.image": "Images",
   "clip.imageHint": "Screenshots and copied pictures",
   "clip.note": "What a password manager copies never leaves this device. Copied files are not shared yet.",
+
+  "files.drag": "Drag files",
+  "files.dragHint": "Drag files across a screen edge onto another device; both devices need it on",
+  "files.prefetch": "Fetch ahead up to",
+  "files.prefetchHint": "Files copied on another device up to this size come over with the pointer, ready to paste; 0 for no limit",
+  "files.note": "Released before the files are all there, a drag waits where it is and drops once they are; Esc cancels it.",
 
   "hint.paused": "Paused",
   "hint.pausedSub": "{keys} to resume",

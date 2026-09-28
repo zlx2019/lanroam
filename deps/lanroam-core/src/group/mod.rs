@@ -80,6 +80,9 @@ pub struct Profile {
     /// What of its clipboard the device hands over and takes in
     #[serde(default)]
     pub clipboard: ClipboardShare,
+    /// What the device does with files from the group
+    #[serde(default)]
+    pub files: FileShare,
 }
 
 /// What of its clipboard a device shares with the group: it hands over and
@@ -117,6 +120,28 @@ impl ClipboardShare {
     }
 }
 
+/// What a device does with files from the group; the group sees it, so no
+/// drag of files is carried to or from a device that does not take them
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FileShare {
+    /// Files dragged across screen edges, to and from the device
+    pub drag: bool,
+    /// Most files copied elsewhere fetched here ahead of a paste, in MiB;
+    /// 0 for no limit
+    pub prefetch: u32,
+}
+
+impl Default for FileShare {
+    /// Drags on, prefetching up to 1 GiB
+    fn default() -> Self {
+        Self {
+            drag: true,
+            prefetch: 1024,
+        }
+    }
+}
+
 /// Default of switches that start on
 fn enabled() -> bool {
     true
@@ -145,6 +170,7 @@ impl Profile {
             swap_cmd_ctrl: enabled(),
             pointer_speed: normal_speed(),
             clipboard: ClipboardShare::default(),
+            files: FileShare::default(),
         }
     }
 
@@ -704,5 +730,29 @@ mod tests {
             ..ClipboardShare::default()
         };
         assert!(no_images.allows(Kind::Text) && !no_images.allows(Kind::Image));
+    }
+
+    /// A profile from before file settings drags and prefetches up to 1 GiB
+    #[test]
+    fn file_share() {
+        let old: Profile = serde_json::from_value(serde_json::json!({
+            "rev": 1, "device_id": "d", "name": "n", "platform": "macos"
+        }))
+        .unwrap();
+        assert_eq!(
+            old.files,
+            FileShare {
+                drag: true,
+                prefetch: 1024
+            }
+        );
+        let partial: FileShare = serde_json::from_str(r#"{"drag":false}"#).unwrap();
+        assert_eq!(
+            partial,
+            FileShare {
+                drag: false,
+                prefetch: 1024
+            }
+        );
     }
 }

@@ -237,6 +237,8 @@ pub(super) enum InputMsg {
         numbered: Vec<String>,
         /// Settings of edges between members
         edges: HashMap<(String, String), EdgeSettings>,
+        /// Members files are not dragged to or from
+        dragless: HashSet<String>,
     },
     /// Carry out the user's request at the next local event
     Request(Request),
@@ -620,6 +622,7 @@ impl Input {
                 names,
                 numbered,
                 edges,
+                dragless,
             } => {
                 self.names = names;
                 let mut switch = switch::lock(&self.switch);
@@ -627,6 +630,7 @@ impl Input {
                 switch.set_pointer_speeds(speeds);
                 switch.set_numbering(numbered);
                 switch.set_edges(edges);
+                switch.set_dragless(dragless);
             }
             InputMsg::Settings(settings) => {
                 self.wheel.set(settings.scrolling);

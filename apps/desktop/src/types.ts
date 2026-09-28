@@ -113,6 +113,8 @@ export interface DeviceDto {
   pointerSpeed: number;
   /** What of its clipboard it shares */
   clipboard: ClipboardShare;
+  /** What it does with files from the group */
+  files: FileShare;
   /** Where it sits on the layout canvas (logical pixels): its displays' bounds */
   rect: RectDto | null;
   /** Its origin on the canvas, which placing moves */
@@ -150,6 +152,14 @@ export interface ClipboardShare {
   on: boolean;
   text: boolean;
   image: boolean;
+}
+
+/** What a device does with files from the group */
+export interface FileShare {
+  /** Files dragged across screen edges, to and from it */
+  drag: boolean;
+  /** Most files copied elsewhere fetched ahead of a paste, in MiB; 0 for no limit */
+  prefetch: number;
 }
 
 /** Where input goes right now */

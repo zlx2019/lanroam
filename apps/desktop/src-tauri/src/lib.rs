@@ -97,6 +97,7 @@ pub fn run() {
             commands::set_swap,
             commands::set_pointer_speed,
             commands::set_clipboard,
+            commands::set_files,
             commands::request_action,
             commands::get_permissions,
             commands::open_permission,

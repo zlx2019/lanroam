@@ -351,6 +351,16 @@ main {
 .input:focus {
   border-color: var(--accent);
 }
+.unit-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--mist);
+}
+.unit-field .input {
+  width: 110px;
+  text-align: right;
+}
 .stepper {
   display: inline-flex;
   align-items: center;

@@ -119,6 +119,21 @@ export function ClipboardIcon() {
   );
 }
 
+/** A folder: files */
+export function FolderIcon() {
+  return (
+    <svg viewBox="0 0 16 16">
+      <path
+        d="M1.8 4.3c0-.8.6-1.5 1.5-1.5h3l1.5 1.7h4.9c.8 0 1.5.7 1.5 1.5v5.7c0 .8-.7 1.5-1.5 1.5H3.3c-.9 0-1.5-.7-1.5-1.5z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 /** Pause */
 export function PauseIcon() {
   return (

@@ -35,7 +35,7 @@ use super::clipboard::ClipMsg;
 use super::files::{self, Offers};
 use super::input::{InputMsg, LinkHandle, Links};
 use super::{EngineError, EngineEvent, Spot, Status};
-use crate::group::{ClipboardShare, GroupDoc, GroupStore, Profile};
+use crate::group::{ClipboardShare, FileShare, GroupDoc, GroupStore, Profile};
 use crate::layout;
 use crate::protocol::{Control, Datagram, FRAMING, Purpose, StreamRequest, reason_code};
 use crate::transport::{Link, Transport, TransportError, close_code};
@@ -149,6 +149,13 @@ pub(super) enum Msg {
     SetClipboard {
         /// What
         share: ClipboardShare,
+        /// Done
+        reply: oneshot::Sender<Result<(), EngineError>>,
+    },
+    /// Set what this device does with files from the group
+    SetFiles {
+        /// What
+        share: FileShare,
         /// Done
         reply: oneshot::Sender<Result<(), EngineError>>,
     },
@@ -271,6 +278,8 @@ pub(super) struct Mesh {
     pointer_speed: Option<u32>,
     /// What of the clipboard is shared, once changed while running
     clipboard: Option<ClipboardShare>,
+    /// What is done with files, once changed while running
+    files: Option<FileShare>,
     /// Channels
     wiring: Wiring,
     /// Group ID currently advertised
@@ -308,6 +317,7 @@ impl Mesh {
             swap_cmd_ctrl: None,
             pointer_speed: None,
             clipboard: None,
+            files: None,
             wiring,
             advertised: None,
             peers: HashMap::new(),
@@ -406,6 +416,17 @@ impl Mesh {
                 let result = match self.doc {
                     Some(_) => {
                         self.clipboard = Some(share);
+                        self.commit();
+                        Ok(())
+                    }
+                    None => Err(EngineError::NoGroup),
+                };
+                let _ = reply.send(result);
+            }
+            Msg::SetFiles { share, reply } => {
+                let result = match self.doc {
+                    Some(_) => {
+                        self.files = Some(share);
                         self.commit();
                         Ok(())
                     }
@@ -831,6 +852,9 @@ impl Mesh {
         if let Some(share) = self.clipboard {
             profile.clipboard = share;
         }
+        if let Some(share) = self.files {
+            profile.files = share;
+        }
         profile
     }
 
@@ -1003,10 +1027,11 @@ impl Mesh {
 
     /// Hand the input actor the layout of the devices online right now (this
     /// one and those linked), which of them get Command and Control swapped,
-    /// their pointer speeds, and the members' names
+    /// their pointer speeds, the members' names, and those that do not drag
+    /// files
     fn publish_world(&self) {
         let own = self.info.fingerprint.as_str();
-        let (world, swapped, speeds, names, numbered, edges) = match &self.doc {
+        let (world, swapped, speeds, names, numbered, edges, dragless) = match &self.doc {
             Some(doc) => {
                 let online = |fp: &str| fp == own || self.links.contains_key(fp);
                 let placed = layout::world(doc);
@@ -1041,7 +1066,13 @@ impl Mesh {
                     .map(|(fp, record)| (fp.to_string(), record.profile.name.clone()))
                     .collect();
                 let edges = doc.edge_settings().collect();
-                (World::new(devices), swapped, speeds, names, numbered, edges)
+                let dragless = doc
+                    .members()
+                    .filter(|(_, record)| !record.profile.files.drag)
+                    .map(|(fp, _)| fp.to_string())
+                    .collect();
+                let world = World::new(devices);
+                (world, swapped, speeds, names, numbered, edges, dragless)
             }
             None => (
                 World::default(),
@@ -1050,6 +1081,7 @@ impl Mesh {
                 HashMap::new(),
                 Vec::new(),
                 HashMap::new(),
+                HashSet::new(),
             ),
         };
         let _ = self.wiring.input.send(InputMsg::World {
@@ -1059,6 +1091,7 @@ impl Mesh {
             names,
             numbered,
             edges,
+            dragless,
         });
     }
 

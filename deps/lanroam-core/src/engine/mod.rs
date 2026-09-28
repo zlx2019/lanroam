@@ -40,7 +40,7 @@ use tokio::task::JoinHandle;
 
 use crate::diag;
 use crate::group::join::{self, Challenge, JoinError, JoinGate, Verdict};
-use crate::group::{ClipboardShare, GroupDoc, GroupStore, Standing};
+use crate::group::{ClipboardShare, FileShare, GroupDoc, GroupStore, Standing};
 use crate::layout::LayoutError;
 use crate::node::{Node, NodeConfig, NodeError};
 use crate::protocol::{Purpose, join_denied, reason_code};
@@ -436,6 +436,13 @@ impl Engine {
     /// over as the pointer leaves, taken in as it comes
     pub async fn set_clipboard(&self, share: ClipboardShare) -> Result<(), EngineError> {
         self.ask(|reply| Msg::SetClipboard { share, reply }).await?
+    }
+
+    /// Set what this device does with files from the group: whether files
+    /// are dragged to and from it, and how much of those copied elsewhere
+    /// it fetches ahead of a paste
+    pub async fn set_files(&self, share: FileShare) -> Result<(), EngineError> {
+        self.ask(|reply| Msg::SetFiles { share, reply }).await?
     }
 
     /// Remove a member from the group

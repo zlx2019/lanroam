@@ -1535,6 +1535,40 @@ async fn other_drags_stay() {
     .await;
 }
 
+/// A drag of files stays at the edge of a device that takes no drags,
+/// without asking what it holds
+#[tokio::test]
+async fn drags_stay_off_devices_without_them() {
+    let (a, b, _c) = row_of_three().await;
+    let off = FileShare {
+        drag: false,
+        ..FileShare::default()
+    };
+    b.engine.set_files(off).await.unwrap();
+    let fp = b.fp();
+    a.until("b's file settings", |status| {
+        status
+            .doc
+            .as_ref()
+            .is_some_and(|doc| doc.devices[&fp].profile.files == off)
+    })
+    .await;
+    tokio::time::sleep(SETTLE).await;
+    a.drag.holds(&[a.file_to_drag("report.pdf")]);
+    a.input.left(true);
+    a.dragged(|call| *call == DragCall::Pressed).await;
+    for _ in 0..3 {
+        assert!(!parked(&a.input.push((999, 500), 5.0, 0.0)));
+        tokio::time::sleep(SETTLE).await;
+    }
+    let probed = a
+        .drag
+        .calls()
+        .into_iter()
+        .any(|call| matches!(call, DragCall::Probe(_)));
+    assert!(!probed);
+}
+
 /// Files dragged on b come home with the pointer: b's drag ends there, and
 /// this device drags them on
 #[tokio::test]

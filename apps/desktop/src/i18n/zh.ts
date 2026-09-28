@@ -74,6 +74,7 @@ export const zh = {
   "settings.general": "通用",
   "settings.control": "控制",
   "settings.clipboard": "剪贴板",
+  "settings.files": "文件",
   "settings.look": "外观",
   "settings.about": "关于",
   "settings.name": "设备名称",
@@ -157,6 +158,12 @@ export const zh = {
   "clip.image": "图片",
   "clip.imageHint": "截图、复制的图片",
   "clip.note": "密码管理器复制的内容不会离开本机。暂不支持复制的文件。",
+
+  "files.drag": "拖拽文件",
+  "files.dragHint": "按住文件拖过屏幕边缘，放到另一台设备上；两台设备都开启才可以",
+  "files.prefetch": "提前传输上限",
+  "files.prefetchHint": "别的设备上复制的文件不超过这个大小，光标一过来就提前传好；0 表示不限",
+  "files.note": "文件还没传完就松手时，指针会停在松手处，传完再放下；按 Esc 取消。",
 
   "hint.paused": "已暂停",
   "hint.pausedSub": "{keys} 恢复",

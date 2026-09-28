@@ -419,6 +419,8 @@ pub struct Switch {
     requests: Vec<Request>,
     /// Devices that get Command and Control swapped
     swapped: HashSet<String>,
+    /// Devices files are not dragged to or from
+    dragless: HashSet<String>,
     /// Pointer speed of each device, in percent; normal for the others
     speeds: HashMap<String, u32>,
     /// Where media keys go while another device is controlled
@@ -469,6 +471,7 @@ impl Switch {
             release_requested: false,
             requests: Vec::new(),
             swapped: HashSet::new(),
+            dragless: HashSet::new(),
             speeds: HashMap::new(),
             media_keys: MediaKeys::default(),
             controlled: false,
@@ -550,6 +553,12 @@ impl Switch {
     pub fn set_switching(&mut self, switching: Switching) {
         self.switching = switching;
         self.dwell = None;
+    }
+
+    /// Set the devices files are not dragged to or from: a drag held on
+    /// one, or pushed towards one, stays at the edge
+    pub fn set_dragless(&mut self, dragless: HashSet<String>) {
+        self.dragless = dragless;
     }
 
     /// Set the settings of single edges, by [`edge_key`]
@@ -872,6 +881,7 @@ impl Switch {
             Held::Nothing => true,
             Held::Other => false,
             Held::Carrying => self.carry.as_ref().is_some_and(|carry| carry.origin == to),
+            Held::Drag if self.dragless.contains(on) || self.dragless.contains(to) => false,
             Held::Drag => match self.probe {
                 Probe::Files => true,
                 Probe::Asked => false,
@@ -1784,6 +1794,24 @@ mod tests {
             press: 2,
         };
         assert_eq!(out[0], ask);
+    }
+
+    /// A drag held on a device that does not drag files, or pushed towards
+    /// one, stays at the edge without asking
+    #[test]
+    fn drags_stay_off_devices_without_them() {
+        let mut sw = switch();
+        for dragless in ["pc", "mac"] {
+            sw.set_dragless(HashSet::from([dragless.to_string()]));
+            feed(&mut sw, button(MouseButton::Left, true));
+            let (d, out) = cross_to_pc(&mut sw, 400);
+            assert_eq!((d.verdict, d.cursor, out), (Verdict::Pass, None, vec![]));
+            feed(&mut sw, button(MouseButton::Left, false));
+        }
+        sw.set_dragless(HashSet::new());
+        feed(&mut sw, button(MouseButton::Left, true));
+        let (_, out) = cross_to_pc(&mut sw, 400);
+        assert!(matches!(out[..], [Emit::DragAtEdge { .. }]));
     }
 
     /// Files dragged on another device come home with the pointer, and are

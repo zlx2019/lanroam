@@ -8,18 +8,20 @@ import type { InputSettings, SettingsDto, Snapshot } from "../types";
 import { applyOpacity } from "../theme";
 import { Row, Seg, Slider, Toggle } from "./controls";
 import { ClipboardSettings } from "./ClipboardSettings";
-import { ClipboardIcon, EyeIcon, GearIcon, InfoIcon, SwitchIcon } from "./icons";
+import { FilesSettings } from "./FilesSettings";
+import { ClipboardIcon, EyeIcon, FolderIcon, GearIcon, InfoIcon, SwitchIcon } from "./icons";
 import { KeyboardMouseSettings } from "./KeyboardMouseSettings";
 import { SwitchingSettings } from "./SwitchingSettings";
 
 /** Sections of the settings page */
-export type Section = "general" | "control" | "clipboard" | "look" | "about";
+export type Section = "general" | "control" | "clipboard" | "files" | "look" | "about";
 
 /** Sections in order, with their icons */
 const SECTIONS: [Section, ReactNode][] = [
   ["general", <GearIcon key="general" />],
   ["control", <SwitchIcon key="control" />],
   ["clipboard", <ClipboardIcon key="clipboard" />],
+  ["files", <FolderIcon key="files" />],
   ["look", <EyeIcon key="look" />],
   ["about", <InfoIcon key="about" />],
 ];
@@ -66,6 +68,8 @@ export function SettingsPage({
           <Control snapshot={snapshot} onToast={onToast} />
         ) : section === "clipboard" ? (
           <ClipboardSettings snapshot={snapshot} onToast={onToast} />
+        ) : section === "files" ? (
+          <FilesSettings snapshot={snapshot} onToast={onToast} />
         ) : section === "look" ? (
           <Look settings={settings} onSettings={onSettings} onToast={onToast} />
         ) : (

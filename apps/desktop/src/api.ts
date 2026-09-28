@@ -5,6 +5,7 @@ import type {
   Action,
   ClipboardShare,
   EdgeSettings,
+  FileShare,
   InputDto,
   InputSettings,
   JoinAnswerDto,
@@ -51,6 +52,8 @@ export const api = {
   setPointerSpeed: (speed: number) => invoke<void>("set_pointer_speed", { speed }),
   /** What of this device's clipboard is shared with the group */
   setClipboard: (share: ClipboardShare) => invoke<void>("set_clipboard", { share }),
+  /** What this device does with files from the group */
+  setFiles: (share: FileShare) => invoke<void>("set_files", { share }),
   /** Pause, lock or jump at the next local input */
   requestAction: (action: Action) => invoke<void>("request_action", { action }),
   /** The OS input permissions */

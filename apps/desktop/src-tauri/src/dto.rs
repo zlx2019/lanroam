@@ -7,7 +7,7 @@ use std::collections::HashSet;
 
 use lanroam_core::engine::{ControlEvent, EngineError, InputStatus};
 use lanroam_core::group::join::JoinError;
-use lanroam_core::group::{ClipboardShare, GroupDoc};
+use lanroam_core::group::{ClipboardShare, FileShare, GroupDoc};
 use lanroam_core::lan_kit::{Peer, PeerInfo};
 use lanroam_core::lanroam_input::Rect;
 use lanroam_core::lanroam_input::config::EdgeSettings;
@@ -110,6 +110,8 @@ pub struct DeviceDto {
     pub pointer_speed: u32,
     /// What of its clipboard it shares
     pub clipboard: ClipboardShare,
+    /// What it does with files from the group
+    pub files: FileShare,
     /// Where the device sits on the layout canvas (logical pixels): the
     /// bounds of its displays
     pub rect: Option<RectDto>,
@@ -181,6 +183,7 @@ impl GroupDto {
                     swap: profile.swap_cmd_ctrl,
                     pointer_speed: profile.pointer_speed,
                     clipboard: profile.clipboard,
+                    files: profile.files,
                     rect: placed.and_then(|d| d.bounds()).map(RectDto::from),
                     origin: record.placement.as_ref().map(|p| PointDto {
                         x: p.at.x,

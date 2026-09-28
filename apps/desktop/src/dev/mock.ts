@@ -14,6 +14,7 @@ import type {
   ClipboardShare,
   DeviceDto,
   EdgeSettings,
+  FileShare,
   InputSettings,
   NearbyDto,
   SceneDto,
@@ -48,6 +49,7 @@ function device(
     swap: true,
     pointerSpeed: 100,
     clipboard: { on: true, text: true, image: true },
+    files: { drag: true, prefetch: 1024 },
     rect: { x, y: 0, w: lw, h: lh },
     screens: [{ x, y: 0, w: lw, h: lh }],
     origin: { x, y: 0 },
@@ -160,6 +162,7 @@ const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
   set_swap: (args) => setLocal({ swap: args.on as boolean }),
   set_pointer_speed: (args) => setLocal({ pointerSpeed: args.speed as number }),
   set_clipboard: (args) => setLocal({ clipboard: args.share as ClipboardShare }),
+  set_files: (args) => setLocal({ files: args.share as FileShare }),
   set_edge: (args) => {
     const group = state.group;
     if (!group) return;
