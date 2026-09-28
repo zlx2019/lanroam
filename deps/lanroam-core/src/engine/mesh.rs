@@ -1260,7 +1260,16 @@ async fn write_link(
     mut out: mpsc::UnboundedReceiver<Control>,
 ) {
     while let Some(msg) = out.recv().await {
-        if FRAMING.write(&mut send, &msg).await.is_err() {
+        // Too large for a frame (a drag of very many files): left out, the
+        // link goes on
+        let frame = match FRAMING.encode(&msg) {
+            Ok(frame) => frame,
+            Err(e) => {
+                tracing::warn!(kind = msg.kind(), "cannot send a control message: {e}");
+                continue;
+            }
+        };
+        if lan_kit::frame::write_raw(&mut send, &frame).await.is_err() {
             return;
         }
     }
@@ -1274,6 +1283,45 @@ async fn write_link(
 mod tests {
     use super::*;
     use crate::test_util::TestNode;
+
+    /// A message too large for a frame is left out, and the link keeps
+    /// working
+    #[tokio::test]
+    async fn oversized_messages_are_left_out() {
+        let (_a, _b, client, server) = TestNode::link_pair().await;
+        let (_, conn, _send, recv) = server.into_parts();
+        let (inbox, mut received) = mpsc::unbounded_channel();
+        tokio::spawn(read_link(7, recv, conn, inbox));
+
+        let (_, conn, send, _recv) = client.into_parts();
+        let (out, messages) = mpsc::unbounded_channel();
+        tokio::spawn(write_link(send, conn, messages));
+        let item = crate::protocol::DragItem {
+            name: "x".repeat(200),
+            size: 1,
+            dir: false,
+        };
+        let files = vec![item; 1000];
+        let token = String::new();
+        out.send(Control::DragFiles {
+            id: 1,
+            files,
+            token,
+        })
+        .unwrap();
+        out.send(Control::Ping { seq: 1, sent_us: 2 }).unwrap();
+        let next = tokio::time::timeout(Duration::from_secs(5), received.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            next,
+            Msg::Received {
+                id: 7,
+                msg: Control::Ping { seq: 1, .. }
+            }
+        ));
+    }
 
     /// An unknown message is skipped and the link keeps working
     #[tokio::test]
