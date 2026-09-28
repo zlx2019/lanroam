@@ -12,14 +12,18 @@
 //! The windows are created on first use and then only shown and hidden. A
 //! freshly created page may miss the event that asked for it, so it also
 //! asks for its scene once loaded ([`scene_of`]).
+//!
+//! The card of a drop still arriving takes clicks (its button cancels it):
+//! its page tells where it is ([`hot_area`]), and while it does, the
+//! pointer is watched and the window takes clicks while it is over there.
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use lanroam_core::engine::Receiving;
 use lanroam_core::lanroam_input::Point;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{
     AppHandle, Emitter, Manager, Monitor, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
@@ -52,6 +56,16 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 /// One change of the windows at a time: two could create the same window,
 /// or leave an older scene on screen
 static APPLYING: Mutex<()> = Mutex::new(());
+
+/// Where an overlay takes clicks: its window's label, and the area
+static HOT: Mutex<Option<(String, AreaDto)>> = Mutex::new(None);
+
+/// A task watches the pointer over [`HOT`]
+static WATCHING: AtomicBool = AtomicBool::new(false);
+
+/// How often the pointer is looked at while an overlay takes clicks
+/// somewhere
+const HOT_POLL: Duration = Duration::from_millis(30);
 
 /// This device's number in the layout, and its name
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -193,6 +207,8 @@ pub struct GlowDto {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReceivingDto {
+    /// The drag, which its card cancels by
+    pub id: u64,
     /// Where the drop lands, from the display's left (CSS pixels)
     pub x: f64,
     /// Where the drop lands, from the display's top (CSS pixels)
@@ -205,8 +221,29 @@ pub struct ReceivingDto {
     pub done: u64,
     /// Bytes in all
     pub total: u64,
-    /// Esc cancels: the drop waits (once dropped, the app has them)
+    /// Esc cancels: the drop waits (once dropped, its card's button does)
     pub cancel: bool,
+}
+
+/// Where an overlay's page takes clicks: a rectangle in CSS pixels from
+/// its window's top left
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+pub struct AreaDto {
+    /// From the left
+    pub x: f64,
+    /// From the top
+    pub y: f64,
+    /// Wide
+    pub width: f64,
+    /// High
+    pub height: f64,
+}
+
+impl AreaDto {
+    /// Whether it holds (`x`, `y`)
+    fn holds(&self, x: f64, y: f64) -> bool {
+        x >= self.x && x < self.x + self.width && y >= self.y && y < self.y + self.height
+    }
 }
 
 /// What one display's overlay shows
@@ -319,6 +356,7 @@ pub fn receiving(app: &AppHandle, receiving: Option<Receiving>) {
     let part = receiving.and_then(|receiving| {
         let (index, x, y) = on_overlay(app, receiving.at)?;
         let dto = ReceivingDto {
+            id: receiving.id,
             x,
             y,
             name: receiving.name,
@@ -332,6 +370,98 @@ pub fn receiving(app: &AppHandle, receiving: Option<Receiving>) {
     change(app, |o| {
         std::mem::replace(&mut o.receiving, part.clone()) != part
     });
+}
+
+/// Let the overlay window `label` take clicks in `area` (none: nowhere
+/// any more): only while the pointer is over it, letting them through
+/// everywhere else
+pub fn hot_area(app: &AppHandle, label: &str, area: Option<AreaDto>) {
+    {
+        let mut hot = lock(&HOT);
+        match area {
+            Some(area) => *hot = Some((label.to_string(), area)),
+            None => {
+                hot.take_if(|(hot, _)| hot == label);
+            }
+        }
+    }
+    if area.is_some() && !WATCHING.swap(true, Ordering::SeqCst) {
+        tauri::async_runtime::spawn(watch_hot(app.clone()));
+    }
+}
+
+/// Let the overlay whose hot area the pointer is over take clicks, and no
+/// other, until there is no hot area
+async fn watch_hot(app: AppHandle) {
+    let mut taking: Option<String> = None;
+    loop {
+        let hot = lock(&HOT).clone();
+        let over = hot
+            .as_ref()
+            .filter(|(label, area)| pointer_in(&app, label, area))
+            .map(|(label, _)| label.clone());
+        if over != taking {
+            if let Some(label) = &taking {
+                take_clicks(&app, label, false);
+            }
+            if let Some(label) = &over {
+                take_clicks(&app, label, true);
+            }
+            taking = over;
+        }
+        if hot.is_none() {
+            WATCHING.store(false, Ordering::SeqCst);
+            // Unless one came meanwhile, and no other task took it
+            if lock(&HOT).is_none() || WATCHING.swap(true, Ordering::SeqCst) {
+                return;
+            }
+        }
+        tokio::time::sleep(HOT_POLL).await;
+    }
+}
+
+/// Whether the pointer is in `area` of the overlay window `label`
+fn pointer_in(app: &AppHandle, label: &str, area: &AreaDto) -> bool {
+    let Some(window) = app.get_webview_window(label) else {
+        return false;
+    };
+    let (Ok(cursor), Ok(origin), Ok(scale)) = (
+        app.cursor_position(),
+        window.outer_position(),
+        window.scale_factor(),
+    ) else {
+        return false;
+    };
+    // Physical pixels on Windows; on macOS the pointer is in points scaled
+    // by the primary display's factor, the window in points scaled by its
+    // own
+    #[cfg(target_os = "macos")]
+    let (x, y) = {
+        let primary = app
+            .primary_monitor()
+            .ok()
+            .flatten()
+            .map_or(1.0, |m| m.scale_factor());
+        (
+            cursor.x / primary - f64::from(origin.x) / scale,
+            cursor.y / primary - f64::from(origin.y) / scale,
+        )
+    };
+    #[cfg(not(target_os = "macos"))]
+    let (x, y) = (
+        (cursor.x - f64::from(origin.x)) / scale,
+        (cursor.y - f64::from(origin.y)) / scale,
+    );
+    area.holds(x, y)
+}
+
+/// Have the overlay window `label` take clicks, or let them through
+fn take_clicks(app: &AppHandle, label: &str, take: bool) {
+    if let Some(window) = app.get_webview_window(label)
+        && let Err(e) = window.set_ignore_cursor_events(!take)
+    {
+        tracing::warn!("cannot change whether the overlay {label} takes clicks: {e}");
+    }
 }
 
 /// The scene of the overlay window `label`, for its page that just loaded
@@ -546,6 +676,9 @@ fn window(app: &AppHandle, index: usize) -> tauri::Result<WebviewWindow> {
         // window unless it starts unfocused)
         .focusable(false)
         .focused(false)
+        // A click on the card of a drop counts, though the window is never
+        // key (macOS)
+        .accept_first_mouse(true)
         .visible(false)
         .build()?;
     window.set_ignore_cursor_events(true)?;

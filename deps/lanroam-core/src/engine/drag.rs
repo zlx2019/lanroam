@@ -44,6 +44,8 @@ pub mod failed {
 /// were dropped (promised to the app they landed on)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Receiving {
+    /// The drag ([`super::Engine::cancel_drop`] cancels it by this)
+    pub id: u64,
     /// Where they will land (this device's coordinates)
     pub at: Point,
     /// The first file or folder dragged
@@ -54,7 +56,7 @@ pub struct Receiving {
     pub done: u64,
     /// Bytes in all
     pub total: u64,
-    /// Esc cancels: the drop waits (once dropped, the app has them)
+    /// Esc cancels: the drop waits (once dropped, its card cancels it)
     pub cancel: bool,
 }
 

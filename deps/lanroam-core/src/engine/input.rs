@@ -286,6 +286,8 @@ pub(super) enum InputMsg {
     },
     /// A small drag carried here gave its files a moment to arrive
     DragSettled(u64),
+    /// The user cancelled a drop whose files are still coming
+    CancelDrop(u64),
     /// Some of the files of a drag carried here are there
     DragProgress {
         /// The drag
@@ -675,6 +677,7 @@ impl Input {
             InputMsg::Staged { id, staged } => self.staged(id, staged),
             InputMsg::DragListed { id, entries } => self.listed(id, entries),
             InputMsg::DragSettled(id) => self.settled(id),
+            InputMsg::CancelDrop(id) => self.cancel_drop(id),
             InputMsg::DragProgress { id, done, total } => self.progress(id, done, total),
             InputMsg::DragReady(id) => self.ready(id),
             InputMsg::DragFailed { id, reason, detail } => {

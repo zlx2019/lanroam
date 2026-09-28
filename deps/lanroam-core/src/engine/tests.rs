@@ -1891,6 +1891,44 @@ async fn a_cancelled_drag_leaves_nothing() {
     }
 }
 
+/// A drop whose files are still coming is cancelled from its card: they
+/// stop coming, the app it landed on learns it, and nothing is left
+#[tokio::test]
+async fn a_dropped_drag_is_cancelled_from_its_card() {
+    let (a, mut b, _c) = row_of_three().await;
+    b.drag.drop_early();
+    // Large enough to be still coming when cancelled (sparse: no disk)
+    let movie = a.dir.0.join("movie.mp4");
+    std::fs::File::create(&movie)
+        .unwrap()
+        .set_len(256 << 20)
+        .unwrap();
+    a.drag.holds(std::slice::from_ref(&movie));
+    a.input.left(true);
+    a.push_until(5.0, parked).await;
+    a.input.left(false);
+    let (_, paths) = b.armed().await;
+    let id = b
+        .expect("the early drop", |event| match event {
+            EngineEvent::Receiving(Some(receiving)) if !receiving.cancel => Some(receiving.id),
+            _ => None,
+        })
+        .await;
+
+    b.engine.cancel_drop(id).unwrap();
+    b.expect("the card gone", |event| {
+        matches!(event, EngineEvent::Receiving(None)).then_some(())
+    })
+    .await;
+    assert!(b.drag.calls().contains(&DragCall::Deliver(id, false)));
+    let folder = paths[0].parent().unwrap().to_path_buf();
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while folder.exists() {
+        assert!(tokio::time::Instant::now() < deadline, "{folder:?} stays");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 /// A drop waiting on b holds the pointer on a: it neither moves nor clicks
 /// there, nor goes back to a (which would cancel the drop); once dropped,
 /// it moves again

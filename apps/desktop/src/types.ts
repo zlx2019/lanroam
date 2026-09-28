@@ -267,14 +267,24 @@ export type Edge = "left" | "right" | "top" | "bottom";
 
 /** The files of a waiting drop still arriving; `x`, `y`: where it lands on the display (CSS pixels) */
 export interface ReceivingDto {
+  /** The drag, which the card cancels by */
+  id: number;
   x: number;
   y: number;
   name: string;
   count: number;
   done: number;
   total: number;
-  /** Esc cancels: the drop waits (once dropped, the app has them) */
+  /** Esc cancels: the drop waits (once dropped, the card's button does) */
   cancel: boolean;
+}
+
+/** Where an overlay takes clicks, in CSS pixels from its window's top left */
+export interface AreaDto {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 /** What one display's overlay shows; `id` changes each time a part is shown again */

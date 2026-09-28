@@ -179,6 +179,23 @@ pub fn get_overlay(app: AppHandle, window: tauri::WebviewWindow) -> SceneDto {
     overlay::scene_of(&app, window.label())
 }
 
+/// Where the calling overlay window takes clicks, if anywhere (the card of a
+/// drop)
+#[tauri::command]
+pub fn set_overlay_area(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    area: Option<overlay::AreaDto>,
+) {
+    overlay::hot_area(&app, window.label(), area);
+}
+
+/// Cancel a drop whose files are still coming (the button on its card)
+#[tauri::command]
+pub fn cancel_drop(state: State<'_, AppState>, id: u64) -> Reply<()> {
+    Ok(state.engine.cancel_drop(id)?)
+}
+
 /// Rename this device
 #[tauri::command]
 pub async fn rename(app: AppHandle, state: State<'_, AppState>, name: String) -> Reply<()> {

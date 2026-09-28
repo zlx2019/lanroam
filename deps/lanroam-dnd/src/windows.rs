@@ -40,9 +40,9 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
 use lanroam_input::{INJECTED_MARKER, Point};
 use windows::Win32::Foundation::{
     COLORREF, DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, DV_E_FORMATETC,
-    DV_E_LINDEX, DV_E_TYMED, E_NOTIMPL, FILETIME, GlobalFree, HGLOBAL, HWND, LPARAM, LRESULT,
-    POINT, POINTL, S_FALSE, S_OK, STG_E_ACCESSDENIED, STG_E_INVALIDFUNCTION, STG_E_INVALIDPOINTER,
-    STG_E_READFAULT, WPARAM,
+    DV_E_LINDEX, DV_E_TYMED, E_NOTIMPL, ERROR_CANCELLED, FILETIME, GlobalFree, HGLOBAL, HWND,
+    LPARAM, LRESULT, POINT, POINTL, S_FALSE, S_OK, STG_E_ACCESSDENIED, STG_E_INVALIDFUNCTION,
+    STG_E_INVALIDPOINTER, STG_E_READFAULT, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{BLACK_BRUSH, GetStockObject, HBRUSH};
 use windows::Win32::System::Com::{
@@ -69,9 +69,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
-    BHID_DataObject, CLSID_DragDropHelper, DragQueryFileW, FD_ATTRIBUTES, FD_FILESIZE,
-    FD_PROGRESSUI, FD_UNICODE, FILEDESCRIPTORW, HDROP, IDataObjectAsyncCapability,
-    IDataObjectAsyncCapability_Impl, IDragSourceHelper, ILCreateFromPathW, ILFree, IShellItemArray,
+    BHID_DataObject, CLSID_DragDropHelper, DragQueryFileW, FD_ATTRIBUTES, FD_FILESIZE, FD_UNICODE,
+    FILEDESCRIPTORW, HDROP, IDataObjectAsyncCapability, IDataObjectAsyncCapability_Impl,
+    IDragSourceHelper, ILCreateFromPathW, ILFree, IShellItemArray,
     SHCreateShellItemArrayFromIDLists, SHCreateStdEnumFmtEtc, SHDoDragDrop,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -1164,7 +1164,8 @@ fn descriptor(entries: &[Listed]) -> windows::core::Result<HGLOBAL> {
 /// The descriptor of one folder or file: its path under the drop, its
 /// size, that it is a folder
 fn file_descriptor(entry: &Listed) -> FILEDESCRIPTORW {
-    let flags = FD_ATTRIBUTES.0 | FD_FILESIZE.0 | FD_PROGRESSUI.0 | FD_UNICODE.0;
+    // No FD_PROGRESSUI: Lanroam's card shows how far they are, and cancels
+    let flags = FD_ATTRIBUTES.0 | FD_FILESIZE.0 | FD_UNICODE.0;
     let mut descriptor = FILEDESCRIPTORW {
         dwFlags: flags as u32,
         dwFileAttributes: if entry.dir {
@@ -1258,9 +1259,10 @@ impl FileStream_Impl {
             match self.read_arrived(&mut buf[filled..]) {
                 Ok(Some(0)) => return (filled, S_FALSE),
                 Ok(Some(n)) => filled += n,
+                // Withdrawn as cancelled, which the app takes quietly
                 Ok(None) if self.gate.state.load(Ordering::SeqCst) == SHUT => {
                     tracing::info!(file = %self.path.display(), "a promised file will not arrive");
-                    return (filled, STG_E_READFAULT);
+                    return (filled, ERROR_CANCELLED.to_hresult());
                 }
                 Ok(None) => pump(),
                 Err(e) => {

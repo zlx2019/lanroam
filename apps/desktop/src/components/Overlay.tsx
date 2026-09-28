@@ -1,11 +1,11 @@
 // An on-screen overlay: shown by the backend over a whole display, clicks
 // pass through it. It draws the display's scene: this device's number when
 // the group identifies its screens, a hint near the bottom, the edge the
-// pointer came in by, a dimmed screen, how far the files of a waiting drop
-// are. Its colors are fixed, whatever the theme: it sits on top of any
-// desktop.
+// pointer came in by, a dimmed screen, how far the files of a drop are
+// (its card's button cancels a drop made already). Its colors are fixed,
+// whatever the theme: it sits on top of any desktop.
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "../api";
 import { EVENTS } from "../events";
@@ -66,17 +66,32 @@ export function Overlay() {
 /** Where the chip sits from the drop point, and the room it takes */
 const CHIP = { offset: 18, width: 290, height: 76 };
 
-/** The files of a waiting drop still arriving, next to where it lands */
+/**
+ * The files of a drop still arriving, next to where it lands. Waiting, Esc
+ * cancels it (the pointer holds still); dropped, the card's button does:
+ * the card then takes clicks, which the backend lets through elsewhere
+ */
 function Receiving({ receiving }: { receiving: ReceivingDto }) {
   const { t } = useI18n();
-  const { x, y, name, count, done, total, cancel } = receiving;
+  const { id, x, y, name, count, done, total, cancel } = receiving;
+  const card = useRef<HTMLDivElement>(null);
   const percent = total > 0 ? Math.min(100, Math.floor((done / total) * 100)) : 0;
   const what = several(name, count, t);
   // Below and right of the drop point, kept on the display
   const left = Math.max(0, Math.min(x + CHIP.offset, window.innerWidth - CHIP.width));
   const top = Math.max(0, Math.min(y + CHIP.offset, window.innerHeight - CHIP.height));
+
+  useLayoutEffect(() => {
+    const at = card.current?.getBoundingClientRect();
+    if (cancel || !at) return;
+    api.setOverlayArea({ x: at.left, y: at.top, width: at.width, height: at.height }).catch(console.error);
+    return () => {
+      api.setOverlayArea(null).catch(console.error);
+    };
+  }, [left, top, cancel]);
+
   return (
-    <div className="ov-receiving" style={{ left, top, width: CHIP.width }}>
+    <div ref={card} className="ov-receiving" style={{ left, top, width: CHIP.width }}>
       <IncomingIcon />
       <div className="ov-receiving-body">
         <div className="ov-receiving-line">
@@ -86,10 +101,17 @@ function Receiving({ receiving }: { receiving: ReceivingDto }) {
         <div className="ov-bar">
           <div style={{ width: `${percent}%` }} />
         </div>
-        <small>
-          {t("drop.receiving", { done: bytes(done), total: bytes(total) })}
-          {cancel && ` · ${t("drop.cancel")}`}
-        </small>
+        <div className="ov-receiving-foot">
+          <small>
+            {t("drop.receiving", { done: bytes(done), total: bytes(total) })}
+            {cancel && ` · ${t("drop.cancel")}`}
+          </small>
+          {!cancel && (
+            <button className="ov-cancel" onClick={() => api.cancelDrop(id).catch(console.error)}>
+              {t("cancel")}
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

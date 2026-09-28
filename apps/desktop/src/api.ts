@@ -3,6 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   Action,
+  AreaDto,
   ClipboardShare,
   EdgeSettings,
   FileShare,
@@ -44,6 +45,10 @@ export const api = {
   identify: () => invoke<void>("identify"),
   /** What this overlay window shows right now */
   getOverlay: () => invoke<SceneDto>("get_overlay"),
+  /** Where the calling overlay takes clicks, if anywhere */
+  setOverlayArea: (area: AreaDto | null) => invoke<void>("set_overlay_area", { area }),
+  /** Cancel a drop whose files are still coming */
+  cancelDrop: (id: number) => invoke<void>("cancel_drop", { id }),
   /** Rename this device */
   rename: (name: string) => invoke<void>("rename", { name }),
   /** Swap Command and Control for input into this device */

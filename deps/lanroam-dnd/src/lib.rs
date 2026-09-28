@@ -173,8 +173,9 @@ impl Dnd {
     }
 
     /// The files of the drag armed with `id` are all there (`true`), or
-    /// will not come: an app it dropped on early gets them now, or an
-    /// error
+    /// will not come (or not be wanted): an app it dropped on early gets
+    /// them now, or learns the drop was cancelled (quietly: the user
+    /// hears why from Lanroam)
     pub fn deliver(&self, id: u64, ok: bool) {
         self.imp.deliver(id, ok);
     }

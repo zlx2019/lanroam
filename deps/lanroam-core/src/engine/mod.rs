@@ -501,6 +501,16 @@ impl Engine {
             .map_err(|_| EngineError::Stopped)
     }
 
+    /// Cancel drop `id` (see [`Receiving::id`]), dropped before its files
+    /// were all there: they stop coming, and the app it landed on gets
+    /// none
+    pub fn cancel_drop(&self, id: u64) -> Result<(), EngineError> {
+        self.inner
+            .input
+            .send(InputMsg::CancelDrop(id))
+            .map_err(|_| EngineError::Stopped)
+    }
+
     /// The input settings in use
     pub fn input_settings(&self) -> InputSettings {
         self.inner

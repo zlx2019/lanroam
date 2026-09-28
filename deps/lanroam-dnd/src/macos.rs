@@ -54,8 +54,8 @@ use objc2_core_graphics::{
     CGMainDisplayID, CGMouseButton,
 };
 use objc2_foundation::{
-    NSArray, NSCocoaErrorDomain, NSDictionary, NSError, NSFileWriteUnknownError, NSNumber,
-    NSObject, NSObjectProtocol, NSOperationQueue, NSPoint, NSRect, NSSize, NSString, NSURL,
+    NSArray, NSCocoaErrorDomain, NSDictionary, NSError, NSNumber, NSObject, NSObjectProtocol,
+    NSOperationQueue, NSPoint, NSRect, NSSize, NSString, NSURL, NSUserCancelledError,
 };
 
 use crate::{DndError, Event, Listed, Sink};
@@ -755,7 +755,8 @@ fn promise_provider(path: &Path, source: &PromiseSource) -> Retained<NSFilePromi
     )
 }
 
-/// Tell an app whether the promise it was dropped was kept
+/// Tell an app whether the promise it was dropped was kept; one not kept is
+/// withdrawn as cancelled, which the app takes quietly
 fn complete(done: &Completion, ok: bool) {
     if ok {
         done.call((std::ptr::null_mut(),));
@@ -763,7 +764,7 @@ fn complete(done: &Completion, ok: bool) {
     }
     // SAFETY: a constant string Foundation defines, and no user info
     let error = unsafe {
-        NSError::errorWithDomain_code_userInfo(NSCocoaErrorDomain, NSFileWriteUnknownError, None)
+        NSError::errorWithDomain_code_userInfo(NSCocoaErrorDomain, NSUserCancelledError, None)
     };
     done.call((Retained::as_ptr(&error).cast_mut(),));
 }

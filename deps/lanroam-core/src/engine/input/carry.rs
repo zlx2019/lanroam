@@ -656,6 +656,7 @@ impl Input {
         }
         let total = files.iter().map(|item| item.size).sum();
         let receiving = Receiving {
+            id,
             at,
             name: files
                 .first()
@@ -819,6 +820,20 @@ impl Input {
             receiving,
         });
         self.replay(Op::Button(MouseButton::Left, false, at));
+    }
+
+    /// The user cancelled drop `id`, dropped before its files were all
+    /// there (the button on its card): they stop coming, and the app it
+    /// landed on gets none
+    pub(super) fn cancel_drop(&mut self, id: u64) {
+        if !self.drags.delivering.iter().any(|d| d.id == id) {
+            return;
+        }
+        tracing::info!(id, "the user cancelled a drop");
+        if let Some(native) = &self.drags.native {
+            native.deliver(id, false);
+        }
+        self.end_delivering(id, false);
     }
 
     /// The delivery of drag `id` is over: its files are all there (`ok`),
