@@ -26,6 +26,10 @@ const isOverlay = label.startsWith("overlay-");
 // The overlays are see-through pages: only what they draw shows
 if (isOverlay) document.documentElement.dataset.transparent = "1";
 
+// Over a window material (flagged by the app, see material.rs) the
+// background is a translucent tint
+if (window.__LANROAM_MATERIAL__) document.documentElement.dataset.material = "1";
+
 // Styles that differ by system (window corners, fonts)
 document.documentElement.dataset.os = navigator.userAgent.includes("Windows") ? "windows" : "macos";
 

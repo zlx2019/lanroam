@@ -10,15 +10,17 @@
 //! - Windows 11: Acrylic, DWM's own backdrop (blur behind lags there while
 //!   a window is dragged)
 //!
-//! A page over a material is told so (`data-material` on its root), and
-//! paints its background translucent.
+//! A page over a material is told so (a flag set before its scripts run,
+//! which puts `data-material` on its root), and paints its background
+//! translucent.
 
 use tauri::WebviewWindow;
 use tauri::utils::config::WindowEffectsConfig;
 use tauri::window::Effect;
 
-/// Marks the page as sitting on a material; runs before its own scripts
-pub const MARK: &str = "document.documentElement.dataset.material = '1';";
+/// Marks the page as sitting on a material; runs before its own scripts.
+/// Only a flag: in WebView2 the page has no root element yet at that point
+pub const MARK: &str = "window.__LANROAM_MATERIAL__ = true;";
 
 /// How far the desktop behind a window is blurred (macOS), in points
 #[cfg(target_os = "macos")]
