@@ -247,7 +247,7 @@ fn capture_thread(switch: Arc<Mutex<Switch>>, sink: EmitSink, stop: &AtomicBool,
         port: None,
         out: Vec::with_capacity(8),
         parked: false,
-        frozen: false,
+        frozen: None,
     }));
     // SAFETY: `context` comes from Box::into_raw and is reclaimed only below,
     // after `run_tap` has returned
@@ -376,6 +376,15 @@ fn set_suppression_interval(seconds: f64) {
     warn_on_error(err, "set the event suppression interval");
 }
 
+/// Put the local cursor at `at`
+fn warp(at: Point) {
+    let to = CGPoint {
+        x: f64::from(at.x),
+        y: f64::from(at.y),
+    };
+    warn_on_error(CGWarpMouseCursorPosition(to), "move the cursor");
+}
+
 /// Log a failed CoreGraphics call; cursor handling is best effort
 fn warn_on_error(err: CGError, what: &str) {
     if err != CGError::Success {
@@ -395,8 +404,16 @@ struct Tap {
     out: Vec<Emit>,
     /// Whether the local cursor is hidden and frozen (target controlled)
     parked: bool,
-    /// Whether the local cursor is frozen, still shown (a drop waits here)
-    frozen: bool,
+    /// Where the local cursor is held, still shown (a drop waits here)
+    frozen: Option<Frozen>,
+}
+
+/// A local cursor held while a drop waits here
+struct Frozen {
+    /// Where it is held
+    at: Point,
+    /// Whether it moved anyway (logged once)
+    slipped: bool,
 }
 
 impl Tap {
@@ -422,10 +439,11 @@ impl Tap {
             return Verdict::Pass;
         }
         let translated = translate(ty, event);
-        if self.parked
-            && let Translated::Event(InputEvent::Motion { at, dx, dy }) = translated
-        {
-            tracing::trace!(?at, dx, dy, "motion while parked");
+        if let Translated::Event(InputEvent::Motion { at, dx, dy }) = translated {
+            if self.parked {
+                tracing::trace!(?at, dx, dy, "motion while parked");
+            }
+            self.hold(at);
         }
         let mut decide = |event| super::decide(&self.switch, event, &mut self.out, &mut self.sink);
         let decision = match translated {
@@ -441,7 +459,7 @@ impl Tap {
         match decision.cursor {
             Some(CursorAction::Park) => self.park(),
             Some(CursorAction::Release(at)) => self.release(at),
-            Some(CursorAction::Freeze) => self.freeze(),
+            Some(CursorAction::Freeze(at)) => self.freeze(at),
             None => {}
         }
         decision.verdict
@@ -465,20 +483,38 @@ impl Tap {
         );
     }
 
-    /// Keep the local cursor where it is, still shown: the mouse no longer
+    /// Keep the local cursor at `at`, still shown: the mouse no longer
     /// moves it (a tap cannot hold it back by dropping its events)
-    fn freeze(&mut self) {
-        tracing::debug!("freezing the local cursor for a drop");
-        self.frozen = true;
+    fn freeze(&mut self, at: Point) {
+        tracing::info!(?at, "freezing the local cursor for a drop");
+        self.frozen = Some(Frozen { at, slipped: false });
+        // As for parking: a background process needs it to hold the cursor
+        allow_background_cursor();
+        warp(at);
         warn_on_error(
             CGAssociateMouseAndMouseCursorPosition(false),
             "freeze the cursor",
         );
     }
 
+    /// Put a frozen cursor that moved to `at` anyway back where it is held
+    /// (macOS may not keep it apart from the mouse during a drag)
+    fn hold(&mut self, at: Point) {
+        let Some(frozen) = &mut self.frozen else {
+            return;
+        };
+        if at == frozen.at {
+            return;
+        }
+        if !std::mem::replace(&mut frozen.slipped, true) {
+            tracing::info!(held = ?frozen.at, ?at, "the frozen cursor moved: warping it back");
+        }
+        warp(frozen.at);
+    }
+
     /// Give a frozen cursor back to the mouse
     fn thaw(&mut self) {
-        if std::mem::take(&mut self.frozen) {
+        if self.frozen.take().is_some() {
             CGAssociateMouseAndMouseCursorPosition(true);
         }
     }
@@ -486,12 +522,9 @@ impl Tap {
     /// Put the local cursor at `at` and give it back to the mouse
     fn release(&mut self, at: Point) {
         tracing::debug!(?at, "releasing the local cursor");
-        self.frozen = false;
+        self.frozen = None;
         CGAssociateMouseAndMouseCursorPosition(true);
-        CGWarpMouseCursorPosition(CGPoint {
-            x: f64::from(at.x),
-            y: f64::from(at.y),
-        });
+        warp(at);
         self.unpark();
     }
 

@@ -360,7 +360,7 @@ impl Hooks {
         let decision = super::decide(&self.switch, event, &mut self.out, &mut self.sink);
         match decision.cursor {
             // Held where it is: the hook swallows the motion
-            Some(CursorAction::Park | CursorAction::Freeze) => self.parked = Some(self.last),
+            Some(CursorAction::Park | CursorAction::Freeze(_)) => self.parked = Some(self.last),
             Some(CursorAction::Release(at)) => {
                 self.parked = None;
                 self.last = at;

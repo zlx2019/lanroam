@@ -81,9 +81,9 @@ pub enum CursorAction {
     Park,
     /// Control came back: unfreeze the local cursor and put it here
     Release(Point),
-    /// A drop of files here waits: keep the local cursor where it is, still
-    /// shown, until [`CursorAction::Release`]
-    Freeze,
+    /// A drop of files here waits: keep the local cursor here, still shown,
+    /// until [`CursorAction::Release`]
+    Freeze(Point),
 }
 
 /// Outcome of one event
@@ -690,7 +690,7 @@ impl Switch {
         }
         if self.awaiting_drop && !self.frozen {
             self.frozen = true;
-            *cursor = Some(CursorAction::Freeze);
+            *cursor = Some(CursorAction::Freeze(self.local_at));
         } else if !self.awaiting_drop && self.frozen {
             self.frozen = false;
             *cursor = Some(CursorAction::Release(self.local_at));
@@ -1880,7 +1880,10 @@ mod tests {
         let (d, out) = feed(&mut sw, motion(1511, 300, 900.0, 0.0));
         assert_eq!(
             (d.verdict, d.cursor),
-            (Verdict::Swallow, Some(CursorAction::Freeze))
+            (
+                Verdict::Swallow,
+                Some(CursorAction::Freeze(Point::new(700, 300)))
+            )
         );
         assert_eq!(out, []);
         let (d, out) = cross_to_pc(&mut sw, 300);
