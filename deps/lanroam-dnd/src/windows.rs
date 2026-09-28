@@ -34,8 +34,9 @@ use windows::Win32::Graphics::Gdi::{BLACK_BRUSH, GetStockObject, HBRUSH};
 use windows::Win32::System::Com::{DVASPECT_CONTENT, FORMATETC, IDataObject, TYMED_HGLOBAL};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Ole::{
-    CF_HDROP, DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_NONE, IDropSource, IDropSource_Impl,
-    IDropTarget, IDropTarget_Impl, OleInitialize, RegisterDragDrop, ReleaseStgMedium,
+    CF_HDROP, DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_MOVE, DROPEFFECT_NONE, IDropSource,
+    IDropSource_Impl, IDropTarget, IDropTarget_Impl, OleInitialize, RegisterDragDrop,
+    ReleaseStgMedium,
 };
 use windows::Win32::System::SystemServices::{MK_LBUTTON, MODIFIERKEYS_FLAGS};
 use windows::Win32::UI::HiDpi::{
@@ -473,8 +474,11 @@ fn start_drag(hwnd: HWND) {
     shared.dragging.store(id, Ordering::SeqCst);
     tracing::info!(id, "the drag started");
     let source: IDropSource = DropSource(Arc::clone(&shared)).into();
+    // Copied, or moved out of their folder (which goes anyway): on the same
+    // disk, a move takes no time
+    let effects = DROPEFFECT_COPY | DROPEFFECT_MOVE;
     // SAFETY: a window of this thread, with the left button down on it
-    let effect = unsafe { SHDoDragDrop(Some(hwnd), &data, &source, DROPEFFECT_COPY) };
+    let effect = unsafe { SHDoDragDrop(Some(hwnd), &data, &source, effects) };
     shared.dragging.store(0, Ordering::SeqCst);
     hide(hwnd);
     let dropped = matches!(effect, Ok(effect) if effect != DROPEFFECT_NONE);

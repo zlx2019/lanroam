@@ -460,14 +460,15 @@ define_class!(
     }
 
     unsafe impl NSDraggingSource for SourceView {
-        /// The files are copied wherever they go
+        /// The files are copied, or moved out of their folder (which goes
+        /// anyway): on the same disk, a move takes no time
         #[unsafe(method(draggingSession:sourceOperationMaskForDraggingContext:))]
         fn operation_mask(
             &self,
             _session: &NSDraggingSession,
             _context: NSDraggingContext,
         ) -> NSDragOperation {
-            NSDragOperation::Copy
+            NSDragOperation::Copy | NSDragOperation::Move
         }
 
         /// Report how it ended, and clear up
