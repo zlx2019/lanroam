@@ -38,6 +38,9 @@ pub mod failed {
     /// The files did not arrive (the link dropped, or they changed or went
     /// away meanwhile)
     pub const TRANSFER: &str = "transfer";
+    /// Let go on an app that cannot take them before they are all there
+    /// (only the file manager can), or one that took nothing
+    pub const REFUSED: &str = "refused";
 }
 
 /// Files dragged here still arriving while their drop waits, or after they
@@ -86,6 +89,11 @@ pub trait Dragging: Send {
     fn listed(&self, _id: u64, _entries: Vec<Listed>) {}
     /// Cancel the drag armed with `id`
     fn cancel(&self, id: u64);
+    /// Whether drag `id`, let go at `at`, lands where it can (see
+    /// [`lanroam_dnd::Dnd::takes`])
+    fn takes(&self, _id: u64, _at: Point) -> bool {
+        true
+    }
     /// Whether a drag armed before its files are all there drops as soon
     /// as the button goes up (see [`lanroam_dnd::Dnd::drops_early`])
     fn drops_early(&self) -> bool {
@@ -128,6 +136,10 @@ impl Dragging for lanroam_dnd::Dnd {
 
     fn cancel(&self, id: u64) {
         lanroam_dnd::Dnd::cancel(self, id);
+    }
+
+    fn takes(&self, id: u64, at: Point) -> bool {
+        lanroam_dnd::Dnd::takes(self, id, at)
     }
 
     fn drops_early(&self) -> bool {

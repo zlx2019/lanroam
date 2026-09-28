@@ -19,10 +19,11 @@
 //! A drag armed before its files are all there promises them instead
 //! ([`Dnd::drops_early`]): it drops as soon as the button goes up, and the
 //! app it lands on gets them once they are ([`Dnd::deliver`]), in the
-//! background. Only apps that take files that way take such a drop
-//! (Finder, Explorer, the desktop, mail): a file promise on macOS, virtual
-//! files on Windows, which lists them first ([`Dnd::listed`]) and adds the
-//! files themselves once they are there.
+//! background: a file promise on macOS, virtual files on Windows, which
+//! lists them first ([`Dnd::listed`]) and adds the files themselves once
+//! they are there. Only the file manager (Finder, Explorer, the desktop)
+//! is let take such a drop ([`Dnd::takes`]); others may accept it and take
+//! nothing, so a drop counts only once its app asks for the files.
 //!
 //! Windows used here are transparent, above everything and never take
 //! focus. On macOS they live on the main thread, which must run the app's
@@ -76,7 +77,7 @@ pub enum Event {
     Ended {
         /// The drag's id
         id: u64,
-        /// Something took the files
+        /// Something took the files (a promise: its app asked for them)
         dropped: bool,
     },
 }
@@ -163,6 +164,14 @@ impl Dnd {
     /// goes up ([`Event::Cancelling`] once it may)
     pub fn cancel(&self, id: u64) {
         self.imp.cancel(id);
+    }
+
+    /// Whether the drag armed with `id`, let go at `at` (this machine's
+    /// coordinates), lands where it can: anywhere when it drags the files
+    /// themselves; while it promises them, only on the file manager, as
+    /// told by the app of the window there
+    pub fn takes(&self, id: u64, at: Point) -> bool {
+        self.imp.takes(id, at)
     }
 
     /// Whether a drag armed before its files are all there drops as soon

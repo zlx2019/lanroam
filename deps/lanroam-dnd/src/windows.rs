@@ -17,7 +17,9 @@
 //!   (`IDataObjectAsyncCapability`), as Explorer does: its window never
 //!   waits. The files' own formats (their paths) join once they are all
 //!   there ([`crate::Dnd::deliver`]). A stream read ahead of its file
-//!   waits, serving this thread's messages meanwhile.
+//!   waits, serving this thread's messages meanwhile. Only Explorer is let
+//!   take a promise ([`crate::Dnd::takes`]; the cursor says no over other
+//!   apps), and one counts as dropped once the app asks for the files.
 //!
 //! Both windows are layered with an alpha of 1 (fully transparent ones let
 //! the pointer through), topmost, and never activate. The thread is
@@ -26,7 +28,7 @@
 // Win32 and COM: every unsafe block says why it holds
 #![allow(unsafe_code)]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
@@ -36,14 +38,16 @@ use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
+use std::time::{Duration, Instant};
 
 use lanroam_input::{INJECTED_MARKER, Point};
 use windows::Win32::Foundation::{
-    COLORREF, DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, DV_E_FORMATETC,
-    DV_E_LINDEX, DV_E_TYMED, E_NOTIMPL, ERROR_CANCELLED, FILETIME, GlobalFree, HGLOBAL, HWND,
-    LPARAM, LRESULT, POINT, POINTL, S_FALSE, S_OK, STG_E_ACCESSDENIED, STG_E_INVALIDFUNCTION,
-    STG_E_INVALIDPOINTER, STG_E_READFAULT, WPARAM,
+    COLORREF, CloseHandle, DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS,
+    DV_E_FORMATETC, DV_E_LINDEX, DV_E_TYMED, E_NOTIMPL, ERROR_CANCELLED, FILETIME, GlobalFree,
+    HGLOBAL, HWND, LPARAM, LRESULT, POINT, POINTL, RECT, S_FALSE, S_OK, STG_E_ACCESSDENIED,
+    STG_E_INVALIDFUNCTION, STG_E_INVALIDPOINTER, STG_E_READFAULT, WPARAM,
 };
+use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
 use windows::Win32::Graphics::Gdi::{BLACK_BRUSH, GetStockObject, HBRUSH};
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemAlloc, CoTaskMemFree, DATADIR_GET,
@@ -61,6 +65,10 @@ use windows::Win32::System::Ole::{
     ReleaseStgMedium,
 };
 use windows::Win32::System::SystemServices::{MK_LBUTTON, MODIFIERKEYS_FLAGS};
+use windows::Win32::System::Threading::{
+    GetCurrentProcessId, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    QueryFullProcessImageNameW,
+};
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext,
 };
@@ -75,12 +83,14 @@ use windows::Win32::UI::Shell::{
     SHCreateShellItemArrayFromIDLists, SHCreateStdEnumFmtEtc, SHDoDragDrop,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetCursorPos, GetMessageW, HWND_TOPMOST,
-    KillTimer, LWA_ALPHA, MA_NOACTIVATE, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx,
-    PM_REMOVE, PeekMessageW, PostMessageW, QS_ALLINPUT, RegisterClassW, SW_HIDE, SWP_NOACTIVATE,
-    SWP_SHOWWINDOW, SetLayeredWindowAttributes, SetTimer, SetWindowPos, ShowWindow,
-    TranslateMessage, WM_APP, WM_LBUTTONDOWN, WM_MOUSEACTIVATE, WM_TIMER, WNDCLASSW, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, GW_HWNDNEXT, GWL_EXSTYLE, GetCursorPos,
+    GetMessageW, GetTopWindow, GetWindow, GetWindowLongW, GetWindowRect, GetWindowThreadProcessId,
+    HWND_TOPMOST, IDC_NO, IsIconic, IsWindowVisible, KillTimer, LWA_ALPHA, LoadCursorW,
+    MA_NOACTIVATE, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW,
+    PostMessageW, QS_ALLINPUT, RegisterClassW, SW_HIDE, SWP_NOACTIVATE, SWP_SHOWWINDOW, SetCursor,
+    SetLayeredWindowAttributes, SetTimer, SetWindowPos, ShowWindow, TranslateMessage, WM_APP,
+    WM_LBUTTONDOWN, WM_MOUSEACTIVATE, WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 use windows::core::{BOOL, HRESULT, PCWSTR, PWSTR, Ref, implement, w};
 
@@ -129,6 +139,14 @@ const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
 
 /// How much of a file a stream copies to another at once
 const COPY_CHUNK: usize = 256 * 1024;
+
+/// How long an app that accepted a promise has to ask for the files; one
+/// that does not has taken nothing
+const PROMISE_GRACE: Duration = Duration::from_secs(3);
+
+/// The file manager, which takes a promise dropped on it (the desktop
+/// too)
+const EXPLORER: &str = "explorer.exe";
 
 /// [`Gate::state`]: the files are on their way
 const WAITING: u8 = 0;
@@ -276,6 +294,16 @@ impl Dnd {
             gate
         });
         self.send(Command::Arm(id, at, paths, gate));
+    }
+
+    /// See [`crate::Dnd::takes`]: a promise lands only on Explorer
+    pub(crate) fn takes(&self, id: u64, at: Point) -> bool {
+        let promising = self
+            .shared
+            .gates()
+            .get(&id)
+            .is_some_and(|gate| !gate.open());
+        !promising || window_at(POINT { x: at.x, y: at.y }).is_some_and(is_explorer)
     }
 
     /// See [`crate::Dnd::listed`]. What a virtual file cannot name (a path
@@ -647,6 +675,7 @@ fn start_drag(hwnd: HWND) {
     let source: IDropSource = DropSource {
         shared: Arc::clone(&shared),
         gate: gate.clone(),
+        under: Cell::new(None),
     }
     .into();
     // Copied, or moved out of their folder (which goes anyway): on the same
@@ -656,9 +685,16 @@ fn start_drag(hwnd: HWND) {
     let effect = unsafe { SHDoDragDrop(Some(hwnd), &data, &source, effects) };
     shared.dragging.store(0, Ordering::SeqCst);
     hide(hwnd);
-    // An app taking the files in the background may report no effect yet
-    let dropped = matches!(effect, Ok(effect) if effect != DROPEFFECT_NONE)
-        || gate.is_some_and(|gate| gate.asked.load(Ordering::SeqCst));
+    let effect = matches!(effect, Ok(effect) if effect != DROPEFFECT_NONE);
+    // A promise counts once its app asks for the files: one may accept the
+    // drop and take nothing, and one taking them in the background may
+    // report no effect yet
+    let dropped = match &gate {
+        Some(gate) => {
+            gate.asked.load(Ordering::SeqCst) || (effect && wait_for_ask(gate, PROMISE_GRACE))
+        }
+        None => effect,
+    };
     if !dropped {
         shared.gates().remove(&id);
     }
@@ -807,13 +843,40 @@ fn refuse(effect: *mut DROPEFFECT) {
 }
 
 /// The drop source of the drags started here: drops when the left button
-/// goes up, unless cancelled (or Esc)
+/// goes up, unless cancelled (or Esc); the cursor says no where a promise
+/// cannot land
 #[implement(IDropSource)]
 struct DropSource {
     /// Shared with the handle
     shared: Arc<Shared>,
     /// The gate of a drag promising its files
     gate: Option<Arc<Gate>>,
+    /// The window last under the cursor, and whether it is Explorer's
+    under: Cell<Option<(isize, bool)>>,
+}
+
+impl DropSource_Impl {
+    /// Whether the window under the cursor is Explorer's (asked once per
+    /// window)
+    fn over_explorer(&self) -> bool {
+        let mut at = POINT::default();
+        // SAFETY: a plain query into a local
+        if unsafe { GetCursorPos(&mut at) }.is_err() {
+            return true;
+        }
+        let Some(window) = window_at(at) else {
+            return false;
+        };
+        let key = window.0 as isize;
+        if let Some((under, explorer)) = self.under.get()
+            && under == key
+        {
+            return explorer;
+        }
+        let explorer = is_explorer(window);
+        self.under.set(Some((key, explorer)));
+        explorer
+    }
 }
 
 impl IDropSource_Impl for DropSource_Impl {
@@ -831,7 +894,111 @@ impl IDropSource_Impl for DropSource_Impl {
     }
 
     fn GiveFeedback(&self, _effect: DROPEFFECT) -> HRESULT {
+        let promising = self.gate.as_ref().is_some_and(|gate| !gate.open());
+        if promising && !self.over_explorer() {
+            // SAFETY: a system cursor, shared
+            if let Ok(no) = unsafe { LoadCursorW(None, IDC_NO) } {
+                // SAFETY: a plain call on this thread
+                unsafe { SetCursor(Some(no)) };
+                return S_OK;
+            }
+        }
         DRAGDROP_S_USEDEFAULTCURSORS
+    }
+}
+
+/// The top-level window a drop at `at` lands on: the frontmost shown one
+/// holding it, Lanroam's own and see-through ones left out
+fn window_at(at: POINT) -> Option<HWND> {
+    // SAFETY: a plain query
+    let own = unsafe { GetCurrentProcessId() };
+    // SAFETY: walking the top-level windows, front to back
+    let mut window = unsafe { GetTopWindow(None) }.ok()?;
+    loop {
+        if holds(window, at, own) {
+            return Some(window);
+        }
+        // SAFETY: the next window down, while there is one
+        window = unsafe { GetWindow(window, GW_HWNDNEXT) }.ok()?;
+    }
+}
+
+/// Whether a drop at `at` would land on top-level `window`: shown, not
+/// cloaked (another virtual desktop, a suspended app), not see-through,
+/// not the process `own`'s, and holding `at`
+fn holds(window: HWND, at: POINT, own: u32) -> bool {
+    // SAFETY: plain queries of a window, which may go meanwhile (then they
+    // fail)
+    unsafe {
+        if !IsWindowVisible(window).as_bool() || IsIconic(window).as_bool() {
+            return false;
+        }
+        let style = GetWindowLongW(window, GWL_EXSTYLE) as u32;
+        if style & WS_EX_TRANSPARENT.0 != 0 {
+            return false;
+        }
+        let mut pid = 0;
+        GetWindowThreadProcessId(window, Some(&mut pid));
+        if pid == own {
+            return false;
+        }
+        let mut cloaked = 0u32;
+        let size = size_of::<u32>() as u32;
+        let asked = DwmGetWindowAttribute(window, DWMWA_CLOAKED, (&raw mut cloaked).cast(), size);
+        if asked.is_ok() && cloaked != 0 {
+            return false;
+        }
+        let mut rect = RECT::default();
+        GetWindowRect(window, &mut rect).is_ok()
+            && (rect.left..rect.right).contains(&at.x)
+            && (rect.top..rect.bottom).contains(&at.y)
+    }
+}
+
+/// Whether `window` belongs to Explorer (a folder, the desktop, the
+/// taskbar)
+fn is_explorer(window: HWND) -> bool {
+    let mut pid = 0;
+    // SAFETY: a plain query of a window
+    unsafe { GetWindowThreadProcessId(window, Some(&mut pid)) };
+    process_name(pid).is_some_and(|name| name.eq_ignore_ascii_case(EXPLORER))
+}
+
+/// The file name of process `pid`'s program, if it can be asked
+fn process_name(pid: u32) -> Option<String> {
+    // SAFETY: a handle only good for asking, closed below
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
+    let mut path = [0u16; 1024];
+    let mut len = path.len() as u32;
+    // SAFETY: a buffer of `len` units, which the call sets to the length
+    let asked = unsafe {
+        QueryFullProcessImageNameW(
+            process,
+            PROCESS_NAME_WIN32,
+            PWSTR(path.as_mut_ptr()),
+            &mut len,
+        )
+    };
+    // SAFETY: opened above, closed once
+    let _ = unsafe { CloseHandle(process) };
+    asked.ok()?;
+    let path = PathBuf::from(OsString::from_wide(&path[..len as usize]));
+    Some(path.file_name()?.to_string_lossy().into_owned())
+}
+
+/// Wait up to `grace` for the app a promise was dropped on to ask for the
+/// files (serving this thread's messages); whether it did
+fn wait_for_ask(gate: &Gate, grace: Duration) -> bool {
+    let deadline = Instant::now() + grace;
+    loop {
+        if gate.asked.load(Ordering::SeqCst) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            tracing::info!("the app dropped on never asked for the promised files");
+            return false;
+        }
+        pump();
     }
 }
 
@@ -917,6 +1084,10 @@ impl IDataObject_Impl for Promised_Impl {
             }
             if self.holds(asked) {
                 return Err(DV_E_FORMATETC.into());
+            }
+            // The files themselves, all there by now
+            if formats.held.contains(&asked.cfFormat) {
+                self.gate.ask();
             }
         }
         // SAFETY: the caller's arguments, passed on

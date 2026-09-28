@@ -26,6 +26,7 @@ dispatch2 = { workspace = true }
 objc2 = { workspace = true }
 objc2-app-kit = { workspace = true, features = [
     "block2",
+    "libc",
     "NSColor",
     "NSDragging",
     "NSDraggingItem",
@@ -36,12 +37,14 @@ objc2-app-kit = { workspace = true, features = [
     "NSPanel",
     "NSPasteboard",
     "NSResponder",
+    "NSRunningApplication",
     "NSView",
     "NSWindow",
     "NSWorkspace",
     "objc2-core-foundation",
 ] }
-objc2-core-graphics = { workspace = true }
+objc2-core-foundation = { workspace = true }
+objc2-core-graphics = { workspace = true, features = ["CGWindow"] }
 objc2-foundation = { workspace = true, features = [
     "FoundationErrors",
     "NSDictionary",

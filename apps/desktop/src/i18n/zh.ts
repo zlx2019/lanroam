@@ -168,7 +168,7 @@ export const zh = {
 
   "files.drag": "拖拽文件",
   "files.dragHint": "按住文件拖过屏幕边缘，放到另一台设备上；两台设备都开启才可以",
-  "files.note": "文件还没传完就松手也会立即放下，文件在后台接着传。这时只有访达、资源管理器、桌面和邮件这类应用能接收，其他应用会拒收：可以先放到桌面上。",
+  "files.note": "文件还没传完就松手也会立即放下，文件在后台接着传。这时只有访达、资源管理器和桌面能接收，其他应用会拒收：可以先放到桌面上。",
 
   "hint.paused": "已暂停",
   "hint.pausedSub": "{keys} 恢复",
@@ -190,6 +190,8 @@ export const zh = {
   "hint.dragNoSpace": "空间不足，{name} 没能拖过来",
   "hint.dragFailed": "{name} 没能传过来",
   "hint.dragNothing": "什么都没有放下",
+  "hint.dragRefused": "{name} 还没传完，这里收不了",
+  "hint.dragRefusedSub": "先放到桌面或文件夹里",
   "hint.filesReady": "复制的文件已可粘贴",
   "hint.filesTooLarge": "复制的文件超过 {limit}，没有提前传",
   "hint.filesTooLargeSub": "{what} · {size}；可以直接拖过来",

@@ -17,9 +17,11 @@
 //!   themselves; one armed before they are all there promises them where
 //!   the native side can ([`lanroam_dnd::Dnd::drops_early`]): the release
 //!   drops at once, the drag is over, and they are delivered in the
-//!   background. Otherwise, and when released before its press, the drop
-//!   waits (the pointer stays where it was let go, and the user sees how
-//!   far they are), and lands there once they are.
+//!   background. Only the file manager takes a promise: let go on another
+//!   app, the drag is cancelled, and one whose app took nothing ends there.
+//!   Otherwise, and when released before its press, the drop waits (the
+//!   pointer stays where it was let go, and the user sees how far they
+//!   are), and lands there once they are.
 //! - **Cancelled** (Esc, the pointer leaving, the files not arriving): the
 //!   native side refuses the drop first, then the button goes up, and the
 //!   files already there go.
@@ -328,8 +330,13 @@ impl Input {
             DragEvent::Ended { id, dropped } => {
                 tracing::info!(id, dropped, "a drag carried here ended");
                 // Dropped early on nothing that takes the files
+                let name = self.delivering_name(id);
                 if !dropped && self.end_delivering(id, false) {
                     tracing::info!(id, "nothing took the files dropped early");
+                    let _ = self.events.send(EngineEvent::DragFailed {
+                        reason: failed::REFUSED.to_string(),
+                        name: name.unwrap_or_default(),
+                    });
                     return;
                 }
                 // Ended without a drop of ours (it could not start)
@@ -727,10 +734,12 @@ impl Input {
         if let Some((seq, to)) = motion {
             self.replay(Op::Motion(seq, to));
         }
+        let takes = release.is_none_or(|release| self.takes(id, release));
         match release {
             Some(release) if failed => {
                 self.cancel_carried(controller.as_deref(), false, Some(release));
             }
+            Some(release) if !takes => self.refuse(controller.as_deref(), release),
             Some(release) if ready => self.drop_carried(release),
             Some(release) if self.drops_early() => self.drop_early(release),
             _ => {}
@@ -741,6 +750,11 @@ impl Input {
     /// the files are there
     fn release_carried(&mut self, controller: Option<&str>, at: Point) {
         let early = self.drops_early();
+        let takes = self
+            .drags
+            .carried
+            .as_ref()
+            .is_none_or(|carried| self.takes(carried.id, at));
         let Some(carried) = self
             .drags
             .carried
@@ -753,6 +767,7 @@ impl Input {
             Stage::Pressed if carried.failed => {
                 self.cancel_carried(controller, false, Some(at));
             }
+            Stage::Pressed if !takes => self.refuse(controller, at),
             Stage::Pressed if carried.ready => self.drop_carried(at),
             Stage::Pressed if early => self.drop_early(at),
             Stage::Cancelling { .. } => {}
@@ -850,6 +865,43 @@ impl Input {
         }
         let _ = self.events.send(EngineEvent::Receiving(None));
         true
+    }
+
+    /// The drag carried here, let go at `at`, would land where it cannot:
+    /// on an app that takes no promise of its files. Cancel it, and say why
+    fn refuse(&mut self, controller: Option<&str>, at: Point) {
+        let Some(carried) = self.drags.carried.as_ref() else {
+            return;
+        };
+        tracing::info!(
+            id = carried.id,
+            ?at,
+            "a promise let go where it cannot land"
+        );
+        let name = carried.receiving.name.clone();
+        self.cancel_carried(controller, false, Some(at));
+        let _ = self.events.send(EngineEvent::DragFailed {
+            reason: failed::REFUSED.to_string(),
+            name,
+        });
+    }
+
+    /// Whether drag `id`, let go at `at`, lands where it can
+    fn takes(&self, id: u64, at: Point) -> bool {
+        self.drags
+            .native
+            .as_ref()
+            .is_none_or(|native| native.takes(id, at))
+    }
+
+    /// The first file or folder of drag `id`, dropped early, whose files
+    /// are still coming
+    fn delivering_name(&self, id: u64) -> Option<String> {
+        self.drags
+            .delivering
+            .iter()
+            .find(|d| d.id == id)
+            .map(|d| d.receiving.name.clone())
     }
 
     /// Whether the native side drops as soon as the button goes up

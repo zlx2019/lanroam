@@ -92,6 +92,8 @@ struct FakeDragState {
     /// A drag armed before its files are there drops as soon as the button
     /// goes up (it promises them, as on macOS and Windows)
     early: std::sync::atomic::AtomicBool,
+    /// Wherever a drag is let go, no app takes it
+    refuses: std::sync::atomic::AtomicBool,
 }
 
 impl FakeDrag {
@@ -110,6 +112,21 @@ impl FakeDrag {
         self.0
             .early
             .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Let no app take a drag from now on
+    fn refuse(&self) {
+        self.0
+            .refuses
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Report that drag `id` ended, `dropped` or not
+    fn end(&self, id: u64, dropped: bool) {
+        let sink = self.0.sink.lock().unwrap().clone();
+        if let Some(sink) = sink {
+            sink(DragEvent::Ended { id, dropped });
+        }
     }
 
     /// Hold arming back until [`Self::arm_now`]
@@ -180,6 +197,9 @@ impl Dragging for FakeDragging {
     fn cancel(&self, id: u64) {
         self.note(DragCall::Cancel(id));
         self.report(DragEvent::Cancelling { id });
+    }
+    fn takes(&self, _id: u64, _at: Point) -> bool {
+        !self.0.refuses.load(std::sync::atomic::Ordering::SeqCst)
     }
     fn drops_early(&self) -> bool {
         self.0.early.load(std::sync::atomic::Ordering::SeqCst)
@@ -1889,6 +1909,83 @@ async fn a_cancelled_drag_leaves_nothing() {
         assert!(tokio::time::Instant::now() < deadline, "{folder:?} stays");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+/// A promise let go on an app that cannot take it is cancelled there: the
+/// button goes up only once the drag refuses its drop, the files stop
+/// coming, and b says why
+#[tokio::test]
+async fn a_promise_let_go_elsewhere_is_refused() {
+    let (a, mut b, _c) = row_of_three().await;
+    b.drag.drop_early();
+    b.drag.refuse();
+    let movie = a.dir.0.join("movie.mp4");
+    std::fs::File::create(&movie)
+        .unwrap()
+        .set_len(64 << 20)
+        .unwrap();
+    a.drag.holds(std::slice::from_ref(&movie));
+    a.input.left(true);
+    a.push_until(5.0, parked).await;
+    let (_, paths) = b.armed().await;
+    b.injected(&Injected::Button(MouseButton::Left, true)).await;
+    a.input.left(false);
+
+    let refused = b
+        .expect("the refusal", |event| match event {
+            EngineEvent::DragFailed { reason, name } => Some((reason.clone(), name.clone())),
+            _ => None,
+        })
+        .await;
+    assert_eq!(
+        refused,
+        (drag_failed::REFUSED.to_string(), "movie.mp4".into())
+    );
+    b.dragged(|call| matches!(call, DragCall::Cancel(1))).await;
+    b.injected(&Injected::Button(MouseButton::Left, false))
+        .await;
+    let folder = paths[0].parent().unwrap().to_path_buf();
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while folder.exists() {
+        assert!(tokio::time::Instant::now() < deadline, "{folder:?} stays");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// A promise dropped on an app that takes nothing ends there: the files
+/// stop coming, and b says why
+#[tokio::test]
+async fn a_promise_nothing_takes_ends() {
+    let (a, mut b, _c) = row_of_three().await;
+    b.drag.drop_early();
+    let movie = a.dir.0.join("movie.mp4");
+    std::fs::File::create(&movie)
+        .unwrap()
+        .set_len(256 << 20)
+        .unwrap();
+    a.drag.holds(std::slice::from_ref(&movie));
+    a.input.left(true);
+    a.push_until(5.0, parked).await;
+    a.input.left(false);
+    let id = b
+        .expect("the early drop", |event| match event {
+            EngineEvent::Receiving(Some(receiving)) if !receiving.cancel => Some(receiving.id),
+            _ => None,
+        })
+        .await;
+
+    b.drag.end(id, false);
+    b.expect("the card gone", |event| {
+        matches!(event, EngineEvent::Receiving(None)).then_some(())
+    })
+    .await;
+    let reason = b
+        .expect("the refusal", |event| match event {
+            EngineEvent::DragFailed { reason, .. } => Some(reason.clone()),
+            _ => None,
+        })
+        .await;
+    assert_eq!(reason, drag_failed::REFUSED);
 }
 
 /// A drop whose files are still coming is cancelled from its card: they

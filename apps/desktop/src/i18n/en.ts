@@ -158,7 +158,7 @@ export const en: Record<TextKey, string> = {
 
   "files.drag": "Drag files",
   "files.dragHint": "Drag files across a screen edge onto another device; both devices need it on",
-  "files.note": "Let go before its files are all there, a drag still drops at once and they keep coming in the background. Only Finder, Explorer, the desktop and apps like Mail take it then; others refuse it: drop it on the desktop first.",
+  "files.note": "Let go before its files are all there, a drag still drops at once and they keep coming in the background. Only Finder, Explorer and the desktop take it then; other apps refuse it: drop it on the desktop first.",
 
   "hint.paused": "Paused",
   "hint.pausedSub": "{keys} to resume",
@@ -180,6 +180,8 @@ export const en: Record<TextKey, string> = {
   "hint.dragNoSpace": "Not enough space here for {name}",
   "hint.dragFailed": "{name} could not be brought over",
   "hint.dragNothing": "Nothing was dropped",
+  "hint.dragRefused": "{name} isn't all here yet; it can't go there",
+  "hint.dragRefusedSub": "Drop it on the desktop or in a folder first",
   "hint.filesReady": "The copied files are ready to paste",
   "hint.filesTooLarge": "The copied files are over {limit}, not fetched ahead",
   "hint.filesTooLargeSub": "{what} · {size}; drag them over instead",

@@ -14,7 +14,8 @@
 //!   a file promise of each (`NSFilePromiseProvider`) instead of its URL.
 //!   The app it drops on (Finder) names where each goes; once the files
 //!   are all there, each is moved there, off the main thread, and the app
-//!   told.
+//!   told. Only Finder is let take such a drop ([`Dnd::takes`]), and one
+//!   whose app never asks for the files counts as not dropped.
 //!
 //! Both panels are nearly transparent (fully transparent pixels would let
 //! the pointer through), sit above everything and never activate the app.
@@ -25,11 +26,11 @@
 #![allow(unsafe_code)]
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use block2::{DynBlock, RcBlock};
@@ -46,12 +47,15 @@ use objc2_app_kit::{
     NSDraggingInfo, NSDraggingItem, NSDraggingSession, NSDraggingSource, NSEvent,
     NSFilePromiseProvider, NSFilePromiseProviderDelegate, NSPanel, NSPasteboard,
     NSPasteboardNameDrag, NSPasteboardTypeFileURL, NSPasteboardTypeString, NSPasteboardTypeURL,
-    NSPasteboardURLReadingFileURLsOnlyKey, NSPasteboardWriting, NSPopUpMenuWindowLevel, NSView,
-    NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
+    NSPasteboardURLReadingFileURLsOnlyKey, NSPasteboardWriting, NSPopUpMenuWindowLevel,
+    NSRunningApplication, NSView, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSWorkspace,
 };
+use objc2_core_foundation::{CFRetained, CFString};
 use objc2_core_graphics::{
     CGDisplayBounds, CGEvent, CGEventSource, CGEventSourceStateID, CGEventTapLocation, CGEventType,
-    CGMainDisplayID, CGMouseButton,
+    CGMainDisplayID, CGMouseButton, CGWindowListCopyWindowInfo, CGWindowListOption,
+    kCGNullWindowID, kCGWindowAlpha, kCGWindowBounds, kCGWindowOwnerPID,
 };
 use objc2_foundation::{
     NSArray, NSCocoaErrorDomain, NSDictionary, NSError, NSNumber, NSObject, NSObjectProtocol,
@@ -67,6 +71,13 @@ pub(crate) const DROPS_EARLY: bool = true;
 /// How long the promises of a drag are kept after it was armed: as long as
 /// the engine keeps its files
 const PROMISE_LIFE: Duration = Duration::from_secs(10 * 60);
+
+/// How long the app a promise was dropped on has to ask for the files; one
+/// that does not has taken nothing
+const PROMISE_GRACE: Duration = Duration::from_secs(3);
+
+/// The app that takes a promise dropped on it
+const FINDER: &str = "com.apple.finder";
 
 /// Type of a promised file, and of a promised folder
 const FILE_TYPE: &str = "public.data";
@@ -132,6 +143,8 @@ struct State {
     keeping: HashMap<u64, Completion>,
     /// The latest ticket
     tickets: u64,
+    /// Shared with the handle: the drags promising their files
+    promising: Arc<Mutex<HashSet<u64>>>,
 }
 
 /// The promises of a drag armed before its files were all there
@@ -148,18 +161,28 @@ struct Promised {
     asked: Vec<(usize, PathBuf, Completion)>,
     /// When the drag was armed
     since: Instant,
+    /// The app dropped on asked for a promise
+    taken: bool,
+    /// Dropped, and its end not reported yet: the app has
+    /// [`PROMISE_GRACE`] to ask
+    unclaimed: bool,
 }
 
 /// Handle for the engine; the work happens on the main thread
 pub(crate) struct Dnd {
     /// The drag pasteboard's change count at the latest press
     baseline: Arc<AtomicIsize>,
+    /// The drags promising their files, by id: whether one does is asked
+    /// off the main thread ([`Self::takes`])
+    promising: Arc<Mutex<HashSet<u64>>>,
 }
 
 impl Dnd {
     /// Set up the main thread's side
     pub(crate) fn start(sink: Sink) -> Result<Self, DndError> {
         let sink = Arc::new(sink);
+        let promising = Arc::new(Mutex::new(HashSet::new()));
+        let shared = Arc::clone(&promising);
         DispatchQueue::main().exec_async(move || {
             STATE.with_borrow_mut(|state| {
                 *state = Some(State {
@@ -172,11 +195,13 @@ impl Dnd {
                     promised: HashMap::new(),
                     keeping: HashMap::new(),
                     tickets: 0,
+                    promising: shared,
                 });
             });
         });
         Ok(Self {
             baseline: Arc::new(AtomicIsize::new(NO_PRESS)),
+            promising,
         })
     }
 
@@ -210,6 +235,9 @@ impl Dnd {
     /// Put the source panel at `at`, ready to drag `paths`, or promises of
     /// them unless `ready`
     pub(crate) fn arm(&self, id: u64, at: Point, paths: Vec<PathBuf>, ready: bool) {
+        if !ready {
+            lock(&self.promising).insert(id);
+        }
         on_main(move |mtm, state| {
             state.prune_promises();
             if !ready {
@@ -238,6 +266,7 @@ impl Dnd {
     /// Disarm, or have the drag running here refuse its drop: the catcher
     /// goes under the cursor, where the button will go up
     pub(crate) fn cancel(&self, id: u64) {
+        lock(&self.promising).remove(&id);
         on_main(move |mtm, state| {
             if state.armed.as_ref().is_some_and(|(armed, ..)| *armed == id) {
                 state.armed = None;
@@ -263,6 +292,11 @@ impl Dnd {
 
     /// Nothing to do: a promise names its item alone
     pub(crate) fn listed(&self, _id: u64, _entries: Vec<Listed>) {}
+
+    /// See [`crate::Dnd::takes`]: a promise lands only on Finder
+    pub(crate) fn takes(&self, id: u64, at: Point) -> bool {
+        !lock(&self.promising).contains(&id) || finder_at(at)
+    }
 
     /// Keep the promises of drag `id` asked for so far, or break them
     pub(crate) fn deliver(&self, id: u64, ok: bool) {
@@ -315,8 +349,42 @@ impl State {
             sources,
             asked: Vec::new(),
             since: Instant::now(),
+            taken: false,
+            unclaimed: false,
         };
         self.promised.insert(id, promised);
+    }
+
+    /// The session of drag `id` ended, `dropped` or not. A promise dropped
+    /// counts once its app asks for it, which it has [`PROMISE_GRACE`] to
+    /// do
+    fn session_ended(&mut self, id: u64, dropped: bool) {
+        lock(&self.promising).remove(&id);
+        match self.promised.get_mut(&id) {
+            Some(promised) if dropped && !promised.taken => {
+                tracing::info!(id, "a promise was dropped, waiting for its app to ask");
+                promised.unclaimed = true;
+                after(PROMISE_GRACE, move |_, state| state.unclaimed(id));
+                return;
+            }
+            Some(_) if !dropped => {
+                self.promised.remove(&id);
+            }
+            _ => {}
+        }
+        tracing::info!(id, dropped, "the drag ended");
+        (self.sink)(Event::Ended { id, dropped });
+    }
+
+    /// The app promise `id` was dropped on had its time to ask: if it did
+    /// not, it took nothing
+    fn unclaimed(&mut self, id: u64) {
+        if !self.promised.get(&id).is_some_and(|p| p.unclaimed) {
+            return;
+        }
+        self.promised.remove(&id);
+        tracing::info!(id, "the app dropped on never asked for the promised files");
+        (self.sink)(Event::Ended { id, dropped: false });
     }
 
     /// The app drag `id` dropped on wants item `index` at `to` (if it is
@@ -332,6 +400,14 @@ impl State {
             return;
         };
         tracing::info!(id, index, "the app dropped on asks for a promised file");
+        promised.taken = true;
+        if std::mem::replace(&mut promised.unclaimed, false) {
+            tracing::info!(id, "the drag ended");
+            (self.sink)(Event::Ended { id, dropped: true });
+        }
+        let Some(promised) = self.promised.get_mut(&id) else {
+            return;
+        };
         match promised.delivered {
             None => promised.asked.push((index, to, done)),
             Some(true) => self.keep(from, to, done),
@@ -456,6 +532,73 @@ fn poll_hit(window: isize, at: NSPoint, deadline: Instant, then: Work) {
             poll_hit(window, at, deadline, then);
         }
     });
+}
+
+/// Run `work` with the state on the main thread, after `delay`
+fn after(delay: Duration, work: impl FnOnce(MainThreadMarker, &mut State) + Send + 'static) {
+    let Ok(when) = DispatchTime::try_from(delay) else {
+        return;
+    };
+    let _ = DispatchQueue::main().after(when, move || with_state(work));
+}
+
+/// `mutex` locked, even after a panic elsewhere
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Whether the window at `at` (Quartz coordinates), Lanroam's own left out,
+/// is Finder's: a folder, or the desktop
+fn finder_at(at: Point) -> bool {
+    objc2::rc::autoreleasepool(|_| {
+        owner_at(at)
+            .and_then(NSRunningApplication::runningApplicationWithProcessIdentifier)
+            .and_then(|app| app.bundleIdentifier())
+            .is_some_and(|bundle| bundle.to_string() == FINDER)
+    })
+}
+
+/// The process owning the frontmost window at `at` (Quartz coordinates),
+/// Lanroam's own left out
+fn owner_at(at: Point) -> Option<i32> {
+    let list = CGWindowListCopyWindowInfo(CGWindowListOption::OptionOnScreenOnly, kCGNullWindowID)?;
+    // SAFETY: an array of dictionaries, toll-free bridged, alive as long as
+    // `list`
+    let windows: &NSArray = unsafe { &*CFRetained::as_ptr(&list).as_ptr().cast::<NSArray>() };
+    let own = i32::try_from(std::process::id()).ok();
+    let (x, y) = (f64::from(at.x), f64::from(at.y));
+    // Front to back
+    windows.iter().find_map(|window| {
+        let window = window.downcast::<NSDictionary>().ok()?;
+        // SAFETY: constant keys CoreGraphics defines
+        let (pid, alpha, bounds) = unsafe { (kCGWindowOwnerPID, kCGWindowAlpha, kCGWindowBounds) };
+        let pid = number(&window, pid)?.intValue();
+        if Some(pid) == own || number(&window, alpha).is_some_and(|a| a.doubleValue() <= 0.0) {
+            return None;
+        }
+        let bounds = window
+            .objectForKey(bridged(bounds))?
+            .downcast::<NSDictionary>()
+            .ok()?;
+        let side = |name: &str| {
+            let value = bounds.objectForKey(&NSString::from_str(name))?;
+            Some(value.downcast::<NSNumber>().ok()?.doubleValue())
+        };
+        let (left, top) = (side("X")?, side("Y")?);
+        let (right, bottom) = (left + side("Width")?, top + side("Height")?);
+        (x >= left && x < right && y >= top && y < bottom).then_some(pid)
+    })
+}
+
+/// The number under `key` in `dictionary`, if it is one
+fn number(dictionary: &NSDictionary, key: &CFString) -> Option<Retained<NSNumber>> {
+    dictionary.objectForKey(bridged(key))?.downcast().ok()
+}
+
+/// A CoreFoundation string as the Foundation string it is
+fn bridged(key: &CFString) -> &AnyObject {
+    // SAFETY: CFString and NSString are toll-free bridged
+    unsafe { &*std::ptr::from_ref(key).cast::<AnyObject>() }
 }
 
 /// Run `work` with the state on the main thread, later
@@ -660,11 +803,7 @@ define_class!(
                 if let Some(source) = &state.source {
                     source.orderOut(None);
                 }
-                if !dropped {
-                    state.promised.remove(&id);
-                }
-                tracing::info!(id, dropped, "the drag ended");
-                (state.sink)(Event::Ended { id, dropped });
+                state.session_ended(id, dropped);
             });
         }
     }

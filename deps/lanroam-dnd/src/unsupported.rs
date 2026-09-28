@@ -36,6 +36,11 @@ impl Dnd {
     /// Nothing to do
     pub(crate) fn cancel(&self, _id: u64) {}
 
+    /// Nothing is dragged here
+    pub(crate) fn takes(&self, _id: u64, _at: Point) -> bool {
+        true
+    }
+
     /// Nothing to do
     pub(crate) fn deliver(&self, _id: u64, _ok: bool) {}
 }

@@ -181,6 +181,13 @@ function words(hint: Hint, t: Translate): Words {
     case "letGo":
       return letGo(hint.name, hint.reason, t);
     case "dragFailed":
+      if (hint.reason === "refused") {
+        return {
+          icon: <InfoIcon />,
+          text: t("hint.dragRefused", { name: hint.name }),
+          sub: t("hint.dragRefusedSub"),
+        };
+      }
       return {
         icon: <WarnIcon />,
         text: t(hint.reason === "no_space" ? "hint.dragNoSpace" : "hint.dragFailed", { name: hint.name }),
