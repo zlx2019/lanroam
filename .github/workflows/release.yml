@@ -183,6 +183,8 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
       - name: Build (trial run)
         if: github.ref_type != 'tag'
+        # PowerShell, Windows' default, would not read $TARGET from env
+        shell: bash
         env:
           TARGET: ${{ matrix.target }}
         run: cargo build --release --locked -p lanroam-cli --target "$TARGET"
