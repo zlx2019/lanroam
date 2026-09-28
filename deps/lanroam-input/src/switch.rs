@@ -568,7 +568,7 @@ impl Switch {
         let k = target.scale / local_scale;
         let (x, y) = match target.desktop.step((remote.x, remote.y), dx * k, dy * k) {
             Step::Inside(x, y) => {
-                self.dwell = None;
+                self.keep_dwell(&remote.device, Point::floor(x, y));
                 (x, y)
             }
             // A held button keeps the pointer on the device: dragging across
@@ -631,23 +631,37 @@ impl Switch {
             })
             .collect();
         let from = self.local.clone();
+        self.keep_dwell(&from, at);
         self.pass(&from, at, candidates)
             .map(|(device, entry)| (device, entry, at))
     }
 
+    /// End a dwell once the pointer, now at `at` on device `from`, is off
+    /// its edge. Motions in between that do not push outwards keep it: a
+    /// hand pushing against an edge slides along it too, and fast mice
+    /// report many motions with nothing outwards
+    fn keep_dwell(&mut self, from: &str, at: Point) {
+        let stays = self.dwell.as_ref().is_some_and(|dwell| {
+            dwell.from == from
+                && self
+                    .world
+                    .device(from)
+                    .is_some_and(|device| device.desktop.on_edge(at, dwell.edge))
+        });
+        if !stays {
+            self.dwell = None;
+        }
+    }
+
     /// The first of the crossings the pointer pushed at `at` on device
     /// `from` could take, (edge, device, entry), that its edge lets through
-    /// now (see [`Self::may_cross`]); with none to try, a dwell starts over
+    /// now (see [`Self::may_cross`])
     fn pass(
         &mut self,
         from: &str,
         at: Point,
         candidates: Vec<(Edge, String, Point)>,
     ) -> Option<(String, Point)> {
-        if candidates.is_empty() {
-            self.dwell = None;
-            return None;
-        }
         for (edge, device, entry) in candidates {
             if self.may_cross(from, &device, at, edge) {
                 self.dwell = None;
@@ -1816,29 +1830,46 @@ mod tests {
         assert_eq!((d.verdict, out.len()), (Verdict::Pass, 0));
     }
 
-    /// In dwell mode the pointer crosses once it has pushed against the
-    /// edge long enough; leaving the edge starts over
+    /// In dwell mode the pointer crosses once it has stayed against the
+    /// edge long enough, sliding along it and motions that do not push
+    /// outwards included; leaving the edge starts over
     #[test]
     fn dwell_mode() {
-        let mut sw = switch();
-        let start = Instant::now();
-        let elapsed = Arc::new(Mutex::new(Duration::ZERO));
-        let clock = Arc::clone(&elapsed);
-        sw.set_clock(Clock::new(move || start + *clock.lock().unwrap()));
-        sw.set_switching(Switching {
-            mode: SwitchMode::Dwell,
-            ..Switching::default()
-        });
-        let wait = |ms| *elapsed.lock().unwrap() += Duration::from_millis(ms);
+        let dwelling = || {
+            let mut sw = switch();
+            let start = Instant::now();
+            let elapsed = Arc::new(Mutex::new(Duration::ZERO));
+            let clock = Arc::clone(&elapsed);
+            sw.set_clock(Clock::new(move || start + *clock.lock().unwrap()));
+            sw.set_switching(Switching {
+                mode: SwitchMode::Dwell,
+                ..Switching::default()
+            });
+            (sw, elapsed)
+        };
+        let wait =
+            |elapsed: &Mutex<Duration>, ms| *elapsed.lock().unwrap() += Duration::from_millis(ms);
+
+        let (mut sw, elapsed) = dwelling();
         assert!(cross_to_pc(&mut sw, 400).1.is_empty());
-        wait(200);
+        wait(&elapsed, 150);
+        // Down along the edge, then a motion with nothing outwards
+        feed(&mut sw, motion(1511, 420, 0.0, 20.0));
+        feed(&mut sw, motion(1511, 420, 0.0, 0.0));
+        assert!(cross_to_pc(&mut sw, 420).1.is_empty());
+        wait(&elapsed, 150);
+        assert!(!cross_to_pc(&mut sw, 420).1.is_empty());
+
+        let (mut sw, elapsed) = dwelling();
         assert!(cross_to_pc(&mut sw, 400).1.is_empty());
+        wait(&elapsed, 200);
+        // Off the edge: the count starts over
         feed(&mut sw, motion(1500, 400, -5.0, 0.0));
-        wait(200);
+        wait(&elapsed, 200);
         assert!(cross_to_pc(&mut sw, 400).1.is_empty());
-        wait(299);
+        wait(&elapsed, 299);
         assert!(cross_to_pc(&mut sw, 400).1.is_empty());
-        wait(1);
+        wait(&elapsed, 1);
         assert!(!cross_to_pc(&mut sw, 400).1.is_empty());
     }
 }
