@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::time::Instant;
 
 use lanroam_core::engine::{Engine, Joining};
 
@@ -28,6 +29,10 @@ pub struct AppState {
     pub prompt: Mutex<Option<JoinPromptDto>>,
     /// What the on-screen overlays show right now
     pub overlays: Mutex<Overlays>,
+    /// Until when this device keeps its own numbers off when the group
+    /// identifies its screens: the arrangement page asked, and the numbers
+    /// would cover the window
+    pub identify_quiet: Mutex<Option<Instant>>,
 }
 
 /// Lock a mutex; a panic while it was held leaves plain data behind, so a

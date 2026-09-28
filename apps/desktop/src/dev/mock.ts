@@ -3,9 +3,8 @@
 // never part of the build). A Mac and a Windows PC side by side, one
 // device nearby; placing moves devices and pushes a new snapshot.
 //
-// `/mock.html?window=arrange` is the arrangement panel instead (over a
-// fake material with `&material=1`), and `?window=overlay-0` an on-screen
-// overlay: push it scenes with `window.__emit("overlay-scene", scene)`.
+// `/mock.html?window=overlay-0` is an on-screen overlay instead;
+// `&material=1` puts the main window over a fake material: push it scenes with `window.__emit("overlay-scene", scene)`.
 // `&group=0` starts outside a group. Recording a key combination waits for
 // `window.__emit("recorded", chord)`.
 

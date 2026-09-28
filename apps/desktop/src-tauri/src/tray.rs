@@ -1,5 +1,6 @@
 //! The tray icon and its menu: the state, pause and lock, a jump to any
-//! online member, the arrangement panel, the window, quitting.
+//! online member, the window (on its arrangement page, or as it was),
+//! quitting.
 //!
 //! The menu is rebuilt from each snapshot: members come and go, and the
 //! texts follow the language setting. The icon's shape follows where input
@@ -14,10 +15,10 @@ use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, Wry};
 
+use crate::bridge::{self, events};
 use crate::dto::{ControlMode, Snapshot};
 use crate::locale::{self, Lang, Texts};
 use crate::material;
-use crate::panel;
 use crate::state::{AppState, lock};
 
 /// ID of the tray icon
@@ -31,7 +32,7 @@ mod ids {
     pub const LOCK: &str = "lock";
     /// Prefix of a jump to a device, followed by its fingerprint
     pub const JUMP: &str = "jump:";
-    /// Open the arrangement panel
+    /// Open the window on its arrangement page
     pub const ARRANGE: &str = "arrange";
     /// Show the window
     pub const OPEN: &str = "open";
@@ -254,10 +255,8 @@ fn on_menu(app: &AppHandle, id: &str) {
     let request = match id {
         ids::OPEN => return show_main_window(app),
         ids::ARRANGE => {
-            // Off the event loop: the panel may create its window
-            let app = app.clone();
-            tauri::async_runtime::spawn(async move { panel::show(&app) });
-            return;
+            show_main_window(app);
+            return bridge::emit(app, events::SHOW_PAGE, "arrange");
         }
         ids::QUIT => return app.exit(0),
         ids::PAUSE => Request::Pause,

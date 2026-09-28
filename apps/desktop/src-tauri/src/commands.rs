@@ -1,6 +1,7 @@
 //! Commands the frontend invokes (**mirrored in `src/api.ts`**).
 
 use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
 
 use std::collections::BTreeMap;
 
@@ -20,13 +21,16 @@ use crate::dto::{
     JoiningEndedDto, NearbyDto, PermissionsDto, Snapshot,
 };
 use crate::overlay::{self, SceneDto};
-use crate::panel;
 use crate::settings::{CLOSE_TO_QUIT, CLOSE_TO_TRAY, MAX_OPACITY, MIN_OPACITY, Settings};
 use crate::state::{AppState, lock};
 use crate::tray;
 
 /// Result of a command
 type Reply<T> = Result<T, CommandError>;
+
+/// How long this device keeps its own numbers off after asking the group
+/// to identify its screens: long enough for its own request to come back
+const IDENTIFY_QUIET: Duration = Duration::from_secs(2);
 
 /// The whole state
 #[tauri::command]
@@ -159,9 +163,11 @@ pub async fn place(state: State<'_, AppState>, fingerprint: String, x: i32, y: i
     Ok(state.engine.place(&fingerprint, spot).await?)
 }
 
-/// Have every online member show its number on its screens
+/// Have every other online member show its number on its screens (the
+/// arrangement page opened); this device's own would cover the window
 #[tauri::command]
 pub fn identify(state: State<'_, AppState>) -> Reply<()> {
+    *lock(&state.identify_quiet) = Some(Instant::now() + IDENTIFY_QUIET);
     Ok(state.engine.identify()?)
 }
 
@@ -403,13 +409,6 @@ pub fn open_logs(app: AppHandle, state: State<'_, AppState>) -> Reply<()> {
 #[tauri::command]
 pub fn show_main_window(app: AppHandle) {
     tray::show_main_window(&app);
-}
-
-/// Bring up the arrangement panel where the pointer is (async: it may
-/// create its window, which a blocking command must not on Windows)
-#[tauri::command]
-pub async fn show_panel(app: AppHandle) {
-    panel::show(&app);
 }
 
 /// Quit Lanroam

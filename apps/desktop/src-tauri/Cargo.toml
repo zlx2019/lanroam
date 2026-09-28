@@ -47,8 +47,8 @@ sys-locale = "0.3"
 [target.'cfg(windows)'.dependencies]
 windows-version = "0.1"
 
-# The on-screen overlays' window level (above full-screen apps); the same
-# version Tauri uses
+# The on-screen overlays' window level (above full-screen apps) and the
+# blur behind the main window; the same version Tauri uses
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = { version = "0.3.2", default-features = false, features = [
     "std",

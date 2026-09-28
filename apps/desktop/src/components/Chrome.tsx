@@ -1,16 +1,16 @@
-// The main window's top bar: the brand, the pages, the state (which is the
-// pause switch too) and the way into the arrangement panel.
+// The main window's top bar: the brand, the pages and the state (which is
+// the pause switch too).
 
 import { useI18n, type Translate } from "../i18n";
 import { api } from "../api";
 import type { Snapshot } from "../types";
-import { ArrangeIcon, LockIcon, Logo } from "./icons";
+import { LockIcon, Logo } from "./icons";
 
 /** Pages of the main window */
-export type Tab = "devices" | "settings";
+export type Tab = "devices" | "arrange" | "settings";
 
 /** Pages in tab order */
-const TABS: Tab[] = ["devices", "settings"];
+const TABS: Tab[] = ["devices", "arrange", "settings"];
 
 /** Where sharing stands: working, paused, or nothing to share with (no
  * group, or no other member online); the tray says the same (tray.rs) */
@@ -54,12 +54,6 @@ export function Header({
           </nav>
           <div className="right" data-tauri-drag-region>
             <StateIndicator snapshot={snapshot} onToast={onToast} />
-            {snapshot.group && (
-              <button className="btn" onClick={() => api.showPanel().catch(console.error)}>
-                <ArrangeIcon />
-                {t("action.arrange")}
-              </button>
-            )}
           </div>
         </>
       )}

@@ -47,16 +47,6 @@ export function OsLogo({ platform }: { platform: string }) {
   );
 }
 
-/** Two screens side by side: arranging them */
-export function ArrangeIcon() {
-  return (
-    <svg viewBox="0 0 16 16">
-      <rect x="1.5" y="3" width="7" height="6" rx="1.4" fill="none" stroke="currentColor" strokeWidth="1.5" />
-      <rect x="8.5" y="6" width="6" height="7" rx="1.4" fill="currentColor" opacity=".35" stroke="currentColor" strokeWidth="1.5" />
-    </svg>
-  );
-}
-
 /** Three dots: more actions */
 export function MoreIcon() {
   return (

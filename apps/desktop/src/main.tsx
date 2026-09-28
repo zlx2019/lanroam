@@ -1,6 +1,6 @@
 // Entry: one bundle for every window, routed by window label (main: the
-// app, arrange: the arrangement panel, join: the PIN shown to a device
-// asking to join, overlay-n: what shows over display n).
+// app, join: the PIN shown to a device asking to join, overlay-n: what
+// shows over display n).
 
 import React, { Suspense, lazy, useCallback, useEffect, useState } from "react";
 import ReactDOM from "react-dom/client";
@@ -16,16 +16,15 @@ const JoinWindow = lazy(() =>
   import("./components/JoinWindow").then((m) => ({ default: m.JoinWindow })),
 );
 const Overlay = lazy(() => import("./components/Overlay").then((m) => ({ default: m.Overlay })));
-const ArrangePanel = lazy(() =>
-  import("./components/ArrangePanel").then((m) => ({ default: m.ArrangePanel })),
-);
 
 /** This window's label */
 const label = getCurrentWindow().label;
 
 /** An on-screen overlay: a transparent page over a whole display */
 const isOverlay = label.startsWith("overlay-");
-if (isOverlay) document.documentElement.dataset.overlay = "1";
+
+// The overlays are see-through pages: only what they draw shows
+if (isOverlay) document.documentElement.dataset.transparent = "1";
 
 // Styles that differ by system (window corners, fonts)
 document.documentElement.dataset.os = navigator.userAgent.includes("Windows") ? "windows" : "macos";
@@ -64,8 +63,7 @@ function Root() {
           <Overlay />
         ) : label === "join" ? (
           <JoinWindow />
-        ) : label === "arrange" ? (
-          <ArrangePanel />
+
         ) : (
           <App settings={settings} onSettings={save} />
         )}

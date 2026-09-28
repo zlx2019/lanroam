@@ -33,6 +33,9 @@ pub mod events {
     /// A key combination was recorded; payload: `Chord`, `null` when the
     /// user gave up
     pub const RECORDED: &str = "recorded";
+    /// The main window is to show one of its pages (the tray asked);
+    /// payload: the page, e.g. `arrange`
+    pub const SHOW_PAGE: &str = "show-page";
 }
 
 /// Label of the window showing a join's PIN
@@ -75,6 +78,7 @@ pub async fn start(
         join_seq: std::sync::atomic::AtomicU64::new(0),
         prompt: std::sync::Mutex::new(None),
         overlays: std::sync::Mutex::default(),
+        identify_quiet: std::sync::Mutex::new(None),
     };
     Ok((state, events))
 }

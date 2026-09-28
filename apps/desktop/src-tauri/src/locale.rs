@@ -49,7 +49,7 @@ pub struct Texts {
     pub switch_to: &'static str,
     /// Tray: marks an offline device in the list
     pub offline: &'static str,
-    /// Tray: open the arrangement panel
+    /// Tray: open the window on its arrangement page
     pub arrange: &'static str,
     /// Tray: open the window
     pub open: &'static str,

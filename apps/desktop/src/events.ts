@@ -12,6 +12,8 @@ export const EVENTS = {
   KICKED: "kicked",
   /** A key combination was recorded; payload: Chord, null when given up */
   RECORDED: "recorded",
+  /** The tray opens the main window on a page; payload: Tab */
+  SHOW_PAGE: "show-page",
   /** What one on-screen overlay shows, sent to that window; payload: SceneDto (overlay.rs) */
   OVERLAY_SCENE: "overlay-scene",
 } as const;

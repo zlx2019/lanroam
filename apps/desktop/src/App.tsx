@@ -1,6 +1,5 @@
-// The main window: devices and settings, with the join dialog and (on
-// macOS, until granted) the permission walkthrough. The screens are
-// arranged in a panel of their own (ArrangePanel).
+// The main window: devices, their screens' arrangement and settings, with
+// the join dialog and (on macOS, until granted) the permission walkthrough.
 
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
@@ -9,6 +8,7 @@ import { EVENTS } from "./events";
 import { useNearby, useSnapshot, useToast } from "./hooks/useLanroam";
 import { useI18n } from "./i18n";
 import type { NearbyDto, PermissionsDto, SettingsDto } from "./types";
+import { ArrangePage } from "./components/ArrangePage";
 import { Header, type Tab } from "./components/Chrome";
 import { DevicesPage } from "./components/DevicesPage";
 import { JoinModal } from "./components/JoinModal";
@@ -45,6 +45,17 @@ export default function App({
       unlisten.then((u) => u()).catch(console.error);
     };
   }, [showToast, t]);
+
+  // The tray opens the window on a page
+  useEffect(() => {
+    const unlisten = listen<Tab>(EVENTS.SHOW_PAGE, (e) => {
+      setRenaming(false);
+      setTab(e.payload);
+    });
+    return () => {
+      unlisten.then((u) => u()).catch(console.error);
+    };
+  }, []);
 
   if (!snapshot || !perms) return <div className="app" />;
 
@@ -84,6 +95,7 @@ export default function App({
             onToast={showToast}
           />
         )}
+        {tab === "arrange" && <ArrangePage snapshot={snapshot} />}
         {tab === "settings" && (
           <SettingsPage
             snapshot={snapshot}
@@ -106,9 +118,8 @@ export default function App({
           onClose={() => setJoinTarget(null)}
           onJoined={() => {
             setJoinTarget(null);
-            show("devices");
             // Straight on to placing the screens
-            api.showPanel().catch(console.error);
+            show("arrange");
           }}
         />
       )}

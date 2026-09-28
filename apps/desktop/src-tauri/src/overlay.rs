@@ -403,12 +403,6 @@ fn device_rect(monitor: &Monitor) -> (f64, f64, f64, f64) {
 }
 
 /// The display the pointer is on (the first one when that is unknown)
-pub fn pointer_monitor(app: &AppHandle) -> Option<Monitor> {
-    monitors(app).into_iter().nth(pointer_display(app))
-}
-
-/// Index of the display the pointer is on (the first one when that is
-/// unknown)
 fn pointer_display(app: &AppHandle) -> usize {
     let Ok(position) = app.cursor_position() else {
         return 0;
@@ -462,7 +456,7 @@ fn window(app: &AppHandle, index: usize) -> tauri::Result<WebviewWindow> {
 /// current space only
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)] // AppKit: the NSWindow behind a Tauri window
-pub fn above_everything(window: &WebviewWindow) {
+fn above_everything(window: &WebviewWindow) {
     use objc2_app_kit::{NSStatusWindowLevel, NSWindow, NSWindowCollectionBehavior};
 
     let target = window.clone();
@@ -483,7 +477,7 @@ pub fn above_everything(window: &WebviewWindow) {
         );
     });
     if let Err(e) = queued {
-        tracing::warn!("cannot raise a window above full-screen apps: {e}");
+        tracing::warn!("cannot raise an overlay above full-screen apps: {e}");
     }
 }
 
@@ -492,7 +486,7 @@ pub fn above_everything(window: &WebviewWindow) {
 /// macOS places windows in points across displays, so logical units there;
 /// Windows in physical pixels of the virtual desktop, which a logical size
 /// would get wrong between displays of different scales.
-pub fn cover(window: &WebviewWindow, monitor: &Monitor) {
+fn cover(window: &WebviewWindow, monitor: &Monitor) {
     #[cfg(target_os = "macos")]
     let placed = {
         let scale = monitor.scale_factor();
@@ -505,6 +499,6 @@ pub fn cover(window: &WebviewWindow, monitor: &Monitor) {
         .set_position(*monitor.position())
         .and_then(|()| window.set_size(*monitor.size()));
     if let Err(e) = placed.and_then(|()| window.show()) {
-        tracing::warn!("cannot show a window over a display: {e}");
+        tracing::warn!("cannot show an overlay: {e}");
     }
 }

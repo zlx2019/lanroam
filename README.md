@@ -31,7 +31,7 @@ Arrange them once. From then on, move the pointer past the edge of one screen an
 - 🖱️ **Edge crossing** — push the pointer past an edge your screen shares with another device and you control that device. Carry on across further devices and back, in any direction; positions map proportionally along the shared edges.
 - 🎚️ **Crossing on your terms** — cross an edge right away, only while holding a modifier, or after a short dwell against it; a corner guard keeps the pointer home when you aim for a screen corner. Each edge can be closed or cross its own way.
 - 🔀 **Mac ↔ Windows** — Command and Control swap places between a Mac and a PC, so shortcuts stay under the same fingers. The layout is in logical pixels, so a 150% Windows display lines up with a Mac's.
-- 🧩 **Arrange screens** — the display in front of you turns into a blurred sheet with the screens of every device in the group floating on it; drag them into place, and the whole group has the new layout. While it is open, the other devices show their numbers on their own screens.
+- 🧩 **Arrange screens** — the Arrange page shows the screens of every device in the group; drag them into place, and the whole group has the new layout. While it is open, the other devices show their numbers on their own screens. While it is open, the other devices show their numbers on their own screens.
 - ⌨️ **Hotkeys** — jump to a device by number or to the neighbour in a direction, lock the pointer to a device, or go home and pause crossing. Record your own combinations in the settings.
 - 📌 **Keys that stay here** — combinations you keep local (switching input methods, screenshots) act on this computer even while you control another. Media and volume keys go to the device you control, or stay here.
 - 🖲️ **Per-device pointer and wheel** — each device sets how fast the pointer and the wheel go on it, and can turn scrolling around for a Mac with natural scrolling.
@@ -41,7 +41,7 @@ Arrange them once. From then on, move the pointer past the edge of one screen an
 - 📡 **Zero-config discovery** — mDNS with a UDP multicast fallback; nearby devices just show up.
 - 🤝 **Join with a PIN** — a device joins the group by typing the 6-digit PIN a member shows, checked with a password-authenticated key exchange bound to both TLS certificates.
 - 🔐 **Secure by default** — mutually authenticated TLS 1.3 over QUIC, with identities pinned to certificate fingerprints; input only ever reaches the members of your group.
-- 🗂️ **Lives in the menu bar** — pause, lock, switch to a device or arrange the screens from the menu bar (macOS) or the tray (Windows), and optionally start at login.
+- 🗂️ **Lives in the menu bar** — pause, lock, switch to a device or go and arrange the screens from the menu bar (macOS) or the tray (Windows), and optionally start at login.
 
 ### Hotkeys
 
@@ -131,7 +131,7 @@ macOS 15+ asks for **Local Network** permission on first launch. It must be allo
 Discovery and control need an inbound firewall rule for private networks: the installer adds it (for a development build, run the update script once with `-Firewall` as shown above). Make sure Windows counts your network as **Private**, not Public.
 
 **The pointer crosses at the wrong place, or not at all.**
-The pointer only crosses where two screens touch in the layout. Open **Arrange screens** (in the window or the tray menu): the other devices show their numbers on their screens, so you can tell which is which; drag them to match your desk.
+The pointer only crosses where two screens touch in the layout. Open the **Arrange** page (or **Arrange Screens…** in the tray menu): the other devices show their numbers on their screens, so you can tell which is which; drag them to match your desk.
 
 **Scrolling goes the wrong way on the other computer.**
 A Mac with natural scrolling scrolls a PC the other way round. On the computer being controlled, turn on **Settings → Keyboard & mouse → Reverse scrolling**; its scrolling speed is set there too.

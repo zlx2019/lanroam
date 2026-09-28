@@ -1,22 +1,18 @@
-// The arrangement panel: a borderless sheet over the whole display the
-// pointer is on (panel.rs), the desktop blurred under it, with the group's
-// screens floating in the middle to drag into place. Every drop is saved at
-// once. Esc, "Done" or a click on the empty sheet hides it, and so does a
-// click anywhere else (the backend hides it when it loses focus).
+// The arrangement page: the group's screens on the window's glass, to drag
+// into place, with a line of help under them. Every drop is saved at once.
+// Opening it has the other members show their numbers on their screens, to
+// match the tiles with the real screens.
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "../api";
 import { clash, fit, pairs, seams, shift, snap, type Placed, type Seam, type View } from "../geometry";
-import { useSnapshot } from "../hooks/useLanroam";
 import { altKey, formatError, useI18n, type Translate } from "../i18n";
-import { applyOpacity, applyTheme } from "../theme";
 import type { DeviceDto, GroupDto, Snapshot } from "../types";
 import { WarnIcon } from "./icons";
 import { Screens } from "./Screens";
 
-/** Largest scale: a lone device must not fill the whole display */
-const MAX_SCALE = 0.3;
+/** Largest scale: a lone device must not fill the whole page */
+const MAX_SCALE = 0.2;
 
 /** How close a dragged edge snaps to another screen's, in screen pixels */
 const SNAP_PX = 12;
@@ -30,63 +26,29 @@ const BOUNCE_MS = 280;
 /** How long a placed device waits for the group to confirm its spot */
 const PENDING_MS = 3000;
 
-/** A line in the foot, from the last drop; `warn` shows it as a warning */
+/** The line of help, from the last drop; `warn` shows it as a warning */
 interface Note {
   text: string;
   warn: boolean;
 }
 
-/** Hide the panel's window */
-function hide() {
-  getCurrentWindow().hide().catch(console.error);
-}
-
-/** Hide the panel when a press lands on the empty sheet itself */
-function away(e: PointerEvent<HTMLDivElement>) {
-  if (e.target === e.currentTarget) hide();
-}
-
-/** The panel */
-export function ArrangePanel() {
+/** The page */
+export function ArrangePage({ snapshot }: { snapshot: Snapshot }) {
   const { t } = useI18n();
-  const snapshot = useSnapshot();
   const [note, setNote] = useState<Note | null>(null);
   // The device dropped last, told about when it touches no other
   const [dropped, setDropped] = useState<string | null>(null);
-  // Counts the showings: each one lays the screens out afresh
-  const [shown, setShown] = useState(0);
 
-  // Esc hides. Each showing starts afresh, without the last one's notes,
-  // and in the theme and opacity the settings have now
+  // The other members show their numbers while the page is fresh
   useEffect(() => {
-    const esc = (e: KeyboardEvent) => e.key === "Escape" && hide();
-    window.addEventListener("keydown", esc);
-    const unlisten = getCurrentWindow().onFocusChanged(({ payload }) => {
-      if (!payload) return;
-      setNote(null);
-      setDropped(null);
-      setShown((n) => n + 1);
-      api
-        .getSettings()
-        .then((s) => {
-          applyTheme(s.theme);
-          applyOpacity(s.opacity);
-        })
-        .catch(console.error);
-    });
-    return () => {
-      window.removeEventListener("keydown", esc);
-      unlisten.then((u) => u()).catch(console.error);
-    };
+    api.identify().catch(console.error);
   }, []);
 
-  if (!snapshot) return <div className="arrange" />;
   const foot = note ?? standing(snapshot, dropped, t) ?? { text: t("panel.hint"), warn: false };
   return (
-    <div className="arrange" onPointerDown={away}>
+    <div className="pane arrange">
       {snapshot.group ? (
         <Stage
-          key={shown}
           group={snapshot.group}
           onNote={setNote}
           onDrop={(id) => {
@@ -95,19 +57,11 @@ export function ArrangePanel() {
           }}
         />
       ) : (
-        <div className="stage empty" onPointerDown={away}>
-          {t("panel.noGroup")}
-        </div>
+        <div className="stage empty">{t("panel.noGroup")}</div>
       )}
-      <div className="a-foot">
-        <b>{t("panel.title")}</b>
-        <span className={foot.warn ? "warn" : ""}>
-          {foot.warn && <WarnIcon />}
-          {foot.text}
-        </span>
-        <button className="done" onClick={hide}>
-          {t("panel.done")} <span className="kbd">Esc</span>
-        </button>
+      <div className={`a-foot${foot.warn ? " warn" : ""}`}>
+        {foot.warn && <WarnIcon />}
+        {foot.text}
       </div>
     </div>
   );
@@ -293,7 +247,7 @@ function Stage({
 
   const dragging = moved?.dragging ?? false;
   return (
-    <div ref={ref} className={`stage${dragging ? " dragging" : ""}`} onPointerDown={away}>
+    <div ref={ref} className={`stage${dragging ? " dragging" : ""}`}>
       {view &&
         devices.map((d) => {
           const mine = moved?.id === d.fingerprint;

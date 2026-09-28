@@ -2,6 +2,7 @@
 
 export const zh = {
   "tab.devices": "设备",
+  "tab.arrange": "排列",
   "tab.settings": "设置",
 
   "state.active": "活跃",
@@ -15,7 +16,6 @@ export const zh = {
   "state.controlled": "被 {name} 控制",
   "state.clickPause": "点击暂停",
   "state.clickResume": "点击恢复",
-  "action.arrange": "排列屏幕",
 
   "platform.macos": "macOS",
   "platform.windows": "Windows",
@@ -42,10 +42,7 @@ export const zh = {
   "devices.joinGroup": "加入它的组",
   "devices.joinThere": "在它上面点加入",
 
-  "panel.title": "排列屏幕",
-  "panel.subtitle": "拖成和桌上一样的位置",
-  "panel.done": "完成",
-  "panel.hint": "相接处光标可以穿过 · 松手即保存",
+  "panel.hint": "拖成和桌上一样的位置 · 相接处光标可以穿过",
   "panel.overlap": "屏幕不能叠在一起，已放回原处",
   "panel.lonely": "{name} 没和任何设备相接，只能用 {keys} 跳过去",
   "panel.unplaced": "{n} 台设备还没上报屏幕",

@@ -1,8 +1,8 @@
-//! Window materials: the desktop behind the main window and the
-//! arrangement panel shows through, blurred, under a tint in the page's own
-//! colors, as opaque as the user likes (Settings → Appearance). The way
-//! terminals do it: the tint is ours, so the look follows the app's theme
-//! whatever the system's (a system material would not).
+//! The window material: the desktop behind the main window shows through,
+//! blurred, under a tint in the page's own colors, as opaque as the user
+//! likes (Settings → Appearance). The way terminals do it: the tint is
+//! ours, so the look follows the app's theme whatever the system's (a
+//! system material would not).
 //!
 //! - macOS: a blur radius on the window, the private CoreGraphics call
 //!   iTerm2, kitty, WezTerm and Alacritty use

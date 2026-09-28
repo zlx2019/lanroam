@@ -8,13 +8,14 @@
 //!
 //! The appearance settings turn each of them off.
 
+use std::time::Instant;
+
 use lanroam_core::engine::ControlEvent;
 use lanroam_core::lanroam_input::Point;
 use tauri::{AppHandle, Manager};
 
 use crate::dto::{ControlDto, ControlMode};
 use crate::overlay::{self, Hint};
-use crate::panel;
 use crate::state::{AppState, lock};
 
 /// Show what `event` means; `was` is the control state before it
@@ -92,12 +93,12 @@ fn came_in(app: &AppHandle, at: Point, jumped: bool, settings: &crate::settings:
 }
 
 /// Show this device's number on its screens (the group identifies them),
-/// unless the arrangement panel is open here: the number would cover it
+/// unless the arrangement page here asked: the number would cover it
 pub fn identify(app: &AppHandle) {
     let Some(state) = app.try_state::<AppState>() else {
         return;
     };
-    if panel::is_open(app) {
+    if lock(&state.identify_quiet).is_some_and(|until| Instant::now() < until) {
         return;
     }
     overlay::identify(app, own_number(&state), state.engine.info().name);

@@ -4,6 +4,7 @@ import type { TextKey } from "./zh";
 
 export const en: Record<TextKey, string> = {
   "tab.devices": "Devices",
+  "tab.arrange": "Arrange",
   "tab.settings": "Settings",
   "state.active": "Active",
   "state.paused": "Paused",
@@ -16,7 +17,6 @@ export const en: Record<TextKey, string> = {
   "state.controlled": "Controlled by {name}",
   "state.clickPause": "click to pause",
   "state.clickResume": "click to resume",
-  "action.arrange": "Arrange screens",
   "platform.macos": "macOS",
   "platform.windows": "Windows",
   "tag.local": "This device",
@@ -40,10 +40,7 @@ export const en: Record<TextKey, string> = {
   "devices.join": "Join",
   "devices.joinGroup": "Join its group",
   "devices.joinThere": "Join from that device",
-  "panel.title": "Arrange screens",
-  "panel.subtitle": "Drag them to match your desk",
-  "panel.done": "Done",
-  "panel.hint": "The pointer crosses where screens touch · saved as you drop",
+  "panel.hint": "Drag them to match your desk · the pointer crosses where they touch",
   "panel.overlap": "Screens can't overlap; put back where it was",
   "panel.lonely": "{name} touches no other device; only {keys} gets there",
   "panel.unplaced": "{n} devices haven't reported their screens yet",
