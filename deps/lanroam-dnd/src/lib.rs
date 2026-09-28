@@ -16,6 +16,10 @@
 //! | macOS | the drag pasteboard (changed since the press) | `NSDraggingSession` from a panel under the cursor |
 //! | Windows | `IDropTarget::DragEnter` on a window under the cursor | `SHDoDragDrop` from a window under the cursor |
 //!
+//! Released before the files are all there, a drag on Windows drops at once
+//! and the app it lands on waits for them ([`Dnd::drops_early`]); on macOS
+//! the engine holds the release back until they are.
+//!
 //! Windows used here are transparent, above everything and never take
 //! focus. On macOS they live on the main thread, which must run the app's
 //! event loop; on Windows on a thread of their own. No networking lives
@@ -131,5 +135,20 @@ impl Dnd {
     /// goes up ([`Event::Cancelling`] once it may)
     pub fn cancel(&self, id: u64) {
         self.imp.cancel(id);
+    }
+
+    /// Whether a drag drops as soon as the button goes up, before its
+    /// files are all there: the app it lands on waits for them
+    /// ([`Dnd::deliver`]), not the pointer. Windows does; on macOS the
+    /// release waits for the files
+    pub fn drops_early(&self) -> bool {
+        imp::DROPS_EARLY
+    }
+
+    /// The files of the drag armed with `id` are all there (`true`), or
+    /// will not come: an app it dropped on early gets them now, or an
+    /// error
+    pub fn deliver(&self, id: u64, ok: bool) {
+        self.imp.deliver(id, ok);
     }
 }

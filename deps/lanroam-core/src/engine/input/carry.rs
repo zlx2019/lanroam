@@ -14,7 +14,10 @@
 //!   meanwhile the files are pulled from where they are, over the
 //!   stand-ins. The release drops them; released before they are all
 //!   there, the drop waits (the pointer stays where it was let go, and the
-//!   user sees how far they are), and lands there once they are.
+//!   user sees how far they are), and lands there once they are. Where the
+//!   native side drops early (Windows), the release drops at once instead,
+//!   and the app it lands on waits for the files: the drag is over, and
+//!   they are delivered in the background.
 //! - **Cancelled** (Esc, the pointer leaving, the files not arriving): the
 //!   native side refuses the drop first, then the button goes up, and the
 //!   files already there go.
@@ -59,6 +62,21 @@ pub(super) struct Drags {
     found: Option<Found>,
     /// The drag carried to this device
     carried: Option<Carried>,
+    /// Drags dropped here early whose files are still coming
+    delivering: Vec<Delivering>,
+}
+
+/// A drag dropped here before its files were all there, by a native side
+/// that drops early: the app it landed on waits for them
+struct Delivering {
+    /// Names it toward the native side
+    id: u64,
+    /// The folder the files land in
+    dir: Option<PathBuf>,
+    /// Pulling the files
+    pull: JoinHandle<()>,
+    /// What the user sees meanwhile
+    receiving: Receiving,
 }
 
 /// Files found by a probe
@@ -290,6 +308,11 @@ impl Input {
             DragEvent::Cancelling { id } => self.cancelled(id),
             DragEvent::Ended { id, dropped } => {
                 tracing::info!(id, dropped, "a drag carried here ended");
+                // Dropped early on nothing that takes the files
+                if !dropped && self.end_delivering(id, false) {
+                    tracing::info!(id, "nothing took the files dropped early");
+                    return;
+                }
                 // Ended without a drop of ours (it could not start)
                 if self.drags.carried.as_ref().is_some_and(|c| c.id == id)
                     && let Some(carried) = self.end_carried()
@@ -348,6 +371,12 @@ impl Input {
 
     /// `done` of the `total` bytes of drag `id` are there
     pub(super) fn progress(&mut self, id: u64, done: u64, total: u64) {
+        if let Some(delivering) = self.drags.delivering.iter_mut().find(|d| d.id == id) {
+            (delivering.receiving.done, delivering.receiving.total) = (done, total);
+            let receiving = delivering.receiving.clone();
+            let _ = self.events.send(EngineEvent::Receiving(Some(receiving)));
+            return;
+        }
         let Some(carried) = self.drags.carried.as_mut().filter(|c| c.id == id) else {
             return;
         };
@@ -358,8 +387,15 @@ impl Input {
     }
 
     /// The files of drag `id` are all there: a drop waiting for them
-    /// happens
+    /// happens, or the app it was dropped on early gets them
     pub(super) fn ready(&mut self, id: u64) {
+        if let Some(native) = &self.drags.native {
+            native.deliver(id, true);
+        }
+        if self.end_delivering(id, true) {
+            tracing::info!(id, "the files of a drag dropped early are here");
+            return;
+        }
         let Some(carried) = self.drags.carried.as_mut().filter(|c| c.id == id) else {
             return;
         };
@@ -380,6 +416,23 @@ impl Input {
     /// code): tell the user, and cancel it, at once or when the button
     /// goes up
     pub(super) fn transfer_failed(&mut self, id: u64, reason: &str, detail: &str) {
+        if let Some(native) = &self.drags.native {
+            native.deliver(id, false);
+        }
+        if let Some(delivering) = self.drags.delivering.iter().find(|d| d.id == id) {
+            tracing::warn!(
+                id,
+                reason,
+                "the files of a drag dropped early did not arrive: {detail}"
+            );
+            let name = delivering.receiving.name.clone();
+            self.end_delivering(id, false);
+            let _ = self.events.send(EngineEvent::DragFailed {
+                reason: reason.to_string(),
+                name,
+            });
+            return;
+        }
         let Some(carried) = self.drags.carried.as_mut().filter(|c| c.id == id) else {
             return;
         };
@@ -570,6 +623,7 @@ impl Input {
             count: files.len(),
             done: 0,
             total,
+            cancel: true,
         };
         tracing::info!(
             id,
@@ -614,6 +668,7 @@ impl Input {
                 self.cancel_carried(controller.as_deref(), false, Some(release));
             }
             Some(release) if ready => self.drop_carried(release),
+            Some(release) if self.drops_early() => self.drop_early(release),
             _ => {}
         }
     }
@@ -621,6 +676,7 @@ impl Input {
     /// The button carrying the drag here went up at `at`: drop now, or once
     /// the files are there
     fn release_carried(&mut self, controller: Option<&str>, at: Point) {
+        let early = self.drops_early();
         let Some(carried) = self
             .drags
             .carried
@@ -634,6 +690,7 @@ impl Input {
                 self.cancel_carried(controller, false, Some(at));
             }
             Stage::Pressed if carried.ready => self.drop_carried(at),
+            Stage::Pressed if early => self.drop_early(at),
             Stage::Cancelling { .. } => {}
             _ => {
                 tracing::info!(
@@ -666,6 +723,63 @@ impl Input {
             }
         }
         self.replay(Op::Button(MouseButton::Left, false, at));
+    }
+
+    /// Let the button go at `at` before the files are all there, on a
+    /// native side that drops early: the drag is over, and the app it
+    /// lands on waits for the files, which keep coming
+    fn drop_early(&mut self, at: Point) {
+        let Some(carried) = self.drags.carried.take() else {
+            return;
+        };
+        tracing::info!(
+            id = carried.id,
+            ?at,
+            "dropping a drag carried here before its files are all here"
+        );
+        // Released before its press: the drop waited for that
+        if carried.release.is_some() {
+            self.stop_waiting(&carried);
+        }
+        let receiving = Receiving {
+            at,
+            cancel: false,
+            ..carried.receiving
+        };
+        let _ = self
+            .events
+            .send(EngineEvent::Receiving(Some(receiving.clone())));
+        self.drags.delivering.push(Delivering {
+            id: carried.id,
+            dir: carried.dir,
+            pull: carried.pull,
+            receiving,
+        });
+        self.replay(Op::Button(MouseButton::Left, false, at));
+    }
+
+    /// The delivery of drag `id` is over: its files are all there (`ok`),
+    /// or not coming, or not wanted. Their folder goes, a while later if
+    /// the app has them
+    fn end_delivering(&mut self, id: u64, ok: bool) -> bool {
+        let Some(index) = self.drags.delivering.iter().position(|d| d.id == id) else {
+            return false;
+        };
+        let delivering = self.drags.delivering.remove(index);
+        delivering.pull.abort();
+        if let Some(dir) = delivering.dir {
+            discard_later(dir, if ok { KEEP_AFTER_DROP } else { Duration::ZERO });
+        }
+        let _ = self.events.send(EngineEvent::Receiving(None));
+        true
+    }
+
+    /// Whether the native side drops as soon as the button goes up
+    fn drops_early(&self) -> bool {
+        self.drags
+            .native
+            .as_ref()
+            .is_some_and(|native| native.drops_early())
     }
 
     /// Cancel the drag `controller` carried here, if any: the native side
@@ -752,15 +866,18 @@ impl Input {
         let carried = self.drags.carried.take()?;
         carried.pull.abort();
         if carried.release.is_some() {
-            match &carried.controller {
-                Some(controller) => {
-                    self.send(controller, Control::DropWaiting { on: false });
-                }
-                None => switch::lock(&self.switch).set_awaiting_drop(false),
-            }
+            self.stop_waiting(&carried);
             let _ = self.events.send(EngineEvent::Receiving(None));
         }
         Some(carried)
+    }
+
+    /// The drop of `carried` waits no more: the pointer is free again
+    fn stop_waiting(&self, carried: &Carried) {
+        match &carried.controller {
+            Some(controller) => self.send(controller, Control::DropWaiting { on: false }),
+            None => switch::lock(&self.switch).set_awaiting_drop(false),
+        }
     }
 
     /// Tell the user how far the files of the drop waiting here are

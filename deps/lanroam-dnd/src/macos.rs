@@ -47,6 +47,10 @@ use objc2_foundation::{
 
 use crate::{DndError, Event, Sink};
 
+/// A drag here drops once its files are all there: the engine holds the
+/// release back until then
+pub(crate) const DROPS_EARLY: bool = false;
+
 /// Side of the catcher, in points: the pointer pushing along an edge
 /// stays on it while the probe is answered
 const CATCHER_SIZE: f64 = 96.0;
@@ -198,6 +202,9 @@ impl Dnd {
             }
         });
     }
+
+    /// Nothing to do: a drop here happens once the files are all there
+    pub(crate) fn deliver(&self, _id: u64, _ok: bool) {}
 }
 
 impl State {

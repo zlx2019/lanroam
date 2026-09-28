@@ -168,7 +168,7 @@ export const zh = {
 
   "files.drag": "拖拽文件",
   "files.dragHint": "按住文件拖过屏幕边缘，放到另一台设备上；两台设备都开启才可以",
-  "files.note": "文件还没传完就松手时，指针会停在松手处，传完再放下；按 Esc 取消。",
+  "files.note": "文件还没传完就松手：拖到 Mac 上时，指针停在松手处，传完再放下（Esc 取消）；拖到 Windows 上会立即放下，由接收的程序等文件传完。",
 
   "hint.paused": "已暂停",
   "hint.pausedSub": "{keys} 恢复",

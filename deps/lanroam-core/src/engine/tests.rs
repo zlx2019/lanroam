@@ -66,6 +66,8 @@ enum DragCall {
     Arm(u64, Point, Vec<std::path::PathBuf>),
     /// Cancel this id
     Cancel(u64),
+    /// The files of this id are there, or not coming
+    Deliver(u64, bool),
 }
 
 /// Drag and drop driven by the test: probes find its files (set with
@@ -85,6 +87,8 @@ struct FakeDragState {
     later: Mutex<Option<Option<u64>>>,
     /// Where events go, once started
     sink: Mutex<Option<Arc<DragSink>>>,
+    /// Drops as soon as the button goes up (as on Windows)
+    early: std::sync::atomic::AtomicBool,
 }
 
 impl FakeDrag {
@@ -96,6 +100,13 @@ impl FakeDrag {
     /// Calls so far
     fn calls(&self) -> Vec<DragCall> {
         self.0.calls.lock().unwrap().clone()
+    }
+
+    /// Drop as soon as the button goes up from now on, files there or not
+    fn drop_early(&self) {
+        self.0
+            .early
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Hold arming back until [`Self::arm_now`]
@@ -163,6 +174,12 @@ impl Dragging for FakeDragging {
     fn cancel(&self, id: u64) {
         self.note(DragCall::Cancel(id));
         self.report(DragEvent::Cancelling { id });
+    }
+    fn drops_early(&self) -> bool {
+        self.0.early.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    fn deliver(&self, id: u64, ok: bool) {
+        self.note(DragCall::Deliver(id, ok));
     }
 }
 
@@ -1750,6 +1767,48 @@ async fn a_folder_goes_over_whole() {
     assert_eq!(std::fs::read(landed.join("2026/big.bin")).unwrap(), big);
     assert_eq!(std::fs::read(landed.join("note.txt")).unwrap(), b"hi");
     assert!(landed.join("2026/empty").is_dir());
+}
+
+/// Where the native side drops early (Windows), a release before the files
+/// are there drops at once: the pointer is free, and the files are
+/// delivered to the app they landed on once they are all there
+#[tokio::test]
+async fn an_early_drop_frees_the_pointer() {
+    let (a, mut b, _c) = row_of_three().await;
+    b.drag.drop_early();
+    let folder = a.dir.0.join("shots");
+    std::fs::create_dir_all(&folder).unwrap();
+    let big: Vec<u8> = (0..24u32 << 20).map(|i| (i % 251) as u8).collect();
+    std::fs::write(folder.join("big.bin"), &big).unwrap();
+    a.drag.holds(std::slice::from_ref(&folder));
+    a.input.left(true);
+    a.push_until(5.0, parked).await;
+    // Let go at once: nothing is there yet
+    a.input.left(false);
+    let (_, paths) = b.armed().await;
+
+    // Dropped: the card says how far the files are, with no Esc to cancel
+    b.expect("the early drop", |event| match event {
+        EngineEvent::Receiving(Some(receiving)) if !receiving.cancel => Some(()),
+        _ => None,
+    })
+    .await;
+    b.injected(&Injected::Button(MouseButton::Left, false))
+        .await;
+    tokio::time::sleep(SETTLE).await;
+    assert!(!a.input.awaiting_drop());
+
+    b.expect("the files delivered", |event| {
+        matches!(event, EngineEvent::Receiving(None)).then_some(())
+    })
+    .await;
+    let delivered = b
+        .drag
+        .calls()
+        .into_iter()
+        .any(|call| matches!(call, DragCall::Deliver(_, true)));
+    assert!(delivered);
+    assert_eq!(std::fs::read(paths[0].join("big.bin")).unwrap(), big);
 }
 
 /// Files gone since they were dragged do not arrive: b says so, and the

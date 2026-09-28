@@ -205,6 +205,8 @@ pub struct ReceivingDto {
     pub done: u64,
     /// Bytes in all
     pub total: u64,
+    /// Esc cancels: the drop waits (once dropped, the app has them)
+    pub cancel: bool,
 }
 
 /// What one display's overlay shows
@@ -323,6 +325,7 @@ pub fn receiving(app: &AppHandle, receiving: Option<Receiving>) {
             count: receiving.count,
             done: receiving.done,
             total: receiving.total,
+            cancel: receiving.cancel,
         };
         Some((index, dto))
     });

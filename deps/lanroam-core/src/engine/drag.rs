@@ -39,7 +39,8 @@ pub mod failed {
     pub const TRANSFER: &str = "transfer";
 }
 
-/// Files dragged here still arriving while their drop waits
+/// Files dragged here still arriving while their drop waits, or while the
+/// app they were dropped on waits for them
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Receiving {
     /// Where they will land (this device's coordinates)
@@ -52,6 +53,8 @@ pub struct Receiving {
     pub done: u64,
     /// Bytes in all
     pub total: u64,
+    /// Esc cancels: the drop waits (once dropped, the app has them)
+    pub cancel: bool,
 }
 
 /// Hands what the native side reports to the engine; called on any thread
@@ -77,6 +80,13 @@ pub trait Dragging: Send {
     fn arm(&self, id: u64, at: Point, paths: Vec<PathBuf>);
     /// Cancel the drag armed with `id`
     fn cancel(&self, id: u64);
+    /// Whether a drag drops as soon as the button goes up, before its
+    /// files are all there (see [`lanroam_dnd::Dnd::drops_early`])
+    fn drops_early(&self) -> bool {
+        false
+    }
+    /// The files of drag `id` are all there (`true`), or will not come
+    fn deliver(&self, _id: u64, _ok: bool) {}
 }
 
 /// This machine's drag and drop
@@ -108,6 +118,14 @@ impl Dragging for lanroam_dnd::Dnd {
 
     fn cancel(&self, id: u64) {
         lanroam_dnd::Dnd::cancel(self, id);
+    }
+
+    fn drops_early(&self) -> bool {
+        lanroam_dnd::Dnd::drops_early(self)
+    }
+
+    fn deliver(&self, id: u64, ok: bool) {
+        lanroam_dnd::Dnd::deliver(self, id, ok);
     }
 }
 

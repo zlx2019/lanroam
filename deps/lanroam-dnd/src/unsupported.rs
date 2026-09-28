@@ -6,6 +6,9 @@ use lanroam_input::Point;
 
 use crate::{DndError, Sink};
 
+/// Nothing to drop early
+pub(crate) const DROPS_EARLY: bool = false;
+
 /// Never starts
 pub(crate) struct Dnd;
 
@@ -29,4 +32,7 @@ impl Dnd {
 
     /// Nothing to do
     pub(crate) fn cancel(&self, _id: u64) {}
+
+    /// Nothing to do
+    pub(crate) fn deliver(&self, _id: u64, _ok: bool) {}
 }

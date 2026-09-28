@@ -69,7 +69,7 @@ const CHIP = { offset: 18, width: 290, height: 76 };
 /** The files of a waiting drop still arriving, next to where it lands */
 function Receiving({ receiving }: { receiving: ReceivingDto }) {
   const { t } = useI18n();
-  const { x, y, name, count, done, total } = receiving;
+  const { x, y, name, count, done, total, cancel } = receiving;
   const percent = total > 0 ? Math.min(100, Math.floor((done / total) * 100)) : 0;
   const what = several(name, count, t);
   // Below and right of the drop point, kept on the display
@@ -87,7 +87,8 @@ function Receiving({ receiving }: { receiving: ReceivingDto }) {
           <div style={{ width: `${percent}%` }} />
         </div>
         <small>
-          {t("drop.receiving", { done: bytes(done), total: bytes(total) })} · {t("drop.cancel")}
+          {t("drop.receiving", { done: bytes(done), total: bytes(total) })}
+          {cancel && ` · ${t("drop.cancel")}`}
         </small>
       </div>
     </div>

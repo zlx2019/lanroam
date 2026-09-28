@@ -10,6 +10,12 @@
 //!   the files (the same Explorer builds), which follows the injected
 //!   pointer and drops where the button goes up. Its drop source gives up
 //!   instead once cancelled.
+//! - **Early drops**: the button goes up at once, files there or not. The
+//!   data object is wrapped: once dropped, the app asking for the files
+//!   waits until they are all there ([`crate::Dnd::deliver`]), serving this
+//!   thread's messages meanwhile, and the wrapper offers the app to take
+//!   them in the background (`IDataObjectAsyncCapability`), as Explorer
+//!   does. The app waits, not the pointer.
 //!
 //! Both windows are layered with an alpha of 1 (fully transparent ones let
 //! the pointer through), topmost, and never activate. The thread is
@@ -19,19 +25,24 @@
 #![allow(unsafe_code)]
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, mpsc};
 
 use lanroam_input::{INJECTED_MARKER, Point};
 use windows::Win32::Foundation::{
-    COLORREF, DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, HWND, LPARAM,
-    LRESULT, POINT, POINTL, S_OK, WPARAM,
+    COLORREF, DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, E_FAIL, HWND,
+    LPARAM, LRESULT, POINT, POINTL, S_OK, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{BLACK_BRUSH, GetStockObject, HBRUSH};
-use windows::Win32::System::Com::{DVASPECT_CONTENT, FORMATETC, IDataObject, TYMED_HGLOBAL};
+use windows::Win32::System::Com::{
+    DVASPECT_CONTENT, FORMATETC, IAdviseSink, IBindCtx, IDataObject, IDataObject_Impl,
+    IEnumFORMATETC, IEnumSTATDATA, STGMEDIUM, TYMED_HGLOBAL,
+};
+use windows::Win32::System::DataExchange::RegisterClipboardFormatW;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Ole::{
     CF_HDROP, DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_MOVE, DROPEFFECT_NONE, IDropSource,
@@ -47,13 +58,15 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
-    BHID_DataObject, DragQueryFileW, HDROP, ILCreateFromPathW, ILFree, IShellItemArray,
+    BHID_DataObject, DragQueryFileW, HDROP, IDataObjectAsyncCapability,
+    IDataObjectAsyncCapability_Impl, ILCreateFromPathW, ILFree, IShellItemArray,
     SHCreateShellItemArrayFromIDLists, SHDoDragDrop,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetCursorPos, GetMessageW, HWND_TOPMOST,
-    KillTimer, LWA_ALPHA, MA_NOACTIVATE, MSG, PostMessageW, RegisterClassW, SW_HIDE,
-    SWP_NOACTIVATE, SWP_SHOWWINDOW, SetLayeredWindowAttributes, SetTimer, SetWindowPos, ShowWindow,
+    KillTimer, LWA_ALPHA, MA_NOACTIVATE, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx,
+    PM_REMOVE, PeekMessageW, PostMessageW, QS_ALLINPUT, RegisterClassW, SW_HIDE, SWP_NOACTIVATE,
+    SWP_SHOWWINDOW, SetLayeredWindowAttributes, SetTimer, SetWindowPos, ShowWindow,
     TranslateMessage, WM_APP, WM_LBUTTONDOWN, WM_MOUSEACTIVATE, WM_TIMER, WNDCLASSW, WS_EX_LAYERED,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
@@ -85,14 +98,29 @@ const HIDE_TIMER: usize = 2;
 /// milliseconds: the release it refuses may still be on its way
 const CATCHER_GRACE_MS: u32 = 800;
 
+/// A drag here drops as soon as the button goes up; the app it lands on
+/// waits for the files
+pub(crate) const DROPS_EARLY: bool = true;
+
+/// How often an app waiting for the files looks again whether they are
+/// there, in milliseconds (messages wake it sooner)
+const WAIT_POLL_MS: u32 = 50;
+
+/// [`Gate::state`]: the files are on their way
+const WAITING: u8 = 0;
+/// [`Gate::state`]: the files are all there
+const OPEN: u8 = 1;
+/// [`Gate::state`]: the files will not come
+const SHUT: u8 = 2;
+
 /// A request for the window thread
 enum Command {
     /// See [`Dnd::probe`]
     Probe(u64),
     /// See [`Dnd::unprobe`]
     Unprobe,
-    /// See [`Dnd::arm`]
-    Arm(u64, Point, Vec<PathBuf>),
+    /// See [`Dnd::arm`], with the drag's gate
+    Arm(u64, Point, Vec<PathBuf>, Arc<Gate>),
     /// See [`Dnd::cancel`], for a drag not started yet
     Disarm(u64),
 }
@@ -105,6 +133,29 @@ struct Shared {
     dragging: AtomicU64,
     /// The drag running here gives up at the next change of the buttons
     cancel: AtomicBool,
+    /// The gates of the drags armed or dropped whose files are still on
+    /// their way, by id
+    gates: Mutex<HashMap<u64, Arc<Gate>>>,
+}
+
+impl Shared {
+    /// The gates, even after a panic elsewhere
+    fn gates(&self) -> std::sync::MutexGuard<'_, HashMap<u64, Arc<Gate>>> {
+        self.gates.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Whether the files of a drag may go to the app it was dropped on: after
+/// a drop, asking for them waits until they are all there
+#[derive(Default)]
+struct Gate {
+    /// [`WAITING`], [`OPEN`] or [`SHUT`]
+    state: AtomicU8,
+    /// The button went up: the drop is under way
+    dropped: AtomicBool,
+    /// The app dropped on asked for the files, or took them on in the
+    /// background
+    asked: AtomicBool,
 }
 
 /// Handle for the engine; the work happens on the window thread
@@ -125,6 +176,7 @@ impl Dnd {
             sink,
             dragging: AtomicU64::new(0),
             cancel: AtomicBool::new(false),
+            gates: Mutex::new(HashMap::new()),
         });
         let (commands, inbox) = mpsc::channel();
         let (ready_tx, ready) = mpsc::channel();
@@ -156,14 +208,32 @@ impl Dnd {
         self.send(Command::Unprobe);
     }
 
-    /// See [`crate::Dnd::arm`]
+    /// See [`crate::Dnd::arm`]. The drag's gate is kept here, where
+    /// [`Self::deliver`] finds it at once
     pub(crate) fn arm(&self, id: u64, at: Point, paths: Vec<PathBuf>) {
-        self.send(Command::Arm(id, at, paths));
+        let gate = Arc::new(Gate::default());
+        self.shared.gates().insert(id, Arc::clone(&gate));
+        self.send(Command::Arm(id, at, paths, gate));
+    }
+
+    /// See [`crate::Dnd::deliver`]. From here: the window thread may be
+    /// busy with an app waiting for the files
+    pub(crate) fn deliver(&self, id: u64, ok: bool) {
+        if let Some(gate) = self.shared.gates().remove(&id) {
+            gate.state
+                .store(if ok { OPEN } else { SHUT }, Ordering::SeqCst);
+            if gate.dropped.load(Ordering::SeqCst) {
+                tracing::info!(id, ok, "the files of a drop are delivered");
+            }
+        }
     }
 
     /// See [`crate::Dnd::cancel`]. A drag running is cancelled from here:
     /// the window thread is inside its drag loop meanwhile
     pub(crate) fn cancel(&self, id: u64) {
+        if let Some(gate) = self.shared.gates().remove(&id) {
+            gate.state.store(SHUT, Ordering::SeqCst);
+        }
         if self.shared.dragging.load(Ordering::SeqCst) == id {
             self.shared.cancel.store(true, Ordering::SeqCst);
             tracing::info!(id, "cancelling the drag");
@@ -205,8 +275,9 @@ struct State {
     source: HWND,
     /// A probe waiting for the drag held here to enter the catcher
     probing: Option<u64>,
-    /// A drag ready to start at the next press on the source window
-    armed: Option<(u64, IDataObject)>,
+    /// A drag ready to start at the next press on the source window, with
+    /// its gate
+    armed: Option<(u64, IDataObject, Arc<Gate>)>,
 }
 
 /// Body of the window thread: set up, report, and serve messages for good
@@ -334,7 +405,7 @@ impl State {
             match command {
                 Command::Probe(id) => self.probe(id),
                 Command::Unprobe => self.unprobe(),
-                Command::Arm(id, at, paths) => self.arm(id, at, &paths),
+                Command::Arm(id, at, paths, gate) => self.arm(id, at, &paths, gate),
                 Command::Disarm(id) => self.disarm(id),
             }
         }
@@ -393,10 +464,16 @@ impl State {
     }
 
     /// Get ready to drag `paths` from `at`
-    fn arm(&mut self, id: u64, at: Point, paths: &[PathBuf]) {
+    fn arm(&mut self, id: u64, at: Point, paths: &[PathBuf], gate: Arc<Gate>) {
         match data_object(paths) {
             Ok(data) => {
-                self.armed = Some((id, data));
+                let held: IDataObject = HeldFiles {
+                    inner: data,
+                    gate: Arc::clone(&gate),
+                    taking: AtomicBool::new(false),
+                }
+                .into();
+                self.armed = Some((id, held, gate));
                 show(self.source, at, SOURCE_SIZE);
                 tracing::info!(id, files = paths.len(), ?at, "armed a drag");
                 (self.shared.sink)(Event::Armed { id });
@@ -410,7 +487,7 @@ impl State {
 
     /// Forget a drag not started yet
     fn disarm(&mut self, id: u64) {
-        if self.armed.as_ref().is_some_and(|(armed, _)| *armed == id) {
+        if self.armed.as_ref().is_some_and(|(armed, ..)| *armed == id) {
             self.armed = None;
             hide(self.source);
         }
@@ -464,16 +541,20 @@ fn start_drag(hwnd: HWND) {
         let mut state = cell.try_borrow_mut().ok()?;
         let state = state.as_mut()?;
         (state.source == hwnd).then_some(())?;
-        let (id, data) = state.armed.take()?;
-        Some((id, data, Arc::clone(&state.shared)))
+        let (id, data, gate) = state.armed.take()?;
+        Some((id, data, gate, Arc::clone(&state.shared)))
     });
-    let Some((id, data, shared)) = armed else {
+    let Some((id, data, gate, shared)) = armed else {
         return;
     };
     shared.cancel.store(false, Ordering::SeqCst);
     shared.dragging.store(id, Ordering::SeqCst);
     tracing::info!(id, "the drag started");
-    let source: IDropSource = DropSource(Arc::clone(&shared)).into();
+    let source: IDropSource = DropSource {
+        shared: Arc::clone(&shared),
+        gate: Arc::clone(&gate),
+    }
+    .into();
     // Copied, or moved out of their folder (which goes anyway): on the same
     // disk, a move takes no time
     let effects = DROPEFFECT_COPY | DROPEFFECT_MOVE;
@@ -481,7 +562,12 @@ fn start_drag(hwnd: HWND) {
     let effect = unsafe { SHDoDragDrop(Some(hwnd), &data, &source, effects) };
     shared.dragging.store(0, Ordering::SeqCst);
     hide(hwnd);
-    let dropped = matches!(effect, Ok(effect) if effect != DROPEFFECT_NONE);
+    // An app taking the files in the background may report no effect yet
+    let dropped = matches!(effect, Ok(effect) if effect != DROPEFFECT_NONE)
+        || gate.asked.load(Ordering::SeqCst);
+    if !dropped {
+        shared.gates().remove(&id);
+    }
     tracing::info!(id, dropped, "the drag ended");
     (shared.sink)(Event::Ended { id, dropped });
 }
@@ -615,13 +701,19 @@ fn refuse(effect: *mut DROPEFFECT) {
 /// The drop source of the drags started here: drops when the left button
 /// goes up, unless cancelled (or Esc)
 #[implement(IDropSource)]
-struct DropSource(Arc<Shared>);
+struct DropSource {
+    /// Shared with the handle
+    shared: Arc<Shared>,
+    /// The drag's gate: its files wait from the drop on
+    gate: Arc<Gate>,
+}
 
 impl IDropSource_Impl for DropSource_Impl {
     fn QueryContinueDrag(&self, escape: BOOL, keys: MODIFIERKEYS_FLAGS) -> HRESULT {
-        if escape.as_bool() || self.0.cancel.load(Ordering::SeqCst) {
+        if escape.as_bool() || self.shared.cancel.load(Ordering::SeqCst) {
             DRAGDROP_S_CANCEL
         } else if keys.0 & MK_LBUTTON.0 == 0 {
+            self.gate.dropped.store(true, Ordering::SeqCst);
             DRAGDROP_S_DROP
         } else {
             S_OK
@@ -630,5 +722,193 @@ impl IDropSource_Impl for DropSource_Impl {
 
     fn GiveFeedback(&self, _effect: DROPEFFECT) -> HRESULT {
         DRAGDROP_S_USEDEFAULTCURSORS
+    }
+}
+
+/// The shell's data object of the files dragged, holding them back from the
+/// app they are dropped on until they are all there (see [`Gate`]); all
+/// else goes to the shell's object as it is
+#[implement(IDataObject, IDataObjectAsyncCapability)]
+struct HeldFiles {
+    /// The shell's data object
+    inner: IDataObject,
+    /// Whether the files may go
+    gate: Arc<Gate>,
+    /// The app dropped on takes the files in the background right now
+    taking: AtomicBool,
+}
+
+impl HeldFiles_Impl {
+    /// Before handing out `format`: once dropped, file data waits for the
+    /// files; an error when they will not come
+    fn hold(&self, format: *const FORMATETC) -> windows::core::Result<()> {
+        if !self.gate.dropped.load(Ordering::SeqCst) || !carries_files(format) {
+            return Ok(());
+        }
+        self.gate.asked.store(true, Ordering::SeqCst);
+        if wait_for_files(&self.gate) {
+            Ok(())
+        } else {
+            Err(E_FAIL.into())
+        }
+    }
+}
+
+impl IDataObject_Impl for HeldFiles_Impl {
+    fn GetData(&self, format: *const FORMATETC) -> windows::core::Result<STGMEDIUM> {
+        self.hold(format)?;
+        // SAFETY: the caller's arguments, passed on
+        unsafe { self.inner.GetData(format) }
+    }
+
+    fn GetDataHere(
+        &self,
+        format: *const FORMATETC,
+        medium: *mut STGMEDIUM,
+    ) -> windows::core::Result<()> {
+        self.hold(format)?;
+        // SAFETY: the caller's arguments, passed on
+        unsafe { self.inner.GetDataHere(format, medium) }
+    }
+
+    fn QueryGetData(&self, format: *const FORMATETC) -> HRESULT {
+        // SAFETY: the caller's argument, passed on
+        unsafe { self.inner.QueryGetData(format) }
+    }
+
+    fn GetCanonicalFormatEtc(&self, format: *const FORMATETC, out: *mut FORMATETC) -> HRESULT {
+        // SAFETY: the caller's arguments, passed on
+        unsafe { self.inner.GetCanonicalFormatEtc(format, out) }
+    }
+
+    fn SetData(
+        &self,
+        format: *const FORMATETC,
+        medium: *const STGMEDIUM,
+        release: BOOL,
+    ) -> windows::core::Result<()> {
+        // SAFETY: the caller's arguments, passed on
+        unsafe { self.inner.SetData(format, medium, release.as_bool()) }
+    }
+
+    fn EnumFormatEtc(&self, direction: u32) -> windows::core::Result<IEnumFORMATETC> {
+        // SAFETY: the caller's argument, passed on
+        unsafe { self.inner.EnumFormatEtc(direction) }
+    }
+
+    fn DAdvise(
+        &self,
+        format: *const FORMATETC,
+        advf: u32,
+        sink: Ref<'_, IAdviseSink>,
+    ) -> windows::core::Result<u32> {
+        // SAFETY: the caller's arguments, passed on
+        unsafe { self.inner.DAdvise(format, advf, sink.as_ref()) }
+    }
+
+    fn DUnadvise(&self, connection: u32) -> windows::core::Result<()> {
+        // SAFETY: the caller's argument, passed on
+        unsafe { self.inner.DUnadvise(connection) }
+    }
+
+    fn EnumDAdvise(&self) -> windows::core::Result<IEnumSTATDATA> {
+        // SAFETY: a plain call on the inner object
+        unsafe { self.inner.EnumDAdvise() }
+    }
+}
+
+/// The app dropped on may take the files in the background: then it waits
+/// for them there, not on its window
+impl IDataObjectAsyncCapability_Impl for HeldFiles_Impl {
+    fn SetAsyncMode(&self, _async: BOOL) -> windows::core::Result<()> {
+        Ok(())
+    }
+
+    fn GetAsyncMode(&self) -> windows::core::Result<BOOL> {
+        Ok(true.into())
+    }
+
+    fn StartOperation(&self, _reserved: Ref<'_, IBindCtx>) -> windows::core::Result<()> {
+        tracing::info!("the app dropped on takes the files in the background");
+        self.gate.asked.store(true, Ordering::SeqCst);
+        self.taking.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn InOperation(&self) -> windows::core::Result<BOOL> {
+        Ok(self.taking.load(Ordering::SeqCst).into())
+    }
+
+    fn EndOperation(
+        &self,
+        result: HRESULT,
+        _reserved: Ref<'_, IBindCtx>,
+        effects: u32,
+    ) -> windows::core::Result<()> {
+        self.taking.store(false, Ordering::SeqCst);
+        tracing::info!(
+            ok = result.is_ok(),
+            effects,
+            "the app dropped on took the files"
+        );
+        Ok(())
+    }
+}
+
+/// Whether data in `format` carries the files themselves (their paths or
+/// contents), what an app dropped on must wait for
+fn carries_files(format: *const FORMATETC) -> bool {
+    // SAFETY: OLE passes a valid FORMATETC, or null
+    let Some(format) = (unsafe { format.as_ref() }) else {
+        return false;
+    };
+    format.cfFormat == CF_HDROP.0 || file_formats().contains(&format.cfFormat)
+}
+
+/// The registered formats that carry files: Explorer's item lists, file
+/// names, and virtual files
+fn file_formats() -> &'static [u16] {
+    static FORMATS: OnceLock<Vec<u16>> = OnceLock::new();
+    FORMATS.get_or_init(|| {
+        [
+            w!("Shell IDList Array"),
+            w!("FileNameW"),
+            w!("FileName"),
+            w!("FileGroupDescriptorW"),
+            w!("FileGroupDescriptor"),
+            w!("FileContents"),
+        ]
+        .into_iter()
+        // SAFETY: NUL-terminated constant names; registering one that
+        // exists returns its number
+        .filter_map(|name| u16::try_from(unsafe { RegisterClipboardFormatW(name) }).ok())
+        .filter(|format| *format != 0)
+        .collect()
+    })
+}
+
+/// Wait until the files of `gate` may go, serving this thread's messages
+/// meanwhile (the calls of COM and the commands that come in); whether
+/// they may
+fn wait_for_files(gate: &Gate) -> bool {
+    let mut waited = false;
+    loop {
+        match gate.state.load(Ordering::SeqCst) {
+            WAITING => {}
+            OPEN => return true,
+            _ => return false,
+        }
+        if !std::mem::replace(&mut waited, true) {
+            tracing::info!("the app dropped on waits for the files");
+        }
+        let mut msg = MSG::default();
+        // SAFETY: plain calls on this thread's own queue
+        unsafe {
+            MsgWaitForMultipleObjectsEx(None, WAIT_POLL_MS, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
     }
 }
