@@ -21,7 +21,7 @@ use crate::dto::{
 };
 use crate::overlay::{self, SceneDto};
 use crate::panel;
-use crate::settings::{CLOSE_TO_QUIT, CLOSE_TO_TRAY, Settings};
+use crate::settings::{CLOSE_TO_QUIT, CLOSE_TO_TRAY, MAX_OPACITY, MIN_OPACITY, Settings};
 use crate::state::{AppState, lock};
 use crate::tray;
 
@@ -289,6 +289,8 @@ pub struct SettingsDto {
     pub dim: bool,
     /// Closing the main window: `tray` or `quit`
     pub close_window: String,
+    /// How opaque the windows' tint is over the blurred desktop, in percent
+    pub opacity: u8,
 }
 
 /// The app's preferences
@@ -303,6 +305,7 @@ pub fn get_settings(app: AppHandle, state: State<'_, AppState>) -> SettingsDto {
         hints: settings.hints,
         dim: settings.dim,
         close_window: settings.close_window,
+        opacity: settings.opacity,
     }
 }
 
@@ -333,6 +336,7 @@ pub async fn save_settings(
         } else {
             CLOSE_TO_TRAY.into()
         },
+        opacity: settings.opacity.clamp(MIN_OPACITY, MAX_OPACITY),
         ..lock(&state.settings).clone()
     };
     saved.save(&state.data_dir)?;

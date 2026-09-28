@@ -79,6 +79,7 @@ let settings: SettingsDto = {
   hints: true,
   dim: false,
   closeWindow: "tray",
+  opacity: 80,
 };
 
 let inputSettings: InputSettings = {

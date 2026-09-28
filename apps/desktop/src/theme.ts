@@ -29,6 +29,12 @@ export function applyTheme(pref: ThemePref) {
   }
 }
 
+/** How opaque the window's tint over the blurred desktop is, in percent
+ * (only a window over a material shows it) */
+export function applyOpacity(percent: number) {
+  document.documentElement.style.setProperty("--alpha", String(percent / 100));
+}
+
 /** Follow the system while the preference is `system`; returns the unsubscribe */
 export function followSystem(pref: ThemePref): () => void {
   const media = matchMedia("(prefers-color-scheme: light)");

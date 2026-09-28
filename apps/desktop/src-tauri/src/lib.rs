@@ -179,9 +179,8 @@ fn setup(app: &AppHandle) {
     tracing::info!("Lanroam is running, data in {}", dir.display());
 }
 
-/// Create the main window from its entry in Tauri.toml, over a material
-/// where the system has one; after the state is managed, which its page's
-/// first commands need
+/// Create the main window from its entry in Tauri.toml, over the material;
+/// after the state is managed, which its page's first commands need
 fn create_main_window(app: &AppHandle) -> tauri::Result<()> {
     let Some(config) = app
         .config()
@@ -192,14 +191,11 @@ fn create_main_window(app: &AppHandle) -> tauri::Result<()> {
     else {
         return Ok(());
     };
-    let mut builder = WebviewWindowBuilder::from_config(app, config)?;
-    if let Some(effects) = material::main_window() {
-        builder = builder
-            .transparent(true)
-            .effects(effects)
-            .initialization_script(material::MARK);
-    }
-    builder.build()?;
+    WebviewWindowBuilder::from_config(app, config)?
+        .transparent(true)
+        .effects(material::effects())
+        .initialization_script(material::MARK)
+        .build()?;
     Ok(())
 }
 

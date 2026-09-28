@@ -19,7 +19,7 @@ csp = "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src
 # The main window: devices and settings. Hidden until the setup shows it
 # (not at all when started at login with --hidden). On macOS the header
 # doubles as the title bar, with the traffic lights over its left end. The
-# setup creates it, over a material where the system has one (material.rs)
+# setup creates it, over the blurred desktop (material.rs)
 [[app.windows]]
 label = "main"
 create = false

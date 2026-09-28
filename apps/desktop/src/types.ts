@@ -222,6 +222,8 @@ export interface SettingsDto {
   dim: boolean;
   /** Closing the main window hides it in the tray, or quits */
   closeWindow: "tray" | "quit";
+  /** How opaque the windows' tint is over the blurred desktop, in percent */
+  opacity: number;
 }
 
 /** What an on-screen hint says (overlay.rs) */

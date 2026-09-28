@@ -84,6 +84,8 @@ export const en: Record<TextKey, string> = {
   "settings.system": "System",
   "settings.light": "Light",
   "settings.dark": "Dark",
+  "settings.opacity": "Opacity",
+  "settings.opacityHint": "Lower lets more of the desktop show through",
   "settings.edgeGlow": "Light up the entry edge",
   "settings.edgeGlowHint": "The edge the pointer comes in by flashes",
   "settings.hints": "On-screen hints",

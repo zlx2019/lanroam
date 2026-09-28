@@ -74,8 +74,9 @@ export function Stepper({
   );
 }
 
-/** A speed in percent picked on a scale, shown as a factor (1.5×);
- * `onChange` gets it once the slider is let go */
+/** A percentage picked on a scale, shown as a factor (1.5×) unless
+ * `format` says otherwise; `onInput` follows the slider as it moves,
+ * `onChange` gets the value once it is let go */
 export function Slider({
   value,
   min,
@@ -83,6 +84,8 @@ export function Slider({
   step,
   label,
   disabled = false,
+  format = (v) => `${(v / 100).toFixed(1)}×`,
+  onInput,
   onChange,
 }: {
   value: number;
@@ -91,6 +94,8 @@ export function Slider({
   step: number;
   label: string;
   disabled?: boolean;
+  format?: (value: number) => string;
+  onInput?: (value: number) => void;
   onChange: (value: number) => void;
 }) {
   const [draft, setDraft] = useState(value);
@@ -118,9 +123,12 @@ export function Slider({
         value={draft}
         disabled={disabled}
         aria-label={label}
-        onChange={(e) => setDraft(Number(e.target.value))}
+        onChange={(e) => {
+          setDraft(Number(e.target.value));
+          onInput?.(Number(e.target.value));
+        }}
       />
-      <span className="muted">{(draft / 100).toFixed(1)}×</span>
+      <span className="muted">{format(draft)}</span>
     </span>
   );
 }

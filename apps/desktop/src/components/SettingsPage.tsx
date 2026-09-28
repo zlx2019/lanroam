@@ -5,7 +5,8 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api } from "../api";
 import { formatError, useI18n } from "../i18n";
 import type { SettingsDto, Snapshot } from "../types";
-import { Row, Seg, Toggle } from "./controls";
+import { applyOpacity } from "../theme";
+import { Row, Seg, Slider, Toggle } from "./controls";
 import { EyeIcon, GearIcon, InfoIcon, KeyboardIcon, SwitchIcon } from "./icons";
 import { KeyboardMouseSettings } from "./KeyboardMouseSettings";
 import { SwitchingSettings } from "./SwitchingSettings";
@@ -182,7 +183,10 @@ function General({
   );
 }
 
-/** The on-screen indicators */
+/** Opacity limits in the interface (percent), as settings.rs */
+const OPACITY = { min: 40, max: 100, step: 5 };
+
+/** The windows' opacity and the on-screen indicators */
 function Look({
   settings,
   onSettings,
@@ -199,17 +203,31 @@ function Look({
     onSettings({ ...settings, ...patch }).catch((e) => onToast(formatError(t, e)));
 
   return (
-    <div className="group">
-      <Row title={t("settings.edgeGlow")} hint={t("settings.edgeGlowHint")}>
-        <Toggle on={settings.edgeGlow} label={t("settings.edgeGlow")} onChange={(edgeGlow) => change({ edgeGlow })} />
-      </Row>
-      <Row title={t("settings.hints")}>
-        <Toggle on={settings.hints} label={t("settings.hints")} onChange={(hints) => change({ hints })} />
-      </Row>
-      <Row title={t("settings.dim")}>
-        <Toggle on={settings.dim} label={t("settings.dim")} onChange={(dim) => change({ dim })} />
-      </Row>
-    </div>
+    <>
+      <div className="group">
+        <Row title={t("settings.opacity")} hint={t("settings.opacityHint")}>
+          <Slider
+            {...OPACITY}
+            value={settings.opacity}
+            label={t("settings.opacity")}
+            format={(v) => `${v}%`}
+            onInput={applyOpacity}
+            onChange={(opacity) => change({ opacity })}
+          />
+        </Row>
+      </div>
+      <div className="group">
+        <Row title={t("settings.edgeGlow")} hint={t("settings.edgeGlowHint")}>
+          <Toggle on={settings.edgeGlow} label={t("settings.edgeGlow")} onChange={(edgeGlow) => change({ edgeGlow })} />
+        </Row>
+        <Row title={t("settings.hints")}>
+          <Toggle on={settings.hints} label={t("settings.hints")} onChange={(hints) => change({ hints })} />
+        </Row>
+        <Row title={t("settings.dim")}>
+          <Toggle on={settings.dim} label={t("settings.dim")} onChange={(dim) => change({ dim })} />
+        </Row>
+      </div>
+    </>
   );
 }
 

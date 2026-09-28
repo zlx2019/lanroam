@@ -16,6 +16,7 @@ use tauri::{AppHandle, Manager, Wry};
 
 use crate::dto::{ControlMode, Snapshot};
 use crate::locale::{self, Lang, Texts};
+use crate::material;
 use crate::panel;
 use crate::state::{AppState, lock};
 
@@ -279,5 +280,6 @@ pub fn show_main_window(app: &AppHandle) {
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
+        material::blur_behind(&window);
     }
 }

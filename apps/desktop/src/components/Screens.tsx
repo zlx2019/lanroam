@@ -97,7 +97,7 @@ function Tile({
   const h = screen.h * k;
   const size = !labels ? " bare" : w < 60 ? " tiny" : w < 130 && primary ? " small" : "";
   // The logo scales with the screen, and keeps clear of the name below it
-  const logo = Math.min(Math.max(Math.min(w, h) * (labels ? 0.28 : 0.36), 10), 46);
+  const logo = Math.min(Math.max(Math.min(w, h) * (labels ? 0.28 : 0.36), 10), labels ? 72 : 46);
   const logoY = labels && primary ? h * 0.44 : h / 2;
   return (
     <div

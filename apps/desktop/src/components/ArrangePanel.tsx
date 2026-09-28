@@ -1,6 +1,7 @@
-// The arrangement panel: its own frameless window floating mid-screen over
-// a material (panel.rs), with the group's screens to drag into place. Every
-// drop is saved at once. Esc or "Done" hides the window, and so does a
+// The arrangement panel: a borderless sheet over the whole display the
+// pointer is on (panel.rs), the desktop blurred under it, with the group's
+// screens floating in the middle to drag into place. Every drop is saved at
+// once. Esc, "Done" or a click on the empty sheet hides it, and so does a
 // click anywhere else (the backend hides it when it loses focus).
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent } from "react";
@@ -9,15 +10,13 @@ import { api } from "../api";
 import { clash, fit, pairs, seams, shift, snap, type Placed, type Seam, type View } from "../geometry";
 import { useSnapshot } from "../hooks/useLanroam";
 import { altKey, formatError, useI18n, type Translate } from "../i18n";
+import { applyOpacity, applyTheme } from "../theme";
 import type { DeviceDto, GroupDto, Snapshot } from "../types";
 import { WarnIcon } from "./icons";
 import { Screens } from "./Screens";
 
-/** Room around the screens when fitting them in the well (px) */
-const FIT_PADDING = 34;
-
-/** Largest scale: a lone device must not fill the whole well */
-const MAX_SCALE = 0.14;
+/** Largest scale: a lone device must not fill the whole display */
+const MAX_SCALE = 0.3;
 
 /** How close a dragged edge snaps to another screen's, in screen pixels */
 const SNAP_PX = 12;
@@ -42,6 +41,11 @@ function hide() {
   getCurrentWindow().hide().catch(console.error);
 }
 
+/** Hide the panel when a press lands on the empty sheet itself */
+function away(e: PointerEvent<HTMLDivElement>) {
+  if (e.target === e.currentTarget) hide();
+}
+
 /** The panel */
 export function ArrangePanel() {
   const { t } = useI18n();
@@ -49,8 +53,11 @@ export function ArrangePanel() {
   const [note, setNote] = useState<Note | null>(null);
   // The device dropped last, told about when it touches no other
   const [dropped, setDropped] = useState<string | null>(null);
+  // Counts the showings: each one lays the screens out afresh
+  const [shown, setShown] = useState(0);
 
-  // Esc hides; each showing starts afresh, without the last one's notes
+  // Esc hides. Each showing starts afresh, without the last one's notes,
+  // and in the theme and opacity the settings have now
   useEffect(() => {
     const esc = (e: KeyboardEvent) => e.key === "Escape" && hide();
     window.addEventListener("keydown", esc);
@@ -58,6 +65,14 @@ export function ArrangePanel() {
       if (!payload) return;
       setNote(null);
       setDropped(null);
+      setShown((n) => n + 1);
+      api
+        .getSettings()
+        .then((s) => {
+          applyTheme(s.theme);
+          applyOpacity(s.opacity);
+        })
+        .catch(console.error);
     });
     return () => {
       window.removeEventListener("keydown", esc);
@@ -65,19 +80,13 @@ export function ArrangePanel() {
     };
   }, []);
 
-  if (!snapshot) return <div className="panel" />;
+  if (!snapshot) return <div className="arrange" />;
   const foot = note ?? standing(snapshot, dropped, t) ?? { text: t("panel.hint"), warn: false };
   return (
-    <div className="panel">
-      <div className="p-head">
-        <b>{t("panel.title")}</b>
-        <span>{t("panel.subtitle")}</span>
-        <button className="done" onClick={hide}>
-          {t("panel.done")} <span className="kbd">Esc</span>
-        </button>
-      </div>
+    <div className="arrange" onPointerDown={away}>
       {snapshot.group ? (
-        <Well
+        <Stage
+          key={shown}
           group={snapshot.group}
           onNote={setNote}
           onDrop={(id) => {
@@ -86,11 +95,19 @@ export function ArrangePanel() {
           }}
         />
       ) : (
-        <div className="well empty">{t("panel.noGroup")}</div>
+        <div className="stage empty" onPointerDown={away}>
+          {t("panel.noGroup")}
+        </div>
       )}
-      <div className={`p-foot${foot.warn ? " warn" : ""}`}>
-        {foot.warn && <WarnIcon />}
-        {foot.text}
+      <div className="a-foot">
+        <b>{t("panel.title")}</b>
+        <span className={foot.warn ? "warn" : ""}>
+          {foot.warn && <WarnIcon />}
+          {foot.text}
+        </span>
+        <button className="done" onClick={hide}>
+          {t("panel.done")} <span className="kbd">Esc</span>
+        </button>
       </div>
     </div>
   );
@@ -155,8 +172,8 @@ interface Guides {
   y: number | null;
 }
 
-/** The well: the group's screens fitted to its size, dragged into place */
-function Well({
+/** The stage: the group's screens fitted to its size, dragged into place */
+function Stage({
   group,
   onNote,
   onDrop,
@@ -176,7 +193,7 @@ function Well({
   // The latest drag position, for a drop that arrives before React has
   // rendered the last move
   const latest = useRef<Moved | null>(null);
-  // The view holds still while dragging, or the well would rescale under
+  // The view holds still while dragging, or the stage would rescale under
   // the pointer
   const frozen = useRef<View | null>(null);
 
@@ -208,7 +225,7 @@ function Well({
     const rect = d.rect ?? { x: 0, y: 0 };
     return { id: d.fingerprint, screens: m ? shift(d.screens, m.x - rect.x, m.y - rect.y) : d.screens };
   });
-  const view = frozen.current ?? fit(placed.flatMap((p) => p.screens), size.w, size.h, FIT_PADDING, MAX_SCALE);
+  const view = frozen.current ?? fit(placed.flatMap((p) => p.screens), size.w, size.h, 0, MAX_SCALE);
 
   /** Start pressing a device */
   const down = (e: PointerEvent<HTMLDivElement>, id: string) => {
@@ -276,7 +293,7 @@ function Well({
 
   const dragging = moved?.dragging ?? false;
   return (
-    <div ref={ref} className={`well${dragging ? " dragging" : ""}`}>
+    <div ref={ref} className={`stage${dragging ? " dragging" : ""}`} onPointerDown={away}>
       {view &&
         devices.map((d) => {
           const mine = moved?.id === d.fingerprint;

@@ -7,7 +7,7 @@ import ReactDOM from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "./api";
 import { I18nProvider, resolveLang } from "./i18n";
-import { applyTheme, followSystem } from "./theme";
+import { applyOpacity, applyTheme, followSystem } from "./theme";
 import type { SettingsDto } from "./types";
 import "./index.css";
 
@@ -40,6 +40,7 @@ function Root() {
       .then((s) => {
         setSettings(s);
         applyTheme(s.theme);
+        applyOpacity(s.opacity);
       })
       .catch(console.error);
   }, []);
@@ -52,6 +53,7 @@ function Root() {
     await api.saveSettings(next);
     setSettings(next);
     applyTheme(next.theme);
+    applyOpacity(next.opacity);
   }, []);
 
   if (!settings) return null;

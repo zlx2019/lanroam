@@ -1,12 +1,14 @@
 /* Lanroam: the reviewed mockup (docs/ui/mockup-v3.html) as the app's styles.
-   Dark by default; data-theme="light" on <html> swaps the palette. Over a
-   window material (data-material, see material.rs) the pages paint a tint
-   and let the blurred desktop show through; elsewhere a solid background. */
+   Dark by default; data-theme="light" on <html> swaps the palette. Over the
+   window material (data-material, see material.rs) the background is a tint
+   of the same color, --alpha opaque (Settings → Appearance), with the
+   desktop blurred behind it; elsewhere it is solid. */
 @import "tailwindcss";
 
 :root {
-  --bg: #151927;
-  --tint: rgba(20, 24, 38, 0.5);
+  --bg-rgb: 21 25 39;
+  --bg: rgb(var(--bg-rgb));
+  --alpha: 0.8;
   --ink: #f1f4ff;
   --mist: rgba(235, 240, 255, 0.62);
   --faint: rgba(235, 240, 255, 0.36);
@@ -34,8 +36,7 @@
 }
 
 [data-theme="light"] {
-  --bg: #f1f3f9;
-  --tint: rgba(246, 248, 253, 0.5);
+  --bg-rgb: 241 243 249;
   --ink: #17203d;
   --mist: rgba(23, 32, 61, 0.6);
   --faint: rgba(23, 32, 61, 0.36);
@@ -82,9 +83,9 @@ body {
   -webkit-user-select: none;
 }
 
-/* Over a material the window itself is see-through */
+/* Over the material the window is see-through, down to the tint */
 [data-material] body {
-  background: transparent;
+  background: rgb(var(--bg-rgb) / var(--alpha));
 }
 
 input {
@@ -108,9 +109,6 @@ svg {
   height: 100%;
   display: flex;
   flex-direction: column;
-}
-[data-material] .app {
-  background: var(--tint);
 }
 .top {
   position: relative;
@@ -682,99 +680,99 @@ main {
   border-top: 1px dashed color-mix(in srgb, var(--accent) 75%, transparent);
 }
 
-/* ---------- The arrangement panel: its whole window ---------- */
+/* ---------- The arrangement panel: a sheet over a whole display ---------- */
 
-.panel {
+.arrange {
+  position: relative;
   height: 100%;
-  display: flex;
-  flex-direction: column;
-  padding: 16px 18px 14px;
-  border-radius: 20px;
-  border: 1px solid var(--material-edge);
-  background: var(--material-2);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
-  overflow: hidden;
 }
-[data-material] .panel {
-  background: var(--tint);
+.stage {
+  position: absolute;
+  inset: 9% 10% 16%;
 }
-/* Windows keeps the panel's material square */
-[data-os="windows"] .panel {
-  border-radius: 0;
+.stage.empty {
+  display: grid;
+  place-items: center;
+  color: var(--mist);
+  font-size: 14px;
 }
-.p-head {
+.stage .dev {
+  animation: pop 0.32s cubic-bezier(0.2, 0.9, 0.25, 1.15) both;
+}
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+}
+/* Big tiles, a little bigger print */
+.stage .tile .num {
+  left: 12px;
+  top: 11px;
+  width: 26px;
+  height: 26px;
+  font-size: 13px;
+}
+.stage .tile .name {
+  left: 13px;
+  right: 13px;
+  bottom: 12px;
+}
+.stage .tile .name b {
+  font-size: 14px;
+}
+.stage .tile .name small {
+  font-size: 11.5px;
+}
+.a-foot {
+  position: absolute;
+  left: 50%;
+  bottom: 6%;
+  transform: translateX(-50%);
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 12px;
-  padding: 0 2px;
+  gap: 14px;
+  padding: 7px 7px 7px 18px;
+  border-radius: 999px;
+  border: 1px solid var(--tile-edge);
+  background: var(--tile-b);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.25);
+  font-size: 13px;
+  white-space: nowrap;
 }
-.p-head b {
-  font-size: 14px;
+.a-foot b {
   font-weight: 600;
 }
-.p-head span {
+.a-foot span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   color: var(--mist);
-  font-size: 12px;
 }
-.p-head .done {
-  margin-left: auto;
+.a-foot span.warn {
+  color: var(--warn);
+}
+.a-foot svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+.a-foot .done {
   display: inline-flex;
   align-items: center;
   gap: 7px;
   border: 0;
-  background: transparent;
-  color: var(--mist);
-  font-size: 12px;
-  padding: 4px 6px;
-  border-radius: 8px;
+  padding: 6px 8px 6px 14px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 12.5px;
+  font-weight: 600;
 }
-.p-head .done:hover {
-  color: var(--ink);
-  background: var(--hover);
-}
-.p-head .done .kbd {
-  color: var(--mist);
-}
-.well {
-  position: relative;
-  flex: 1;
-  min-height: 0;
-  border-radius: 14px;
-  background: var(--well);
-  overflow: hidden;
-}
-.well::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background-image: radial-gradient(var(--faint) 0.8px, transparent 1.1px);
-  background-size: 18px 18px;
-  opacity: 0.35;
-  pointer-events: none;
-}
-.well.empty {
-  display: grid;
-  place-items: center;
-  color: var(--mist);
-}
-.p-foot {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 10px;
-  padding: 0 2px;
-  font-size: 12px;
-  color: var(--mist);
-  min-height: 18px;
-}
-.p-foot.warn {
-  color: var(--warn);
-}
-.p-foot svg {
-  width: 14px;
-  height: 14px;
-  flex: none;
+.a-foot .done .kbd {
+  border-color: transparent;
+  background: rgba(0, 0, 0, 0.14);
+  color: inherit;
 }
 
 /* ---------- Devices page ---------- */

@@ -1,4 +1,4 @@
-//! The app's own preferences (language, theme, on-screen indicators), in
+//! The app's own preferences (language, theme, opacity, on-screen indicators), in
 //! `app.json` next to the engine's files. Starting at login is not stored here: the OS login item
 //! is the source of truth.
 
@@ -15,6 +15,15 @@ pub const CLOSE_TO_TRAY: &str = "tray";
 
 /// Closing the main window quits Lanroam
 pub const CLOSE_TO_QUIT: &str = "quit";
+
+/// Lowest opacity of the windows' tint over the blurred desktop (percent)
+pub const MIN_OPACITY: u8 = 40;
+
+/// Default opacity of the tint (percent)
+const DEFAULT_OPACITY: u8 = 80;
+
+/// Highest opacity of the tint: opaque (percent)
+pub const MAX_OPACITY: u8 = 100;
 
 /// The app's preferences
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,6 +44,8 @@ pub struct Settings {
     pub close_hinted: bool,
     /// Closing the main window: `tray` hides it, `quit` quits
     pub close_window: String,
+    /// How opaque the windows' tint is over the blurred desktop, in percent
+    pub opacity: u8,
 }
 
 impl Default for Settings {
@@ -47,6 +58,7 @@ impl Default for Settings {
             dim: false,
             close_hinted: false,
             close_window: CLOSE_TO_TRAY.into(),
+            opacity: DEFAULT_OPACITY,
         }
     }
 }

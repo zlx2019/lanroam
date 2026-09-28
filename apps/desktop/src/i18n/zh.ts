@@ -89,6 +89,8 @@ export const zh = {
   "settings.system": "系统",
   "settings.light": "浅色",
   "settings.dark": "深色",
+  "settings.opacity": "不透明度",
+  "settings.opacityHint": "越低，窗口后面的桌面越透",
   "settings.edgeGlow": "入口高亮",
   "settings.edgeGlowHint": "光标进入时那条边闪一下",
   "settings.hints": "屏幕提示",
