@@ -1,7 +1,7 @@
 // Small controls shared by the settings page and the layout's edge
 // settings: choices, switches, steppers, keycaps.
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 
 /** A segmented choice */
 export function Seg<T extends string>({
@@ -112,8 +112,10 @@ export function Slider({
     el.addEventListener("change", settle);
     return () => el.removeEventListener("change", settle);
   }, []);
+  // How far the track is filled, for the stylesheet
+  const fill = `${((draft - min) / (max - min)) * 100}%`;
   return (
-    <span className="slider">
+    <span className="slider" style={{ "--fill": fill } as CSSProperties}>
       <input
         ref={ref}
         type="range"

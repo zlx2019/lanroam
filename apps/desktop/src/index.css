@@ -87,6 +87,12 @@ body {
 [data-material] body {
   background: rgb(var(--bg-rgb) / var(--alpha));
 }
+/* A light tint over a dark desktop only greys it (the blur does not
+   brighten it the way the system's light materials do): in the light
+   theme the tint is whiter, and the opacity setting spans 79–100% */
+[data-theme="light"][data-material] body {
+  background: rgb(250 251 253 / calc(0.65 + var(--alpha) * 0.35));
+}
 
 input {
   user-select: text;
@@ -373,12 +379,34 @@ main {
   align-items: center;
   gap: 10px;
 }
+/* Drawn here rather than by the system, whose track is dark in either
+   theme: the accent up to the value (--fill), a faint line after it */
 .slider input {
+  -webkit-appearance: none;
+  appearance: none;
   width: 140px;
-  accent-color: var(--accent);
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(to right, var(--accent) var(--fill), var(--tile-edge) var(--fill));
+  outline: none;
+}
+.slider input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.35),
+    0 0 0 0.5px rgba(0, 0, 0, 0.12);
+  cursor: pointer;
 }
 .slider input:disabled {
   opacity: 0.4;
+}
+.slider input:disabled::-webkit-slider-thumb {
+  cursor: default;
 }
 .slider span {
   width: 34px;
