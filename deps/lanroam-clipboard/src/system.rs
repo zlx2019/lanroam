@@ -16,7 +16,7 @@
 
 use std::borrow::Cow;
 
-use crate::{Clipboard, ClipboardError, Content, Image, MAX_BYTES, MAX_PIXEL_BYTES};
+use crate::{Clipboard, ClipboardError, Content, Image, MAX_BYTES};
 
 /// This machine's clipboard
 #[derive(Debug, Default, Clone, Copy)]
@@ -55,10 +55,7 @@ impl Clipboard for SystemClipboard {
             }
             return Ok(Some(Content::Text(text)));
         }
-        let Some(image) = available(clipboard.get_image())? else {
-            return Ok(None);
-        };
-        Ok(to_image(image).map(Content::Image))
+        Ok(read_image(&mut clipboard)?.map(Content::Image))
     }
 
     fn write(&self, content: &Content) -> Result<Option<i64>, ClipboardError> {
@@ -84,7 +81,21 @@ fn available<T>(read: Result<T, arboard::Error>) -> Result<Option<T>, ClipboardE
     }
 }
 
+/// The clipboard's image: decoded by the system and made sRGB (see
+/// [`crate::pasteboard`])
+#[cfg(target_os = "macos")]
+fn read_image(_: &mut arboard::Clipboard) -> Result<Option<Image>, ClipboardError> {
+    Ok(crate::pasteboard::read_image())
+}
+
+/// The clipboard's image, as arboard reads it
+#[cfg(not(target_os = "macos"))]
+fn read_image(clipboard: &mut arboard::Clipboard) -> Result<Option<Image>, ClipboardError> {
+    Ok(available(clipboard.get_image())?.and_then(to_image))
+}
+
 /// An image read by arboard, unless it is empty or too large
+#[cfg(not(target_os = "macos"))]
 fn to_image(image: arboard::ImageData<'_>) -> Option<Image> {
     let (Ok(width), Ok(height)) = (u32::try_from(image.width), u32::try_from(image.height)) else {
         return None;
@@ -92,7 +103,7 @@ fn to_image(image: arboard::ImageData<'_>) -> Option<Image> {
     if width == 0 || height == 0 {
         return None;
     }
-    if image.bytes.len() > MAX_PIXEL_BYTES {
+    if image.bytes.len() > crate::MAX_PIXEL_BYTES {
         tracing::debug!(
             bytes = image.bytes.len(),
             "the clipboard image is too large"

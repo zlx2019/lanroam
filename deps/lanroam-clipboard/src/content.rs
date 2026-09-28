@@ -109,13 +109,15 @@ impl Content {
 }
 
 /// An image as PNG, compressed fast: a screenshot has to be on its way
-/// while the pointer crosses
+/// while the pointer crosses. Marked sRGB, which its pixels are (macOS
+/// converts them, see `pasteboard`; Windows has them so)
 fn encode_png(image: &Image) -> Result<Vec<u8>, ClipboardError> {
     let error = |e: png::EncodingError| ClipboardError::Image(e.to_string());
     let mut out = Vec::new();
     let mut encoder = png::Encoder::new(&mut out, image.width, image.height);
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
     encoder.set_compression(png::Compression::Fast);
     let mut writer = encoder.write_header().map_err(error)?;
     writer.write_image_data(&image.rgba).map_err(error)?;

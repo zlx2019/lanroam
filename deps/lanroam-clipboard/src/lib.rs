@@ -5,7 +5,8 @@
 //! │            an image as RGBA pixels; its hash, what devices compare,
 //! │            and its bytes on the wire (text as UTF-8, images as PNG)
 //! ├─ system  ─ this machine's clipboard: read, write, the change stamp,
-//! │            and the concealed marker password managers set
+//! │            and the concealed marker password managers set; on macOS
+//! │            images are decoded by the system and made sRGB (pasteboard)
 //! └─ memory  ─ a clipboard in memory, for tests
 //! ```
 //!
@@ -18,6 +19,8 @@ use thiserror::Error;
 
 mod content;
 mod memory;
+#[cfg(target_os = "macos")]
+mod pasteboard;
 mod system;
 
 pub use content::{Content, Image, Kind, MAX_BYTES, MAX_PIXEL_BYTES};

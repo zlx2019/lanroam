@@ -92,10 +92,11 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = [
     "NSGraphicsContext",
     "objc2-core-graphics",
 ] }
-# Pasteboard types (the concealed marker of password managers)
+# Pasteboard types (the concealed marker of password managers) and data
 objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "std",
     "NSArray",
+    "NSData",
     "NSString",
 ] }
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = [
@@ -136,3 +137,23 @@ strip = true          # strip debug symbols to shrink the binaries
 
 ### Dev profile
 [profile.dev]
+
+# Clipboard images run to tens of megabytes: their hashing, PNG coding and
+# pixel loops are optimized in debug builds too, or handing a screenshot
+# over takes seconds there (7 s instead of 0.25 s for 5K)
+[profile.dev.package.lanroam-clipboard]
+opt-level = 3
+[profile.dev.package.blake3]
+opt-level = 3
+[profile.dev.package.png]
+opt-level = 3
+[profile.dev.package.fdeflate]
+opt-level = 3
+[profile.dev.package.flate2]
+opt-level = 3
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+[profile.dev.package.crc32fast]
+opt-level = 3
+[profile.dev.package.simd-adler32]
+opt-level = 3

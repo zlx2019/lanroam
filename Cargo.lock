@@ -2429,6 +2429,8 @@ dependencies = [
  "blake3",
  "objc2",
  "objc2-app-kit",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
  "objc2-foundation",
  "png 0.18.1",
  "serde",
