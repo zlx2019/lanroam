@@ -3,6 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   Action,
+  ClipboardShare,
   EdgeSettings,
   InputDto,
   InputSettings,
@@ -48,6 +49,8 @@ export const api = {
   setSwap: (on: boolean) => invoke<void>("set_swap", { on }),
   /** How fast the pointer goes on this device while controlled, in percent */
   setPointerSpeed: (speed: number) => invoke<void>("set_pointer_speed", { speed }),
+  /** What of this device's clipboard is shared with the group */
+  setClipboard: (share: ClipboardShare) => invoke<void>("set_clipboard", { share }),
   /** Pause, lock or jump at the next local input */
   requestAction: (action: Action) => invoke<void>("request_action", { action }),
   /** The OS input permissions */

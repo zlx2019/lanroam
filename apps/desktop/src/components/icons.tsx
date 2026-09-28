@@ -108,6 +108,17 @@ export function EyeIcon() {
   );
 }
 
+/** Clipboard */
+export function ClipboardIcon() {
+  return (
+    <svg viewBox="0 0 16 16">
+      <rect x="3" y="2.8" width="10" height="11.7" rx="1.8" fill="none" stroke="currentColor" strokeWidth="1.5" />
+      <rect x="5.5" y="1.3" width="5" height="3" rx="1" fill="currentColor" />
+      <path d="M5.8 8h4.4M5.8 10.8h3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 /** Pause */
 export function PauseIcon() {
   return (

@@ -111,6 +111,8 @@ export interface DeviceDto {
   swap: boolean;
   /** Pointer speed while controlled, in percent */
   pointerSpeed: number;
+  /** What of its clipboard it shares */
+  clipboard: ClipboardShare;
   /** Where it sits on the layout canvas (logical pixels): its displays' bounds */
   rect: RectDto | null;
   /** Its origin on the canvas, which placing moves */
@@ -140,6 +142,14 @@ export interface NearbyDto {
   address: string | null;
   /** ID of the group it is in */
   group: string | null;
+}
+
+/** What of its clipboard a device shares with the group */
+export interface ClipboardShare {
+  /** Sharing at all */
+  on: boolean;
+  text: boolean;
+  image: boolean;
 }
 
 /** Where input goes right now */

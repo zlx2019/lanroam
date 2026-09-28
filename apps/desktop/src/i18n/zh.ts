@@ -73,6 +73,7 @@ export const zh = {
 
   "settings.general": "通用",
   "settings.control": "控制",
+  "settings.clipboard": "剪贴板",
   "settings.look": "外观",
   "settings.about": "关于",
   "settings.name": "设备名称",
@@ -149,6 +150,13 @@ export const zh = {
   "input.noGroup": "加入桌面组后才能设置",
   "input.captureOff": "无法读取本机键鼠，暂时不能控制其他设备：{reason}",
   "input.injectionOff": "其他设备暂时不能控制本机：{reason}",
+
+  "clip.share": "剪贴板共享",
+  "clip.shareHint": "光标移到另一台设备时，剪贴板跟着过去；在那边复制的，回来时一起带回",
+  "clip.text": "文本",
+  "clip.image": "图片",
+  "clip.imageHint": "截图、复制的图片",
+  "clip.note": "密码管理器复制的内容不会离开本机。暂不支持复制的文件。",
 
   "hint.paused": "已暂停",
   "hint.pausedSub": "{keys} 恢复",

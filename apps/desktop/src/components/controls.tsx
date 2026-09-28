@@ -38,8 +38,25 @@ export function Row({ title, hint, children }: { title: string; hint?: string; c
 }
 
 /** An on/off switch */
-export function Toggle({ on, label, onChange }: { on: boolean; label: string; onChange: (on: boolean) => void }) {
-  return <button className={`tg${on ? " on" : ""}`} onClick={() => onChange(!on)} aria-label={label} />;
+export function Toggle({
+  on,
+  label,
+  disabled,
+  onChange,
+}: {
+  on: boolean;
+  label: string;
+  disabled?: boolean;
+  onChange: (on: boolean) => void;
+}) {
+  return (
+    <button
+      className={`tg${on ? " on" : ""}`}
+      disabled={disabled}
+      onClick={() => onChange(!on)}
+      aria-label={label}
+    />
+  );
 }
 
 /** A number moved in steps between `min` and `max`, shown with its unit */

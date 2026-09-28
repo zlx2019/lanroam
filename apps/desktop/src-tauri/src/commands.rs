@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use std::collections::BTreeMap;
 
 use lanroam_core::engine::{Request, Spot};
+use lanroam_core::group::ClipboardShare;
 use lanroam_core::group::join::normalize_pin;
 use lanroam_core::lanroam_input::config::EdgeSettings;
 use lanroam_core::lanroam_input::{Point, keymap, platform};
@@ -198,6 +199,12 @@ pub async fn set_swap(state: State<'_, AppState>, on: bool) -> Reply<()> {
 #[tauri::command]
 pub async fn set_pointer_speed(state: State<'_, AppState>, speed: u32) -> Reply<()> {
     Ok(state.engine.set_pointer_speed(speed).await?)
+}
+
+/// Set what of this device's clipboard is shared with the group
+#[tauri::command]
+pub async fn set_clipboard(state: State<'_, AppState>, share: ClipboardShare) -> Reply<()> {
+    Ok(state.engine.set_clipboard(share).await?)
 }
 
 /// What the window asks the keyboard and mouse to do

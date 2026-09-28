@@ -11,6 +11,7 @@
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import type {
+  ClipboardShare,
   DeviceDto,
   EdgeSettings,
   InputSettings,
@@ -46,6 +47,7 @@ function device(
     scale,
     swap: true,
     pointerSpeed: 100,
+    clipboard: { on: true, text: true, image: true },
     rect: { x, y: 0, w: lw, h: lh },
     screens: [{ x, y: 0, w: lw, h: lh }],
     origin: { x, y: 0 },
@@ -157,6 +159,7 @@ const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
   key_names: () => keyNames,
   set_swap: (args) => setLocal({ swap: args.on as boolean }),
   set_pointer_speed: (args) => setLocal({ pointerSpeed: args.speed as number }),
+  set_clipboard: (args) => setLocal({ clipboard: args.share as ClipboardShare }),
   set_edge: (args) => {
     const group = state.group;
     if (!group) return;
