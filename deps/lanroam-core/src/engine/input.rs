@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex, mpsc as std_mpsc};
 use std::time::{Duration, Instant};
 
 use lanroam_input::config::EdgeSettings;
-use lanroam_input::inject::{Injector, RemoteInput};
+use lanroam_input::inject::{Injector, RemoteInput, WheelScale};
 use lanroam_input::platform::{self, EmitSink};
 use lanroam_input::switch::{self, Emit, Request, Switch};
 use lanroam_input::world::World;
@@ -219,6 +219,8 @@ pub(super) enum InputMsg {
         world: World,
         /// Devices that get Command and Control swapped
         swapped: HashSet<String>,
+        /// Pointer speeds of the other devices, in percent
+        speeds: HashMap<String, u32>,
         /// Member names by fingerprint
         names: HashMap<String, String>,
         /// Every placed member, online or not, in reading order (the
@@ -362,6 +364,8 @@ pub(super) struct Input {
     home_pending: bool,
     /// The device controlling this one
     controller: Option<String>,
+    /// Scrolling from the controller, as the settings want it here
+    wheel: WheelScale,
 }
 
 impl Input {
@@ -394,6 +398,7 @@ impl Input {
             unresponsive: false,
             home_pending: false,
             controller: None,
+            wheel: WheelScale::default(),
         };
         input.took_capture(capture);
         input.took_injection(injection);
@@ -537,6 +542,7 @@ impl Input {
             InputMsg::World {
                 world,
                 swapped,
+                speeds,
                 names,
                 numbered,
                 edges,
@@ -544,14 +550,17 @@ impl Input {
                 self.names = names;
                 let mut switch = switch::lock(&self.switch);
                 switch.set_world(world, swapped);
+                switch.set_pointer_speeds(speeds);
                 switch.set_numbering(numbered);
                 switch.set_edges(edges);
             }
             InputMsg::Settings(settings) => {
+                self.wheel.set(settings.scrolling);
                 let mut switch = switch::lock(&self.switch);
                 switch.set_hotkeys(settings.hotkeys);
                 switch.set_keep_local(settings.keep_local);
                 switch.set_switching(settings.switching);
+                switch.set_media_keys(settings.media_keys);
             }
             InputMsg::Record(on) => switch::lock(&self.switch).record(on),
             InputMsg::Request(request) => match self.controller.clone() {
@@ -682,7 +691,12 @@ impl Input {
             Control::Button { button, down, x, y } if controlled => {
                 self.replay(Op::Button(button, down, Point::new(x, y)));
             }
-            Control::Wheel { dx, dy } if controlled => self.replay(Op::Wheel(dx, dy)),
+            Control::Wheel { dx, dy } if controlled => {
+                let (dx, dy) = self.wheel.apply(dx, dy);
+                if (dx, dy) != (0, 0) {
+                    self.replay(Op::Wheel(dx, dy));
+                }
+            }
             Control::PointerLocked { on } if controlled => {
                 self.notify(ControlEvent::LockedHere {
                     name: self.name(from),

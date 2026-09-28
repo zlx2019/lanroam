@@ -24,7 +24,7 @@ use std::time::Duration;
 use lan_kit::frame::FrameError;
 use lan_kit::{Peer, PeerEvent, PeerInfo};
 use lanroam_input::Rect;
-use lanroam_input::config::EdgeSettings;
+use lanroam_input::config::{EdgeSettings, MAX_POINTER_SPEED, MIN_SPEED, valid_pointer_speed};
 use lanroam_input::world::World;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{Instant, MissedTickBehavior};
@@ -128,6 +128,13 @@ pub(super) enum Msg {
     SetSwap {
         /// On
         on: bool,
+        /// Done
+        reply: oneshot::Sender<Result<(), EngineError>>,
+    },
+    /// Set how fast the pointer goes on this device while controlled
+    SetPointerSpeed {
+        /// Percent
+        speed: u32,
         /// Done
         reply: oneshot::Sender<Result<(), EngineError>>,
     },
@@ -242,6 +249,8 @@ pub(super) struct Mesh {
     screens: Option<(Vec<Rect>, u32)>,
     /// The Command / Control swap setting, once changed while running
     swap_cmd_ctrl: Option<bool>,
+    /// The pointer speed, once changed while running
+    pointer_speed: Option<u32>,
     /// Channels
     wiring: Wiring,
     /// Group ID currently advertised
@@ -277,6 +286,7 @@ impl Mesh {
             doc,
             screens: None,
             swap_cmd_ctrl: None,
+            pointer_speed: None,
             wiring,
             advertised: None,
             peers: HashMap::new(),
@@ -367,6 +377,9 @@ impl Mesh {
                     None => Err(EngineError::NoGroup),
                 };
                 let _ = reply.send(result);
+            }
+            Msg::SetPointerSpeed { speed, reply } => {
+                let _ = reply.send(self.set_pointer_speed(speed));
             }
             Msg::SetEdge {
                 a,
@@ -760,7 +773,23 @@ impl Mesh {
         if let Some(on) = self.swap_cmd_ctrl {
             profile.swap_cmd_ctrl = on;
         }
+        if let Some(speed) = self.pointer_speed {
+            profile.pointer_speed = speed;
+        }
         profile
+    }
+
+    /// Set this device's pointer speed, for the group
+    fn set_pointer_speed(&mut self, speed: u32) -> Result<(), EngineError> {
+        if self.doc.is_none() {
+            return Err(EngineError::NoGroup);
+        }
+        if !valid_pointer_speed(speed) {
+            return Err(EngineError::InvalidSettings);
+        }
+        self.pointer_speed = Some(speed);
+        self.commit();
+        Ok(())
     }
 
     /// Take a sponsor's document after joining
@@ -917,10 +946,10 @@ impl Mesh {
 
     /// Hand the input actor the layout of the devices online right now (this
     /// one and those linked), which of them get Command and Control swapped,
-    /// and the members' names
+    /// their pointer speeds, and the members' names
     fn publish_world(&self) {
         let own = self.info.fingerprint.as_str();
-        let (world, swapped, names, numbered, edges) = match &self.doc {
+        let (world, swapped, speeds, names, numbered, edges) = match &self.doc {
             Some(doc) => {
                 let online = |fp: &str| fp == own || self.links.contains_key(fp);
                 let placed = layout::world(doc);
@@ -941,16 +970,26 @@ impl Mesh {
                     })
                     .map(|(fp, _)| fp.to_string())
                     .collect();
+                // Another version may send anything: keep it in range
+                let speeds = doc
+                    .members()
+                    .filter(|(fp, _)| online(fp) && *fp != own)
+                    .map(|(fp, record)| {
+                        let speed = record.profile.pointer_speed;
+                        (fp.to_string(), speed.clamp(MIN_SPEED, MAX_POINTER_SPEED))
+                    })
+                    .collect();
                 let names = doc
                     .members()
                     .map(|(fp, record)| (fp.to_string(), record.profile.name.clone()))
                     .collect();
                 let edges = doc.edge_settings().collect();
-                (World::new(devices), swapped, names, numbered, edges)
+                (World::new(devices), swapped, speeds, names, numbered, edges)
             }
             None => (
                 World::default(),
                 HashSet::new(),
+                HashMap::new(),
                 HashMap::new(),
                 Vec::new(),
                 HashMap::new(),
@@ -959,6 +998,7 @@ impl Mesh {
         let _ = self.wiring.input.send(InputMsg::World {
             world,
             swapped,
+            speeds,
             names,
             numbered,
             edges,

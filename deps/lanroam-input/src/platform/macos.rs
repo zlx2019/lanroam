@@ -8,6 +8,9 @@
 //! - **Displays**: CoreGraphics bounds, in points.
 //! - **Injection**: `CGEventPost` at the HID level, where synthetic events
 //!   look like hardware ones; needs the Accessibility permission as well.
+//! - **Media keys** (volume, play / pause, tracks) are not key events on
+//!   macOS but system-defined ones (`NX_SYSDEFINED`), read and made through
+//!   `NSEvent`, which alone exposes their fields.
 //!
 //! While the target is being controlled, the local cursor is hidden and
 //! frozen where it crossed, and motion is read from the events' delta
@@ -28,6 +31,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use objc2::rc::autoreleasepool;
+use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType};
 use objc2_core_foundation::{
     CFBoolean, CFMachPort, CFRetained, CFRunLoop, CFString, CGPoint, kCFBooleanTrue,
     kCFRunLoopDefaultMode,
@@ -98,8 +103,36 @@ const MULTI_CLICK_DISTANCE: f64 = 1.5;
 /// lines, as it does on Windows (Deskflow's scale)
 const UNITS_PER_LINE: i32 = 40;
 
+/// Type of system-defined events (`NX_SYSDEFINED`), which carry the media
+/// keys; CoreGraphics does not name it
+const SYSTEM_DEFINED: CGEventType = CGEventType(14);
+
+/// Subtype of the system-defined events of media keys
+/// (`NX_SUBTYPE_AUX_CONTROL_BUTTONS`)
+const AUX_CONTROL_BUTTONS: i16 = 8;
+
+/// Key state of a media key event (`data1` bits 8..16): pressed
+const MEDIA_DOWN: isize = 0x0A;
+
+/// Key state of a media key event: released
+const MEDIA_UP: isize = 0x0B;
+
+/// Media keys (`NX_KEYTYPE_*`, `ev_keymap.h`) and their HID usages; the
+/// first of each usage is the one posted
+const MEDIA_KEYS: [(isize, u16); 8] = [
+    (0, usage::VOLUME_UP),         // NX_KEYTYPE_SOUND_UP
+    (1, usage::VOLUME_DOWN),       // NX_KEYTYPE_SOUND_DOWN
+    (7, usage::VOLUME_MUTE),       // NX_KEYTYPE_MUTE
+    (16, usage::MEDIA_PLAY_PAUSE), // NX_KEYTYPE_PLAY
+    (17, usage::MEDIA_NEXT),       // NX_KEYTYPE_NEXT
+    (18, usage::MEDIA_PREVIOUS),   // NX_KEYTYPE_PREVIOUS
+    // Apple keyboards send these for their track keys
+    (19, usage::MEDIA_NEXT),     // NX_KEYTYPE_FAST
+    (20, usage::MEDIA_PREVIOUS), // NX_KEYTYPE_REWIND
+];
+
 /// Event types the tap receives
-const CAPTURED: [CGEventType; 14] = [
+const CAPTURED: [CGEventType; 15] = [
     CGEventType::MouseMoved,
     CGEventType::LeftMouseDown,
     CGEventType::LeftMouseUp,
@@ -114,6 +147,7 @@ const CAPTURED: [CGEventType; 14] = [
     CGEventType::KeyDown,
     CGEventType::KeyUp,
     CGEventType::FlagsChanged,
+    SYSTEM_DEFINED,
 ];
 
 /// Generic modifier flags (`CGEventFlags`)
@@ -397,6 +431,7 @@ impl Tap {
                 press
             }
             Translated::Ignored => decide(None),
+            Translated::Foreign => return Verdict::Pass,
         };
         match decision.cursor {
             Some(CursorAction::Park) => self.park(),
@@ -473,6 +508,7 @@ pub(super) fn injector() -> Result<Box<dyn Injector>, InputError> {
         at,
         buttons: [false; MouseButton::COUNT],
         keys: HashSet::new(),
+        media: HashSet::new(),
         clicks: Clicks::default(),
         scroll: (0, 0),
     }))
@@ -493,6 +529,8 @@ struct PostInjector {
     buttons: [bool; MouseButton::COUNT],
     /// Key codes held
     keys: HashSet<u16>,
+    /// Media keys held (HID usages)
+    media: HashSet<u16>,
     /// Multi-click counting
     clicks: Clicks,
     /// Scrolling not yet worth a whole line, in 1/120 notch (x, y)
@@ -522,6 +560,39 @@ impl PostInjector {
         MouseButton::ALL
             .into_iter()
             .find(|button| self.buttons[button.index()])
+    }
+
+    /// Press or release the media key `key` (`NX_KEYTYPE_*`) as the
+    /// keyboard's own media keys do, with a system-defined event
+    fn post_media(&self, key: isize, down: bool, repeat: bool) -> Result<(), InputError> {
+        let state = if down { MEDIA_DOWN } else { MEDIA_UP };
+        let data1 = (key << 16) | (state << 8) | isize::from(repeat);
+        // NSEvent hands out autoreleased objects; the capture and injection
+        // threads have no pool of their own
+        autoreleasepool(|_| {
+            let event = NSEvent::otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2(
+                NSEventType::SystemDefined,
+                CGPoint { x: 0.0, y: 0.0 },
+                NSEventModifierFlags((state as usize) << 8),
+                0.0,
+                0,
+                None,
+                AUX_CONTROL_BUTTONS,
+                data1,
+                -1,
+            )
+            .and_then(|event| event.CGEvent())
+            .ok_or_else(|| InputError::Os("cannot create a media key event".into()))?;
+            let ev = Some(&*event);
+            // Not the injector's source: mark it by hand, for the capture
+            CGEvent::set_integer_value_field(
+                ev,
+                CGEventField::EventSourceUserData,
+                i64::from(INJECTED_MARKER),
+            );
+            CGEvent::post(CGEventTapLocation::HIDEventTap, ev);
+            Ok(())
+        })
     }
 
     /// A mouse event of `ty` for `button` at the cursor
@@ -622,6 +693,13 @@ impl Injector for PostInjector {
     /// hardware sends them (input methods watch those, e.g. Shift to switch
     /// between Chinese and English)
     fn key(&mut self, usage: u16, down: bool) -> Result<(), InputError> {
+        if let Some(key) = nx_key(usage) {
+            let repeat = down && !self.media.insert(usage);
+            if !down {
+                self.media.remove(&usage);
+            }
+            return self.post_media(key, down, repeat);
+        }
         let code = keymap::mac_from_usage(usage).ok_or_else(|| {
             InputError::Os(format!("no macOS key code for HID usage {usage:#04x}"))
         })?;
@@ -693,6 +771,10 @@ enum Translated {
     Toggle(u16),
     /// Nothing Lanroam forwards (Fn, unknown keys and buttons, ...)
     Ignored,
+    /// Not input Lanroam handles at all: it always passes, even while
+    /// another device is controlled (system-defined events other than the
+    /// media keys, e.g. brightness)
+    Foreign,
 }
 
 /// Translate a CoreGraphics event
@@ -763,8 +845,37 @@ fn translate(ty: CGEventType, event: &CGEvent) -> Translated {
                 _ => Translated::Ignored,
             }
         }
+        SYSTEM_DEFINED => media_key(event).map_or(Translated::Foreign, Translated::Event),
         _ => Translated::Ignored,
     }
+}
+
+/// The media key a system-defined event reports, if it is one Lanroam
+/// forwards
+fn media_key(event: &CGEvent) -> Option<InputEvent> {
+    // NSEvent hands out autoreleased objects; see `post_media`
+    let (subtype, data1) = autoreleasepool(|_| {
+        NSEvent::eventWithCGEvent(event).map(|event| (event.subtype().0, event.data1()))
+    })?;
+    if subtype != AUX_CONTROL_BUTTONS {
+        return None;
+    }
+    let key = (data1 >> 16) & 0xFFFF;
+    let down = match (data1 >> 8) & 0xFF {
+        MEDIA_DOWN => true,
+        MEDIA_UP => false,
+        _ => return None,
+    };
+    let &(_, usage) = MEDIA_KEYS.iter().find(|(nx, _)| *nx == key)?;
+    Some(InputEvent::Key { usage, down })
+}
+
+/// The `NX_KEYTYPE_*` to post for a media key's HID usage
+fn nx_key(usage: u16) -> Option<isize> {
+    MEDIA_KEYS
+        .iter()
+        .find(|(_, media)| *media == usage)
+        .map(|&(key, _)| key)
 }
 
 /// Virtual key code of a keyboard event
@@ -825,6 +936,58 @@ mod tests {
         assert_eq!(clicks.count, 1);
         clicks.press(MouseButton::Right, CGPoint { x: 30.0, y: 10.0 });
         assert_eq!(clicks.count, 1);
+    }
+
+    /// Every media key the key map knows can be posted, and posts as the
+    /// first code listed
+    #[test]
+    fn media_keys_are_mapped() {
+        for usage in keymap::names().map(|(usage, _)| usage) {
+            assert_eq!(
+                nx_key(usage).is_some(),
+                keymap::is_media(usage),
+                "{usage:#x}"
+            );
+        }
+        assert_eq!(nx_key(usage::MEDIA_NEXT), Some(17));
+    }
+
+    /// Media key events read back as the keys they were made for
+    #[test]
+    fn media_key_events() {
+        let event = |key: isize, state: isize| {
+            autoreleasepool(|_| {
+                NSEvent::otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2(
+                    NSEventType::SystemDefined,
+                    CGPoint { x: 0.0, y: 0.0 },
+                    NSEventModifierFlags((state as usize) << 8),
+                    0.0,
+                    0,
+                    None,
+                    AUX_CONTROL_BUTTONS,
+                    (key << 16) | (state << 8),
+                    -1,
+                )
+                .and_then(|event| event.CGEvent())
+                .unwrap()
+            })
+        };
+        assert_eq!(
+            media_key(&event(19, MEDIA_DOWN)),
+            Some(InputEvent::Key {
+                usage: usage::MEDIA_NEXT,
+                down: true
+            })
+        );
+        assert_eq!(
+            media_key(&event(7, MEDIA_UP)),
+            Some(InputEvent::Key {
+                usage: usage::VOLUME_MUTE,
+                down: false
+            })
+        );
+        // Brightness up: not forwarded
+        assert_eq!(media_key(&event(2, MEDIA_DOWN)), None);
     }
 
     /// Every modifier key code is in the key map

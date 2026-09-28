@@ -375,6 +375,13 @@ impl Engine {
         self.ask(|reply| Msg::SetSwap { on, reply }).await?
     }
 
+    /// Set how fast the pointer goes on this device while another member
+    /// controls it, in percent; the controlling member moves it
+    pub async fn set_pointer_speed(&self, speed: u32) -> Result<(), EngineError> {
+        self.ask(|reply| Msg::SetPointerSpeed { speed, reply })
+            .await?
+    }
+
     /// Remove a member from the group
     pub async fn kick(&self, fingerprint: &str) -> Result<(), EngineError> {
         let fingerprint = fingerprint.to_string();

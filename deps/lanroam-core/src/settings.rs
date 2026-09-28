@@ -1,13 +1,15 @@
 //! This device's input settings, in `input.json` in the data directory:
-//! the hotkeys, the key combinations kept on this machine and how the
-//! pointer crosses edges. They stay on the device; the group only shares
-//! the settings of single edges (in its document).
+//! the hotkeys, the key combinations kept on this machine, how the pointer
+//! crosses edges, where media keys go, and how scrolling from a controlling
+//! device is replayed. They stay on the device; the group only shares the
+//! settings of single edges and each device's pointer speed (in its
+//! document).
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use lanroam_input::config::{Chord, Hotkeys, Switching, is_modifier};
+use lanroam_input::config::{Chord, Hotkeys, MediaKeys, Scrolling, Switching, is_modifier};
 use serde::{Deserialize, Serialize};
 
 /// File name in the data directory
@@ -27,6 +29,10 @@ pub struct InputSettings {
     pub keep_local: Vec<Chord>,
     /// How the pointer crosses edges
     pub switching: Switching,
+    /// Where media and volume keys go while another device is controlled
+    pub media_keys: MediaKeys,
+    /// How scrolling from a controlling device is replayed here
+    pub scrolling: Scrolling,
 }
 
 impl InputSettings {
@@ -36,6 +42,7 @@ impl InputSettings {
     pub fn valid(&self) -> bool {
         self.hotkeys.valid()
             && self.switching.valid()
+            && self.scrolling.valid()
             && self.keep_local.len() <= MAX_KEEP_LOCAL
             && self.keep_local.iter().all(|chord| !is_modifier(chord.key))
     }
@@ -105,6 +112,11 @@ mod tests {
                 mode: SwitchMode::Dwell,
                 ..Switching::default()
             },
+            media_keys: MediaKeys::Local,
+            scrolling: Scrolling {
+                speed: 150,
+                reverse: true,
+            },
             ..InputSettings::default()
         };
         settings.save(&dir.0).unwrap();
@@ -119,6 +131,14 @@ mod tests {
         assert!(InputSettings::default().valid());
         let settings = InputSettings {
             keep_local: vec![Chord::new(Mods::CTRL_ALT, usage::LEFT_SHIFT)],
+            ..InputSettings::default()
+        };
+        assert!(!settings.valid());
+        let settings = InputSettings {
+            scrolling: Scrolling {
+                speed: 10,
+                reverse: false,
+            },
             ..InputSettings::default()
         };
         assert!(!settings.valid());

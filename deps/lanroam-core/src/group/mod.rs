@@ -72,6 +72,10 @@ pub struct Profile {
     /// platform, so shortcuts stay under the same fingers
     #[serde(default = "enabled")]
     pub swap_cmd_ctrl: bool,
+    /// How fast the pointer goes on this device while another one controls
+    /// it, in percent
+    #[serde(default = "normal_speed")]
+    pub pointer_speed: u32,
 }
 
 /// Default of switches that start on
@@ -82,6 +86,11 @@ fn enabled() -> bool {
 /// Scale of devices that report none: device units are logical pixels
 fn full_scale() -> u32 {
     100
+}
+
+/// Pointer speed of devices that set none
+fn normal_speed() -> u32 {
+    lanroam_input::config::NORMAL_SPEED
 }
 
 impl Profile {
@@ -95,6 +104,7 @@ impl Profile {
             displays: Vec::new(),
             scale: full_scale(),
             swap_cmd_ctrl: enabled(),
+            pointer_speed: normal_speed(),
         }
     }
 

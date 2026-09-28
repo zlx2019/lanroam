@@ -26,7 +26,11 @@
 //! that edge ([`EdgeSettings`]): it may be closed, guarded near corners,
 //! or need a modifier held or a dwell against it. Key combinations the
 //! user keeps local ([`Switch::set_keep_local`]) are pressed on this machine
-//! even while another device is controlled.
+//! even while another device is controlled, and so are media keys when the
+//! user keeps them here ([`MediaKeys::Local`]).
+//!
+//! The pointer moves the same physical distance on every device, times the
+//! pointer speed each device asks for ([`Switch::set_pointer_speeds`]).
 //!
 //! The switch runs inside the capture callback, synchronously: it must
 //! decide before the OS delivers the event, and never blocks.
@@ -37,7 +41,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::config::{
-    Chord, EdgeSettings, Hotkeys, Mods, SwitchMode, Switching, edge_key, is_modifier,
+    Chord, EdgeSettings, Hotkeys, MediaKeys, Mods, NORMAL_SPEED, SwitchMode, Switching, edge_key,
+    is_modifier,
 };
 use crate::event::{InputEvent, MouseButton};
 use crate::geometry::{Edge, Point, Rect, Step};
@@ -307,6 +312,10 @@ pub struct Switch {
     requests: Vec<Request>,
     /// Devices that get Command and Control swapped
     swapped: HashSet<String>,
+    /// Pointer speed of each device, in percent; normal for the others
+    speeds: HashMap<String, u32>,
+    /// Where media keys go while another device is controlled
+    media_keys: MediaKeys,
     /// Another device controls this machine right now
     controlled: bool,
     /// Local pointer travel since control was taken
@@ -348,6 +357,8 @@ impl Switch {
             release_requested: false,
             requests: Vec::new(),
             swapped: HashSet::new(),
+            speeds: HashMap::new(),
+            media_keys: MediaKeys::default(),
             controlled: false,
             local_travel: 0.0,
             hotkeys: Hotkeys::default(),
@@ -394,6 +405,17 @@ impl Switch {
         }
         self.world = world;
         self.swapped = swapped;
+    }
+
+    /// Set how fast the pointer goes on each device, in percent (normal for
+    /// devices left out)
+    pub fn set_pointer_speeds(&mut self, speeds: HashMap<String, u32>) {
+        self.speeds = speeds;
+    }
+
+    /// Set where media keys go while another device is controlled
+    pub fn set_media_keys(&mut self, media_keys: MediaKeys) {
+        self.media_keys = media_keys;
     }
 
     /// Set the devices the number hotkeys go to, in order
@@ -562,10 +584,10 @@ impl Switch {
             // Gone from the layout; the release is already requested
             return Verdict::Swallow;
         };
-        // Same physical travel on every device: source units to logical
-        // pixels to the target's units
+        // Same physical travel on every device (source units to logical
+        // pixels to the target's units), at the target's pointer speed
         let local_scale = self.world.device(&self.local).map_or(1.0, |d| d.scale);
-        let k = target.scale / local_scale;
+        let k = target.scale / local_scale * self.speed_of(&remote.device);
         let (x, y) = match target.desktop.step((remote.x, remote.y), dx * k, dy * k) {
             Step::Inside(x, y) => {
                 self.keep_dwell(&remote.device, Point::floor(x, y));
@@ -829,6 +851,18 @@ impl Switch {
         if fresh && self.remote.is_some() && self.keeps_local(key) {
             return self.keep_here(key, out);
         }
+        // Media keys kept here work this machine, autorepeats included
+        if self.remote.is_some()
+            && self.media_keys == MediaKeys::Local
+            && keymap::is_media(key)
+            && self
+                .keys
+                .get(&key)
+                .is_none_or(|(owner, _)| *owner == Owner::Local)
+        {
+            self.keys.insert(key, (Owner::Local, key));
+            return Verdict::Pass;
+        }
         let (owner, sent) = match self.keys.get(&key) {
             Some(held) => held.clone(),
             None => {
@@ -857,6 +891,12 @@ impl Switch {
             usage: sent,
             down,
         })
+    }
+
+    /// The pointer speed of `device`, as a factor
+    fn speed_of(&self, device: &str) -> f64 {
+        let speed = self.speeds.get(device).copied().unwrap_or(NORMAL_SPEED);
+        f64::from(speed) / f64::from(NORMAL_SPEED)
     }
 
     /// The modifiers held now
@@ -1281,6 +1321,48 @@ mod tests {
                 at: Point::new(16, 600)
             }]
         );
+    }
+
+    /// The pointer goes at the speed of the device it is on
+    #[test]
+    fn pointer_speed() {
+        let mut sw = switch();
+        sw.set_pointer_speeds(HashMap::from([("pc".to_string(), 200)]));
+        cross_to_pc(&mut sw, 400);
+        let (_, out) = feed(&mut sw, motion(0, 0, 10.0, -5.0));
+        assert_eq!(
+            out,
+            [Emit::Motion {
+                device: "pc".into(),
+                at: Point::new(21, 390)
+            }]
+        );
+    }
+
+    /// Media keys go to the device controlled, or stay here when the user
+    /// keeps them here; other keys still go
+    #[test]
+    fn media_keys() {
+        let mut sw = switch();
+        cross_to_pc(&mut sw, 400);
+        let (d, out) = feed(&mut sw, key(usage::VOLUME_UP, true));
+        assert_eq!(d.verdict, Verdict::Swallow);
+        assert_eq!(
+            out,
+            [Emit::Key {
+                device: "pc".into(),
+                usage: usage::VOLUME_UP,
+                down: true
+            }]
+        );
+        feed(&mut sw, key(usage::VOLUME_UP, false));
+        sw.set_media_keys(MediaKeys::Local);
+        for down in [true, true, false] {
+            let (d, out) = feed(&mut sw, key(usage::MEDIA_PLAY_PAUSE, down));
+            assert_eq!((d.verdict, out.len()), (Verdict::Pass, 0));
+        }
+        let (d, _) = feed(&mut sw, key(0x04, true));
+        assert_eq!(d.verdict, Verdict::Swallow);
     }
 
     /// Held buttons keep the pointer on its side, both ways

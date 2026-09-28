@@ -5,6 +5,7 @@
 use std::collections::BTreeSet;
 
 use crate::InputError;
+use crate::config::{NORMAL_SPEED, Scrolling};
 use crate::event::MouseButton;
 use crate::geometry::Point;
 
@@ -156,6 +157,38 @@ impl RemoteInput {
     }
 }
 
+/// Scrolling from a controller as this device wants it: faster or slower,
+/// maybe turned around. Fractions of a unit carry over, so slow scrolling
+/// at a low speed is not lost
+#[derive(Debug, Default)]
+pub struct WheelScale {
+    /// The settings
+    scrolling: Scrolling,
+    /// Scrolling not yet worth a whole unit (x, y)
+    rest: (f64, f64),
+}
+
+impl WheelScale {
+    /// Use `scrolling` from now on
+    pub fn set(&mut self, scrolling: Scrolling) {
+        self.scrolling = scrolling;
+        self.rest = (0.0, 0.0);
+    }
+
+    /// One scroll step (1/120 notch units) as it is to be replayed
+    pub fn apply(&mut self, dx: i32, dy: i32) -> (i32, i32) {
+        let sign = if self.scrolling.reverse { -1.0 } else { 1.0 };
+        let k = sign * f64::from(self.scrolling.speed) / f64::from(NORMAL_SPEED);
+        let (x, y) = (
+            f64::from(dx) * k + self.rest.0,
+            f64::from(dy) * k + self.rest.1,
+        );
+        let (whole_x, whole_y) = (x.trunc(), y.trunc());
+        self.rest = (x - whole_x, y - whole_y);
+        (whole_x as i32, whole_y as i32)
+    }
+}
+
 impl Drop for RemoteInput {
     /// Never leave a key or button held after the source is gone
     fn drop(&mut self) {
@@ -259,6 +292,26 @@ mod tests {
                 Op::Move(Point::new(3, 3))
             ]
         );
+    }
+
+    /// Scrolling is scaled with the fractions kept, and turned around
+    #[test]
+    fn wheel_scale() {
+        let mut scale = WheelScale::default();
+        assert_eq!(scale.apply(-7, 120), (-7, 120));
+        scale.set(Scrolling {
+            speed: 150,
+            reverse: false,
+        });
+        assert_eq!(scale.apply(0, 1), (0, 1));
+        assert_eq!(scale.apply(0, 1), (0, 2));
+        scale.set(Scrolling {
+            speed: 50,
+            reverse: true,
+        });
+        assert_eq!(scale.apply(0, 1), (0, 0));
+        assert_eq!(scale.apply(0, 1), (0, -1));
+        assert_eq!(scale.apply(240, -120), (-120, 60));
     }
 
     /// Released keys are not released again

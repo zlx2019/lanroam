@@ -1,8 +1,9 @@
 //! Windows backend.
 //!
 //! - **Injection**: `SendInput`. Keys go as scan codes, so the target's own
-//!   layout and input method interpret them; the pointer goes to absolute
-//!   positions over the virtual desktop.
+//!   layout and input method interpret them (media keys as virtual keys,
+//!   like most keyboards send them); the pointer goes to absolute positions
+//!   over the virtual desktop.
 //! - **Displays**: monitor rectangles in physical pixels. The process is
 //!   made per-monitor DPI aware first, or Windows would report (and expect)
 //!   scaled coordinates.
@@ -41,7 +42,9 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     MOUSE_EVENT_FLAGS, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN,
     MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE,
     MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL,
-    MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT, MapVirtualKeyW, SendInput, VK_PAUSE,
+    MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT, MapVirtualKeyW, SendInput, VIRTUAL_KEY,
+    VK_MEDIA_NEXT_TRACK, VK_MEDIA_PLAY_PAUSE, VK_MEDIA_PREV_TRACK, VK_PAUSE, VK_VOLUME_DOWN,
+    VK_VOLUME_MUTE, VK_VOLUME_UP,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetCursorPos, GetMessageW, GetSystemMetrics, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT,
@@ -469,11 +472,14 @@ impl Injector for SendInputInjector {
     }
 
     /// Scan code press or release; Pause has no plain scan code and goes as
-    /// a virtual key
+    /// a virtual key, and so do media keys
     fn key(&mut self, usage: u16, down: bool) -> Result<(), InputError> {
         let up = if down { 0 } else { KEYEVENTF_KEYUP };
         if usage == usage::PAUSE {
             return send(&[keyboard(VK_PAUSE, 0, up)]);
+        }
+        if let Some(vk) = media_vk(usage) {
+            return send(&[keyboard(vk, 0, KEYEVENTF_EXTENDEDKEY | up)]);
         }
         let scan = keymap::win_from_usage(usage).ok_or_else(|| {
             InputError::Os(format!("no Windows scan code for HID usage {usage:#04x}"))
@@ -485,6 +491,19 @@ impl Injector for SendInputInjector {
         };
         send(&[keyboard(0, scan & 0xFF, KEYEVENTF_SCANCODE | extended | up)])
     }
+}
+
+/// The virtual key of a media key
+fn media_vk(usage: u16) -> Option<VIRTUAL_KEY> {
+    Some(match usage {
+        usage::VOLUME_MUTE => VK_VOLUME_MUTE,
+        usage::VOLUME_UP => VK_VOLUME_UP,
+        usage::VOLUME_DOWN => VK_VOLUME_DOWN,
+        usage::MEDIA_NEXT => VK_MEDIA_NEXT_TRACK,
+        usage::MEDIA_PREVIOUS => VK_MEDIA_PREV_TRACK,
+        usage::MEDIA_PLAY_PAUSE => VK_MEDIA_PLAY_PAUSE,
+        _ => return None,
+    })
 }
 
 /// A desktop position in `SendInput`'s absolute units (0..=65535 over the
@@ -591,6 +610,22 @@ mod tests {
         );
         assert_eq!(key_usage(&key(0x1D, LLKHF_UP)), Some(usage::LEFT_CTRL));
         assert_eq!(key_usage(&key(0x2A, LLKHF_EXTENDED)), None);
+        assert_eq!(
+            key_usage(&key(0x22, LLKHF_EXTENDED)),
+            Some(usage::MEDIA_PLAY_PAUSE)
+        );
+    }
+
+    /// Every media key the key map knows is injected as a virtual key
+    #[test]
+    fn media_keys_are_mapped() {
+        for (usage, _) in keymap::names() {
+            assert_eq!(
+                media_vk(usage).is_some(),
+                keymap::is_media(usage),
+                "{usage:#x}"
+            );
+        }
     }
 
     /// Every pixel survives the round trip through absolute units

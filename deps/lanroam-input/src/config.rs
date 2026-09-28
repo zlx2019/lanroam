@@ -1,6 +1,7 @@
 //! What the user sets about switching: the hotkeys, key combinations kept on
-//! this machine, how the pointer crosses an edge, and settings of single
-//! edges.
+//! this machine, how the pointer crosses an edge, settings of single edges,
+//! where media keys go, and how fast a controlled device's pointer and
+//! wheel go.
 //!
 //! Keys are physical (USB HID usages) and modifiers count on either side,
 //! except that a Ctrl+Alt hotkey needs the left Alt with a key AltGr types
@@ -242,6 +243,61 @@ impl EdgeSettings {
     /// Whether the numbers are in range
     pub fn valid(&self) -> bool {
         self.corner_px.is_none_or(|px| px <= MAX_CORNER_PX)
+    }
+}
+
+/// Where media and volume keys go while another device is controlled
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MediaKeys {
+    /// To the device being controlled
+    #[default]
+    Remote,
+    /// To this machine, as if nothing were controlled
+    Local,
+}
+
+/// Slowest pointer and scrolling speed, in percent
+pub const MIN_SPEED: u32 = 50;
+
+/// Fastest pointer speed, in percent
+pub const MAX_POINTER_SPEED: u32 = 200;
+
+/// Fastest scrolling speed, in percent
+pub const MAX_SCROLL_SPEED: u32 = 300;
+
+/// Normal speed, in percent
+pub const NORMAL_SPEED: u32 = 100;
+
+/// Whether `speed` (percent) is a pointer speed in range
+pub fn valid_pointer_speed(speed: u32) -> bool {
+    (MIN_SPEED..=MAX_POINTER_SPEED).contains(&speed)
+}
+
+/// How scrolling from a controlling device is replayed on this one
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Scrolling {
+    /// Speed, in percent
+    pub speed: u32,
+    /// Both directions turned around (e.g. for a Mac with natural
+    /// scrolling driving a PC)
+    pub reverse: bool,
+}
+
+impl Default for Scrolling {
+    fn default() -> Self {
+        Self {
+            speed: NORMAL_SPEED,
+            reverse: false,
+        }
+    }
+}
+
+impl Scrolling {
+    /// Whether the speed is in range
+    pub fn valid(&self) -> bool {
+        (MIN_SPEED..=MAX_SCROLL_SPEED).contains(&self.speed)
     }
 }
 

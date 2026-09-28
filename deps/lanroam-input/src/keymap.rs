@@ -8,6 +8,12 @@
 //! - macOS: virtual key codes (`kVK_*`, Carbon `Events.h`)
 //! - Windows: set-1 scan codes; extended keys carry the `0xE0` prefix in the
 //!   high byte (`0xE01D` is Right Control)
+//!
+//! Media keys that the keyboard page lacks (play / pause, next and previous
+//! track) come from the consumer page (0x0C) and travel as `0x0C00 | usage`,
+//! out of the keyboard page's range. On macOS every media key, the volume
+//! keys included, arrives and is posted as a system-defined event rather
+//! than a key code (see [`is_media`]).
 
 /// HID usages the engine refers to by name
 pub mod usage {
@@ -41,6 +47,18 @@ pub mod usage {
     pub const CAPS_LOCK: u16 = 0x39;
     /// Pause / Break
     pub const PAUSE: u16 = 0x48;
+    /// Mute
+    pub const VOLUME_MUTE: u16 = 0x7F;
+    /// Volume up
+    pub const VOLUME_UP: u16 = 0x80;
+    /// Volume down
+    pub const VOLUME_DOWN: u16 = 0x81;
+    /// Next track (consumer page 0xB5)
+    pub const MEDIA_NEXT: u16 = 0x0CB5;
+    /// Previous track (consumer page 0xB6)
+    pub const MEDIA_PREVIOUS: u16 = 0x0CB6;
+    /// Play / pause (consumer page 0xCD)
+    pub const MEDIA_PLAY_PAUSE: u16 = 0x0CCD;
     /// Left Control
     pub const LEFT_CTRL: u16 = 0xE0;
     /// Left Shift
@@ -223,6 +241,11 @@ static KEYS: &[Key] = &[
     k(0xE5, "ShiftRight", 0x3C, 0x36),
     k(0xE6, "AltRight", 0x3D, 0xE038),
     k(0xE7, "MetaRight", 0x36, 0xE05C),
+    // Consumer page; macOS has no key codes for them (system-defined
+    // events instead)
+    k(0x0CB5, "MediaTrackNext", NO, 0xE019),
+    k(0x0CB6, "MediaTrackPrevious", NO, 0xE010),
+    k(0x0CCD, "MediaPlayPause", NO, 0xE022),
 ];
 
 /// The row of a HID usage
@@ -261,6 +284,24 @@ pub fn win_from_usage(usage: u16) -> Option<u16> {
 /// W3C `code` name of a HID usage, for logs and diagnostics
 pub fn name(usage: u16) -> Option<&'static str> {
     by_usage(usage).map(|key| key.name)
+}
+
+/// Every key with its W3C `code` name
+pub fn names() -> impl Iterator<Item = (u16, &'static str)> {
+    KEYS.iter().map(|key| (key.usage, key.name))
+}
+
+/// Whether `usage` is a media or volume key
+pub fn is_media(usage: u16) -> bool {
+    matches!(
+        usage,
+        usage::VOLUME_MUTE
+            | usage::VOLUME_UP
+            | usage::VOLUME_DOWN
+            | usage::MEDIA_NEXT
+            | usage::MEDIA_PREVIOUS
+            | usage::MEDIA_PLAY_PAUSE
+    )
 }
 
 /// The key in the Command / Control position on the other platform: Control
@@ -327,6 +368,17 @@ mod tests {
         assert_eq!(mac_from_usage(usage::PAUSE), None);
         assert_eq!(usage_from_mac(NO), None);
         assert_eq!(usage_from_win(NO), None);
+        assert_eq!(usage_from_win(0xE022), Some(usage::MEDIA_PLAY_PAUSE));
+        assert_eq!(usage_from_win(0xE030), Some(usage::VOLUME_UP));
+    }
+
+    /// Media keys are told from the others, and all of them have names
+    #[test]
+    fn media_keys() {
+        assert!(is_media(usage::VOLUME_UP) && is_media(usage::MEDIA_PLAY_PAUSE));
+        assert!(!is_media(usage::F12) && !is_media(0x0C00));
+        let named = names().filter(|(usage, _)| is_media(*usage)).count();
+        assert_eq!(named, 6);
     }
 
     /// Control and Meta trade places, nothing else moves

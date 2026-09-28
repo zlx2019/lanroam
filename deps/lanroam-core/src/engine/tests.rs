@@ -1064,3 +1064,57 @@ async fn kept_combinations_stay_here() {
     let there = b.input.injected.lock().unwrap().clone();
     assert!(!there.contains(&Injected::Key(SPACE, true)), "{there:?}");
 }
+
+/// A device's pointer speed reaches its controller, which moves the
+/// pointer there faster; scrolling is scaled and turned around where it is
+/// replayed; media keys kept here work this machine
+#[tokio::test]
+async fn pointer_wheel_and_media_settings() {
+    use lanroam_input::config::{MediaKeys, Scrolling};
+    use lanroam_input::keymap::usage;
+    use lanroam_input::switch::Verdict;
+
+    let (mut a, b, _c) = row_of_three().await;
+    b.engine.set_pointer_speed(200).await.unwrap();
+    let b_fp = b.fp();
+    a.expect("b's pointer speed", |event| match event {
+        EngineEvent::Group(Some(doc)) => doc
+            .devices
+            .get(&b_fp)
+            .is_some_and(|record| record.profile.pointer_speed == 200)
+            .then_some(()),
+        _ => None,
+    })
+    .await;
+    // The layout reached a's input actor before the group event
+    a.engine.input_status().await.unwrap();
+    let scrolling = InputSettings {
+        scrolling: Scrolling {
+            speed: 50,
+            reverse: true,
+        },
+        ..InputSettings::default()
+    };
+    b.engine.set_input_settings(scrolling).await.unwrap();
+
+    a.input.push((999, 500), 5.0, 0.0);
+    b.injected(&Injected::Move(Point::new(1, 500))).await;
+    a.input.push((0, 0), 10.0, 0.0);
+    b.injected(&Injected::Move(Point::new(21, 500))).await;
+    a.input.feed(InputEvent::Wheel { dx: 0, dy: -120 });
+    b.injected(&Injected::Wheel(0, 60)).await;
+
+    let media = InputSettings {
+        media_keys: MediaKeys::Local,
+        ..InputSettings::default()
+    };
+    a.engine.set_input_settings(media).await.unwrap();
+    a.engine.input_status().await.unwrap();
+    assert_eq!(a.input.key(usage::VOLUME_UP, true).verdict, Verdict::Pass);
+    assert_eq!(a.input.key(0x04, true).verdict, Verdict::Swallow);
+
+    assert!(matches!(
+        b.engine.set_pointer_speed(10).await,
+        Err(EngineError::InvalidSettings)
+    ));
+}
