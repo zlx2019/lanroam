@@ -1,0 +1,54 @@
+[package]
+name = "lanroam-dnd"
+description = "Lanroam drag and drop layer: native drags of files carried from one device to another"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+readme.workspace = true
+
+# No networking here on purpose, as in lanroam-input: the Windows code can be
+# checked from a Mac with
+# `cargo clippy -p lanroam-dnd --target x86_64-pc-windows-msvc`
+
+[dependencies]
+lanroam-input = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+dispatch2 = { workspace = true }
+objc2 = { workspace = true }
+objc2-app-kit = { workspace = true, features = [
+    "NSColor",
+    "NSDragging",
+    "NSDraggingItem",
+    "NSDraggingSession",
+    "NSGraphics",
+    "NSImage",
+    "NSPanel",
+    "NSPasteboard",
+    "NSResponder",
+    "NSView",
+    "NSWindow",
+    "NSWorkspace",
+    "objc2-core-foundation",
+] }
+objc2-core-graphics = { workspace = true }
+objc2-foundation = { workspace = true, features = [
+    "NSDictionary",
+    "NSEnumerator",
+    "NSGeometry",
+    "NSURL",
+    "NSValue",
+] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true }
+windows-core = { workspace = true }
+
+[lints]
+workspace = true

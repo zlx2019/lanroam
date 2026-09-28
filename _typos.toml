@@ -92,6 +92,8 @@ redis = "redis"
 sqlite = "sqlite"
 xattr = "xattr"
 zstd = "zstd"
+# Win32 (FORMATETC's target device)
+ptd = "ptd"
 
 
 [type.proto]
