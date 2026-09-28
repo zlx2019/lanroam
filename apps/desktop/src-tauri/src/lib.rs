@@ -3,6 +3,7 @@
 //! - Closing a window hides it; the tray keeps Lanroam running, and quitting
 //!   goes through the tray menu (or closing the main window, if the user
 //!   sets it so)
+//! - The screens are arranged in a panel floating mid-screen (`panel.rs`)
 //! - On macOS it lives in the menu bar only (no Dock icon)
 //! - Started at login with `--hidden`, it stays in the tray; any other start
 //!   shows the window, and a second start raises the first one's
@@ -14,14 +15,16 @@ mod commands;
 mod dto;
 mod indicators;
 mod locale;
+mod material;
 mod overlay;
+mod panel;
 mod settings;
 mod state;
 mod tray;
 
 use std::path::Path;
 
-use tauri::{AppHandle, Manager, RunEvent, WindowEvent};
+use tauri::{AppHandle, Manager, RunEvent, WebviewWindowBuilder, WindowEvent};
 
 use crate::state::AppState;
 
@@ -53,6 +56,12 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            // The panel goes away at a click anywhere else
+            if let WindowEvent::Focused(false) = event
+                && window.label() == panel::PANEL_WINDOW
+            {
+                let _ = window.hide();
+            }
             // Closing hides; prevent_close must come first or the app quits
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
@@ -109,6 +118,7 @@ pub fn run() {
             commands::key_names,
             commands::open_logs,
             commands::show_main_window,
+            commands::show_panel,
             commands::quit_app,
         ])
         .build(tauri::generate_context!());
@@ -147,6 +157,9 @@ fn setup(app: &AppHandle) {
         Err(e) => return startup_failed(app, &e),
     };
     app.manage(state);
+    if let Err(e) = create_main_window(app) {
+        tracing::error!("cannot create the main window: {e}");
+    }
     if let Err(e) = tray::setup(app) {
         tracing::error!("cannot create the tray icon: {e}");
     }
@@ -164,6 +177,30 @@ fn setup(app: &AppHandle) {
         tray::show_main_window(app);
     }
     tracing::info!("Lanroam is running, data in {}", dir.display());
+}
+
+/// Create the main window from its entry in Tauri.toml, over a material
+/// where the system has one; after the state is managed, which its page's
+/// first commands need
+fn create_main_window(app: &AppHandle) -> tauri::Result<()> {
+    let Some(config) = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|w| w.label == MAIN_WINDOW)
+    else {
+        return Ok(());
+    };
+    let mut builder = WebviewWindowBuilder::from_config(app, config)?;
+    if let Some(effects) = material::main_window() {
+        builder = builder
+            .transparent(true)
+            .effects(effects)
+            .initialization_script(material::MARK);
+    }
+    builder.build()?;
+    Ok(())
 }
 
 /// Tell the user why Lanroam cannot start (most likely another Lanroam, or

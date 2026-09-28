@@ -3,9 +3,11 @@
 // never part of the build). A Mac and a Windows PC side by side, one
 // device nearby; placing moves devices and pushes a new snapshot.
 //
-// `/mock.html?window=overlay-0` is an on-screen overlay instead: push it
-// scenes with `window.__emit("overlay-scene", scene)`. Recording a key
-// combination waits for `window.__emit("recorded", chord)`.
+// `/mock.html?window=arrange` is the arrangement panel instead (over a
+// fake material with `&material=1`), and `?window=overlay-0` an on-screen
+// overlay: push it scenes with `window.__emit("overlay-scene", scene)`.
+// `&group=0` starts outside a group. Recording a key combination waits for
+// `window.__emit("recorded", chord)`.
 
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
@@ -119,6 +121,28 @@ function renumber() {
 }
 renumber();
 
+/** A busier desk: a portrait display beside the PC, a laptop under the Mac */
+function addThird() {
+  const group = state.group;
+  if (!group) return;
+  const pc = group.devices[1];
+  pc.origin = { x: 2560, y: 288 };
+  pc.displays = 2;
+  pc.screens = [
+    { x: 2560, y: 288, w: 1536, h: 864 },
+    { x: 4096, y: -48, w: 864, h: 1536 },
+  ];
+  pc.rect = { x: 2560, y: -48, w: 2400, h: 1536 };
+  const air = device("air".padEnd(64, "0"), "Zero-MacBook-Air", "macos", 1470, 956, 100, 545);
+  air.origin = { x: 545, y: 1440 };
+  air.rect = { x: 545, y: 1440, w: 1470, h: 956 };
+  air.screens = [{ ...air.rect }];
+  air.online = false;
+  group.devices.push(air);
+  group.edges.push({ a: "mac".padEnd(64, "0"), b: air.fingerprint, crossable: true, cornerPx: null, mode: "modifier" });
+  renumber();
+}
+
 /** Commands the mock answers; the rest resolve to nothing */
 const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
   get_snapshot: () => state,
@@ -151,13 +175,18 @@ const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
     const dy = (args.y as number) - d.origin.y;
     d.origin = { x: args.x as number, y: args.y as number };
     d.rect = { ...d.rect, x: d.rect.x + dx, y: d.rect.y + dy };
+    d.screens = d.screens.map((r) => ({ ...r, x: r.x + dx, y: r.y + dy }));
     renumber();
     // The engine pushes the new state once the group has it
     setTimeout(() => emit("snapshot", structuredClone(state)), 50);
   },
 };
 
-mockWindows(new URLSearchParams(location.search).get("window") ?? "main");
+const params = new URLSearchParams(location.search);
+if (params.get("group") === "0") state.group = null;
+if (params.get("scene") === "three") addThird();
+if (params.get("material") === "1") document.documentElement.dataset.material = "1";
+mockWindows(params.get("window") ?? "main");
 mockIPC(
   (cmd, payload) => {
     (window as unknown as { __calls: unknown[] }).__calls.push({ cmd, payload });

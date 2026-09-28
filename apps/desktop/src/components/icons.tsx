@@ -31,6 +31,93 @@ export function PlatformIcon({ platform }: { platform: string }) {
   return platform === "macos" ? <span className="g-mac">⌘</span> : <WindowsIcon />;
 }
 
+/** The system's logo, one color: the apple, or the four panes */
+export function OsLogo({ platform }: { platform: string }) {
+  return platform === "macos" ? (
+    <svg viewBox="0 0 24 24">
+      <path
+        fill="currentColor"
+        d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"
+      />
+    </svg>
+  ) : (
+    <svg viewBox="0 0 24 24">
+      <path fill="currentColor" d="M1 1h10.5v10.5H1zM12.5 1H23v10.5H12.5zM1 12.5h10.5V23H1zM12.5 12.5H23V23H12.5z" />
+    </svg>
+  );
+}
+
+/** Two screens side by side: arranging them */
+export function ArrangeIcon() {
+  return (
+    <svg viewBox="0 0 16 16">
+      <rect x="1.5" y="3" width="7" height="6" rx="1.4" fill="none" stroke="currentColor" strokeWidth="1.5" />
+      <rect x="8.5" y="6" width="6" height="7" rx="1.4" fill="currentColor" opacity=".35" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+}
+
+/** Three dots: more actions */
+export function MoreIcon() {
+  return (
+    <svg viewBox="0 0 16 16">
+      <circle cx="3.5" cy="8" r="1.3" fill="currentColor" />
+      <circle cx="8" cy="8" r="1.3" fill="currentColor" />
+      <circle cx="12.5" cy="8" r="1.3" fill="currentColor" />
+    </svg>
+  );
+}
+
+/** A chevron pointing down: expand */
+export function ChevronIcon() {
+  return (
+    <svg viewBox="0 0 16 16">
+      <path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** A gear: general settings */
+export function GearIcon() {
+  return (
+    <svg viewBox="0 0 16 16">
+      <circle cx="8" cy="8" r="2.3" fill="none" stroke="currentColor" strokeWidth="1.5" />
+      <path
+        d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+/** Arrows both ways: switching */
+export function SwitchIcon() {
+  return (
+    <svg viewBox="0 0 16 16">
+      <path
+        d="M2 5h11M10 2l3 3-3 3M14 11H3M6 8l-3 3 3 3"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+/** An eye: appearance */
+export function EyeIcon() {
+  return (
+    <svg viewBox="0 0 16 16">
+      <path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8z" fill="none" stroke="currentColor" strokeWidth="1.5" />
+      <circle cx="8" cy="8" r="2" fill="currentColor" />
+    </svg>
+  );
+}
+
 /** Pause */
 export function PauseIcon() {
   return (
@@ -65,15 +152,6 @@ export function OutIcon() {
   return (
     <svg viewBox="0 0 16 16">
       <path d="M2 8h10M8.5 4.5 12 8l-3.5 3.5" stroke="currentColor" strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-/** Arrow in: controlled by another device */
-export function InIcon() {
-  return (
-    <svg viewBox="0 0 16 16">
-      <path d="M14 8H4M7.5 4.5 4 8l3.5 3.5" stroke="currentColor" strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -144,38 +222,3 @@ export function KeyboardIcon() {
   );
 }
 
-/** A screen: identify */
-export function ScreenIcon() {
-  return (
-    <svg viewBox="0 0 16 16">
-      <rect x="1.5" y="2.5" width="13" height="9" rx="1.5" stroke="currentColor" strokeWidth="1.5" fill="none" />
-      <path d="M5.5 14h5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-/** Two arrows both ways: an edge the pointer crosses */
-export function LinkIcon() {
-  return (
-    <svg viewBox="0 0 16 16">
-      <path
-        d="M2.5 5.5h10M10 3l2.5 2.5L10 8M13.5 10.5h-10M6 8l-2.5 2.5L6 13"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        fill="none"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-/** A crossed circle: an edge closed to the pointer */
-export function NoLinkIcon() {
-  return (
-    <svg viewBox="0 0 16 16">
-      <circle cx="8" cy="8" r="5.5" stroke="currentColor" strokeWidth="1.6" fill="none" />
-      <path d="M4.2 11.8l7.6-7.6" stroke="currentColor" strokeWidth="1.6" />
-    </svg>
-  );
-}

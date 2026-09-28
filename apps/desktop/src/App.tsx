@@ -1,5 +1,6 @@
-// The main window: layout, devices and settings, with the join dialog and
-// (on macOS, until granted) the permission walkthrough.
+// The main window: devices and settings, with the join dialog and (on
+// macOS, until granted) the permission walkthrough. The screens are
+// arranged in a panel of their own (ArrangePanel).
 
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
@@ -8,12 +9,11 @@ import { EVENTS } from "./events";
 import { useNearby, useSnapshot, useToast } from "./hooks/useLanroam";
 import { useI18n } from "./i18n";
 import type { NearbyDto, PermissionsDto, SettingsDto } from "./types";
-import { Footer, Header, type Tab } from "./components/Chrome";
+import { Header, type Tab } from "./components/Chrome";
 import { DevicesPage } from "./components/DevicesPage";
 import { JoinModal } from "./components/JoinModal";
-import { LayoutPage } from "./components/LayoutPage";
 import { Onboarding } from "./components/Onboarding";
-import { SettingsPage } from "./components/SettingsPage";
+import { SettingsPage, type Section } from "./components/SettingsPage";
 
 /** The main window */
 export default function App({
@@ -25,13 +25,15 @@ export default function App({
 }) {
   const { t } = useI18n();
   const snapshot = useSnapshot();
-  const [tab, setTab] = useState<Tab>("layout");
+  const [tab, setTab] = useState<Tab>("devices");
+  const [section, setSection] = useState<Section>("general");
+  // Came to the settings to rename this device
+  const [renaming, setRenaming] = useState(false);
   const [toast, showToast] = useToast();
   const [joinTarget, setJoinTarget] = useState<NearbyDto | null>(null);
-  const [joined, setJoined] = useState(false);
   const [perms, setPerms] = useState<PermissionsDto | null>(null);
   const [permsDone, setPermsDone] = useState(false);
-  const nearby = useNearby(tab === "devices" || (snapshot !== null && !snapshot.group));
+  const nearby = useNearby(tab === "devices");
 
   useEffect(() => {
     api.getPermissions().then(setPerms).catch(console.error);
@@ -55,38 +57,48 @@ export default function App({
         <main>
           <Onboarding onDone={() => setPermsDone(true)} />
         </main>
-        <Footer snapshot={snapshot} nearby={nearby.length} />
       </div>
     );
   }
 
+  /** Show a page, as a click on its tab */
+  const show = (next: Tab) => {
+    setRenaming(false);
+    setTab(next);
+  };
+
   return (
     <div className="app">
-      <Header snapshot={snapshot} tab={tab} onTab={setTab} onToast={showToast} />
+      <Header snapshot={snapshot} tab={tab} onTab={show} onToast={showToast} />
       <main>
-        {tab === "layout" && (
-          <LayoutPage
+        {tab === "devices" && (
+          <DevicesPage
             snapshot={snapshot}
             nearby={nearby}
-            joined={joined}
             onJoin={setJoinTarget}
-            onJoinedSeen={() => setJoined(false)}
+            onRename={() => {
+              setSection("general");
+              setRenaming(true);
+              setTab("settings");
+            }}
             onToast={showToast}
           />
-        )}
-        {tab === "devices" && (
-          <DevicesPage snapshot={snapshot} nearby={nearby} onJoin={setJoinTarget} onToast={showToast} />
         )}
         {tab === "settings" && (
           <SettingsPage
             snapshot={snapshot}
             settings={settings}
+            section={section}
+            renaming={renaming}
+            onSection={(next) => {
+              setRenaming(false);
+              setSection(next);
+            }}
             onSettings={onSettings}
             onToast={showToast}
           />
         )}
       </main>
-      <Footer snapshot={snapshot} nearby={nearby.length} />
       {joinTarget && (
         <JoinModal
           target={joinTarget}
@@ -94,8 +106,9 @@ export default function App({
           onClose={() => setJoinTarget(null)}
           onJoined={() => {
             setJoinTarget(null);
-            setJoined(true);
-            setTab("layout");
+            show("devices");
+            // Straight on to placing the screens
+            api.showPanel().catch(console.error);
           }}
         />
       )}

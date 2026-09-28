@@ -61,14 +61,13 @@ export function KeyboardMouseSettings({
 
   return (
     <>
-      <div className="group-h">{t("input.keyboard")}</div>
       <div className="group">
-        <Row title={t("side.swap")} hint={noGroup ?? t("side.swapLocal", { other, from, to })}>
+        <Row title={t("input.swap")} hint={noGroup ?? t("input.swapHint", { other, from, to })}>
           <button
             className={`tg${swap ? " on" : ""}`}
             disabled={!local}
             onClick={() => toggleSwap(!swap)}
-            aria-label={t("side.swap")}
+            aria-label={t("input.swap")}
           />
         </Row>
         <Row title={t("input.media")} hint={t("input.mediaHint")}>
@@ -83,11 +82,9 @@ export function KeyboardMouseSettings({
         </Row>
       </div>
 
-      <div className="group-h">
-        {t("input.mouse")} <span className="muted">· {t("input.mouseHint")}</span>
-      </div>
+      <div className="group-h">{t("input.controlled")}</div>
       <div className="group">
-        <Row title={t("input.pointer")} hint={noGroup ?? t("input.pointerHint")}>
+        <Row title={t("input.pointer")} hint={noGroup}>
           <Slider
             {...POINTER}
             value={local?.pointerSpeed ?? 100}

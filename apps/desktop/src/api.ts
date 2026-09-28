@@ -75,6 +75,8 @@ export const api = {
   keyNames: () => invoke<Record<string, string>>("key_names"),
   /** Show the log file in the file manager */
   openLogs: () => invoke<void>("open_logs"),
+  /** Bring up the arrangement panel where the pointer is */
+  showPanel: () => invoke<void>("show_panel"),
   /** Quit Lanroam */
   quit: () => invoke<void>("quit_app"),
 };

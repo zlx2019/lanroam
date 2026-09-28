@@ -1,5 +1,5 @@
 // Settings → Switching: the hotkeys, how the pointer crosses edges by
-// default, and the key combinations kept on this machine. Combinations are
+// default and edge by edge, and the key combinations kept on this machine. Combinations are
 // recorded by the engine from the physical keys (this device's keyboard,
 // or the controlling device's), so even ones the OS or a hotkey would take
 // are seen; changes save at once.
@@ -12,15 +12,13 @@ import { altKey, formatError, useI18n } from "../i18n";
 import { DEFAULT_HOTKEYS, chordLabels, commanding, modLabels, modsOf, sameChord, validHotkey } from "../keys";
 import type { Chord, HoldKey, InputSettings, Snapshot, SwitchMode } from "../types";
 import { Keycaps, Row, Seg, Stepper } from "./controls";
+import { CORNER, EdgeList } from "./EdgeList";
 
 /** What a recording is for */
 type Target = "pause" | "lock" | "jump" | "step" | "keep";
 
 /** Dwell limits in the interface (ms) */
 const DWELL = { min: 100, max: 1000, step: 50 };
-
-/** Corner guard limits in the interface (px) */
-export const CORNER = { min: 0, max: 40, step: 2 };
 
 /** The switching settings */
 export function SwitchingSettings({
@@ -121,18 +119,14 @@ export function SwitchingSettings({
         {t("switch.hotkeys")} <span className="muted">· {t("switch.hotkeysHint")}</span>
       </div>
       <div className="group">
-        <Row title={t("switch.pause")} hint={t("switch.pauseHint")}>
-          {keys("pause", chordLabels(hotkeys.pause, platform, names))}
-        </Row>
+        <Row title={t("switch.pause")}>{keys("pause", chordLabels(hotkeys.pause, platform, names))}</Row>
         <Row title={t("switch.lock")} hint={t("switch.lockHint")}>
           {keys("lock", chordLabels(hotkeys.lock, platform, names))}
         </Row>
-        <Row title={t("switch.jump")} hint={t("switch.jumpHint")}>
-          {keys("jump", [...modLabels(hotkeys.jump, platform), "1–9"])}
-        </Row>
+        <Row title={t("switch.jump")}>{keys("jump", [...modLabels(hotkeys.jump, platform), "1–9"])}</Row>
         <Row title={t("switch.step")}>{keys("step", [...modLabels(hotkeys.step, platform), t("switch.arrows")])}</Row>
         <div className="srow end">
-          <button className="btn sm ghost" onClick={() => save({ ...settings, hotkeys: DEFAULT_HOTKEYS })}>
+          <button className="btn ghost" onClick={() => save({ ...settings, hotkeys: DEFAULT_HOTKEYS })}>
             {t("switch.reset")}
           </button>
         </div>
@@ -140,7 +134,7 @@ export function SwitchingSettings({
 
       <div className="group-h">{t("switch.edges")}</div>
       <div className="group">
-        <Row title={t("switch.mode")} hint={t("switch.modeHint")}>
+        <Row title={t("switch.mode")}>
           <Seg<SwitchMode>
             options={[
               ["direct", t("switch.direct")],
@@ -174,32 +168,38 @@ export function SwitchingSettings({
         </Row>
       </div>
 
+      <div className="group-h">{t("edges.title")}</div>
+      <EdgeList group={snapshot.group} defaults={switching} onToast={onToast} />
+
       <div className="group-h">{t("switch.keepLocal")}</div>
       <div className="group">
-        <Row title={t("switch.keepLocalRow")} hint={t("switch.keepLocalHint")}>
-          <span className="chips">
-            {settings.keepLocal.map((chord, i) => (
-              <span key={i} className="kchip">
-                {chordLabels(chord, platform, names).join(" ")}
-                <button
-                  aria-label={t("switch.remove")}
-                  onClick={() => save({ ...settings, keepLocal: settings.keepLocal.filter((_, j) => j !== i) })}
-                >
-                  ×
-                </button>
-              </span>
-            ))}
-            {recording === "keep" ? (
-              <span className="keys rec" onClick={() => record("keep")}>
-                {t("switch.recording")}
-              </span>
-            ) : (
-              <button className="btn sm" onClick={() => record("keep")}>
-                {t("switch.add")}
-              </button>
-            )}
-          </span>
-        </Row>
+        <div className="srow">
+          <div className="t">
+            <span className="chips">
+              {settings.keepLocal.map((chord, i) => (
+                <span key={i} className="kchip">
+                  {chordLabels(chord, platform, names).join(" ")}
+                  <button
+                    aria-label={t("switch.remove")}
+                    onClick={() => save({ ...settings, keepLocal: settings.keepLocal.filter((_, j) => j !== i) })}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </span>
+            <small>{t("switch.keepLocalHint")}</small>
+          </div>
+          {recording === "keep" ? (
+            <span className="keys rec" onClick={() => record("keep")}>
+              {t("switch.recording")}
+            </span>
+          ) : (
+            <button className="btn" onClick={() => record("keep")}>
+              {t("switch.add")}
+            </button>
+          )}
+        </div>
       </div>
     </>
   );

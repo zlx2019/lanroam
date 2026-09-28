@@ -403,6 +403,12 @@ fn device_rect(monitor: &Monitor) -> (f64, f64, f64, f64) {
 }
 
 /// The display the pointer is on (the first one when that is unknown)
+pub fn pointer_monitor(app: &AppHandle) -> Option<Monitor> {
+    monitors(app).into_iter().nth(pointer_display(app))
+}
+
+/// Index of the display the pointer is on (the first one when that is
+/// unknown)
 fn pointer_display(app: &AppHandle) -> usize {
     let Ok(position) = app.cursor_position() else {
         return 0;

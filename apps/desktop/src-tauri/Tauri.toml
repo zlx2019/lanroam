@@ -10,22 +10,24 @@ beforeBuildCommand = "pnpm build"
 frontendDist = "../dist"
 
 [app]
-# Transparent windows on macOS (the on-screen overlays)
+# Transparent windows on macOS (the overlays, the materials)
 macOSPrivateApi = true
 
 [app.security]
 csp = "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' data:; style-src 'self' 'unsafe-inline'"
 
-# The main window: layout, devices, settings. Hidden until the setup shows
-# it (not at all when started at login with --hidden). On macOS the header
-# doubles as the title bar, with the traffic lights over its left end
+# The main window: devices and settings. Hidden until the setup shows it
+# (not at all when started at login with --hidden). On macOS the header
+# doubles as the title bar, with the traffic lights over its left end. The
+# setup creates it, over a material where the system has one (material.rs)
 [[app.windows]]
 label = "main"
+create = false
 title = "Lanroam"
-width = 1040
-height = 680
-minWidth = 860
-minHeight = 560
+width = 920
+height = 620
+minWidth = 760
+minHeight = 520
 visible = false
 titleBarStyle = "Overlay"
 hiddenTitle = true

@@ -1,54 +1,74 @@
 // The settings page. Changes apply at once: choices on click, the name on
 // Enter or when the field loses focus.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api } from "../api";
 import { formatError, useI18n } from "../i18n";
 import type { SettingsDto, Snapshot } from "../types";
 import { Row, Seg, Toggle } from "./controls";
+import { EyeIcon, GearIcon, InfoIcon, KeyboardIcon, SwitchIcon } from "./icons";
 import { KeyboardMouseSettings } from "./KeyboardMouseSettings";
 import { SwitchingSettings } from "./SwitchingSettings";
 
 /** Sections of the settings page */
-type Section = "general" | "switching" | "input" | "look" | "about";
+export type Section = "general" | "switching" | "input" | "look" | "about";
 
-/** The settings page */
+/** Sections in order, with their icons */
+const SECTIONS: [Section, ReactNode][] = [
+  ["general", <GearIcon key="general" />],
+  ["switching", <SwitchIcon key="switching" />],
+  ["input", <KeyboardIcon key="input" />],
+  ["look", <EyeIcon key="look" />],
+  ["about", <InfoIcon key="about" />],
+];
+
+/** The settings page; `renaming` puts the cursor in the name field */
 export function SettingsPage({
   snapshot,
   settings,
+  section,
+  renaming,
+  onSection,
   onSettings,
   onToast,
 }: {
   snapshot: Snapshot;
   settings: SettingsDto;
+  section: Section;
+  renaming: boolean;
+  onSection: (section: Section) => void;
   onSettings: (next: SettingsDto) => Promise<void>;
   onToast: (message: string) => void;
 }) {
   const { t } = useI18n();
-  const [section, setSection] = useState<Section>("general");
   return (
-    <div className="settings">
-      <nav className="snav">
-        {(["general", "switching", "input", "look", "about"] as const).map((id) => (
-          <button key={id} className={section === id ? "on" : ""} onClick={() => setSection(id)}>
+    <div className="pane settings">
+      <nav className="rail">
+        {SECTIONS.map(([id, icon]) => (
+          <button key={id} className={section === id ? "on" : ""} onClick={() => onSection(id)}>
+            {icon}
             {t(`settings.${id}`)}
           </button>
         ))}
       </nav>
-      <div className="pane">
-        <div className="pane-inner" style={{ maxWidth: 640 }}>
-          {section === "general" ? (
-            <General snapshot={snapshot} settings={settings} onSettings={onSettings} onToast={onToast} />
-          ) : section === "switching" ? (
-            <SwitchingSettings snapshot={snapshot} onToast={onToast} />
-          ) : section === "input" ? (
-            <KeyboardMouseSettings snapshot={snapshot} onToast={onToast} />
-          ) : section === "look" ? (
-            <Look settings={settings} onSettings={onSettings} onToast={onToast} />
-          ) : (
-            <About snapshot={snapshot} onToast={onToast} />
-          )}
-        </div>
+      <div>
+        {section === "general" ? (
+          <General
+            snapshot={snapshot}
+            settings={settings}
+            renaming={renaming}
+            onSettings={onSettings}
+            onToast={onToast}
+          />
+        ) : section === "switching" ? (
+          <SwitchingSettings snapshot={snapshot} onToast={onToast} />
+        ) : section === "input" ? (
+          <KeyboardMouseSettings snapshot={snapshot} onToast={onToast} />
+        ) : section === "look" ? (
+          <Look settings={settings} onSettings={onSettings} onToast={onToast} />
+        ) : (
+          <About snapshot={snapshot} onToast={onToast} />
+        )}
       </div>
     </div>
   );
@@ -58,11 +78,13 @@ export function SettingsPage({
 function General({
   snapshot,
   settings,
+  renaming,
   onSettings,
   onToast,
 }: {
   snapshot: Snapshot;
   settings: SettingsDto;
+  renaming: boolean;
   onSettings: (next: SettingsDto) => Promise<void>;
   onToast: (message: string) => void;
 }) {
@@ -95,11 +117,12 @@ function General({
   return (
     <>
       <div className="group">
-        <Row title={t("settings.name")} hint={t("settings.nameHint")}>
+        <Row title={t("settings.name")}>
           <input
             className="input"
-            style={{ width: 220 }}
             value={name}
+            autoFocus={renaming}
+            onFocus={(e) => renaming && e.currentTarget.select()}
             maxLength={40}
             onChange={(e) => setName(e.target.value)}
             onBlur={commitName}
@@ -113,7 +136,7 @@ function General({
             }}
           />
         </Row>
-        <Row title={t("settings.autostart")} hint={t("settings.autostartHint")}>
+        <Row title={t("settings.autostart")}>
           <Toggle
             on={settings.autostart}
             label={t("settings.autostart")}
@@ -123,7 +146,7 @@ function General({
         <Row title={t("settings.closeWindow")}>
           <Seg
             options={[
-              ["tray", t(snapshot.device.platform === "macos" ? "settings.closeMenuBar" : "settings.closeTray")],
+              ["tray", t("settings.closeHide")],
               ["quit", t("settings.closeQuit")],
             ]}
             value={settings.closeWindow}
@@ -180,17 +203,17 @@ function Look({
       <Row title={t("settings.edgeGlow")} hint={t("settings.edgeGlowHint")}>
         <Toggle on={settings.edgeGlow} label={t("settings.edgeGlow")} onChange={(edgeGlow) => change({ edgeGlow })} />
       </Row>
-      <Row title={t("settings.hints")} hint={t("settings.hintsHint")}>
+      <Row title={t("settings.hints")}>
         <Toggle on={settings.hints} label={t("settings.hints")} onChange={(hints) => change({ hints })} />
       </Row>
-      <Row title={t("settings.dim")} hint={t("settings.dimHint")}>
+      <Row title={t("settings.dim")}>
         <Toggle on={settings.dim} label={t("settings.dim")} onChange={(dim) => change({ dim })} />
       </Row>
     </div>
   );
 }
 
-/** Version, identity, source, logs */
+/** Version, identity, logs */
 function About({ snapshot, onToast }: { snapshot: Snapshot; onToast: (message: string) => void }) {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
@@ -208,35 +231,23 @@ function About({ snapshot, onToast }: { snapshot: Snapshot; onToast: (message: s
   };
 
   return (
-    <>
-      <div className="group">
-        <Row title={t("about.version")}>
-          <span className="muted">{snapshot.device.version}</span>
-        </Row>
-        <Row title={t("about.fingerprint")} hint={t("about.fingerprintHint")}>
-          <span className="chips">
-            <span className="fp">{fp.slice(0, 16).replace(/(.{4})/g, "$1 ")}…</span>
-            <button className="btn sm" onClick={copy}>
-              {t(copied ? "about.copied" : "about.copy")}
-            </button>
-          </span>
-        </Row>
-        {snapshot.group && (
-          <Row title={t("about.group")}>
-            <span className="fp">{snapshot.group.id}</span>
-          </Row>
-        )}
-      </div>
-      <div className="group">
-        <Row title={t("about.source")} hint={t("about.license")}>
-          <span className="muted">github.com/zlx2019/lanroam</span>
-        </Row>
-        <Row title={t("about.logs")} hint={t("about.logsHint")}>
-          <button className="btn sm" onClick={() => api.openLogs().catch((e) => onToast(formatError(t, e)))}>
-            {t("about.openLogs")}
+    <div className="group">
+      <Row title={t("about.version")}>
+        <span className="muted">{snapshot.device.version}</span>
+      </Row>
+      <Row title={t("about.fingerprint")}>
+        <span className="chips">
+          <span className="fp">{fp.slice(0, 16).replace(/(.{4})/g, "$1 ")}…</span>
+          <button className="btn" onClick={copy}>
+            {t(copied ? "about.copied" : "about.copy")}
           </button>
-        </Row>
-      </div>
-    </>
+        </span>
+      </Row>
+      <Row title={t("about.logs")}>
+        <button className="btn" onClick={() => api.openLogs().catch((e) => onToast(formatError(t, e)))}>
+          {t("about.openLogs")}
+        </button>
+      </Row>
+    </div>
   );
 }

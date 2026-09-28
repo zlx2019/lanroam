@@ -2393,6 +2393,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "windows-version",
 ]
 
 [[package]]

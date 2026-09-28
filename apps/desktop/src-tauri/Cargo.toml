@@ -42,6 +42,11 @@ tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 sys-locale = "0.3"
 
+# Mica behind the main window from Windows 11 on (material.rs); the same
+# version Tauri uses
+[target.'cfg(windows)'.dependencies]
+windows-version = "0.1"
+
 # The on-screen overlays' window level (above full-screen apps); the same
 # version Tauri uses
 [target.'cfg(target_os = "macos")'.dependencies]

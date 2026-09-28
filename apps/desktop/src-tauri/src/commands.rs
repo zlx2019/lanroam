@@ -20,6 +20,7 @@ use crate::dto::{
     JoiningEndedDto, NearbyDto, PermissionsDto, Snapshot,
 };
 use crate::overlay::{self, SceneDto};
+use crate::panel;
 use crate::settings::{CLOSE_TO_QUIT, CLOSE_TO_TRAY, Settings};
 use crate::state::{AppState, lock};
 use crate::tray;
@@ -398,6 +399,13 @@ pub fn open_logs(app: AppHandle, state: State<'_, AppState>) -> Reply<()> {
 #[tauri::command]
 pub fn show_main_window(app: AppHandle) {
     tray::show_main_window(&app);
+}
+
+/// Bring up the arrangement panel where the pointer is (async: it may
+/// create its window, which a blocking command must not on Windows)
+#[tauri::command]
+pub async fn show_panel(app: AppHandle) {
+    panel::show(&app);
 }
 
 /// Quit Lanroam
