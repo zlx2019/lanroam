@@ -112,6 +112,18 @@ The engine tests run several nodes in one process, but input capture and injecti
 - Run `cargo run -p lanroam-cli -- run` on each machine; `--dry-run` prints received input instead of injecting it.
 - Every push publishes `Lanroam.exe` and `lanroam-cli.exe` to the rolling [`dev` pre-release](https://github.com/zlx2019/lanroam/releases/tag/dev); the README shows how to fetch them on Windows.
 
+## Releasing
+
+A `vX.Y.Z` tag publishes a release (`.github/workflows/release.yml`): the app as a dmg for Apple Silicon and Intel Macs and an NSIS installer for Windows, the command-line node for the same three targets, and a changelog written by git-cliff from the commit messages. The tag must match both versions, `apps/desktop/package.json` and `version` in the workspace `Cargo.toml`; a tag with a suffix (`v0.2.0-rc.1`) makes a pre-release.
+
+Before tagging, run the workflow by hand for a trial: it builds the same packages and keeps them as workflow artifacts, without publishing anything.
+
+```bash
+gh workflow run release.yml
+```
+
+The app is only ad-hoc signed until there is an Apple certificate; with the `APPLE_*` secrets configured, the workflow signs and notarizes it instead.
+
 ## Conventions
 
 - **Protocol changes stay compatible within a major version.** `PROTOCOL_VERSION` is `major.minor`: a new message or field is additive, bumps the minor version and must be safe for an older peer to skip; only a major bump refuses to talk to older peers. Add a test that an older peer still gets along.

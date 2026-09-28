@@ -24,14 +24,18 @@ Every device running Lanroam becomes a peer on the local network. Your devices j
 
 Arrange them once. From then on, move the pointer past the edge of one screen and it lands on the next computer, with the keyboard following along, carried device-to-device over a mutually authenticated TLS 1.3 channel. Lanroam is the third LAN tool in the family, after [Deskmate](https://github.com/zlx2019/deskmate) (file transfer) and [Lanecho](https://github.com/zlx2019/lanecho) (clipboard sync).
 
-> 🚧 **Early development, no release yet.** Groups, layout, edge crossing and hotkeys work between Macs and Windows PCs; the desktop app is being built (see the roadmap below).
+> 🚧 **Early development.** The desktop app shares a keyboard and mouse between Macs and Windows PCs; the first release is on its way (see the roadmap below).
 
 ## ✨ Features
 
 - 🖱️ **Edge crossing** — push the pointer past an edge your screen shares with another device and you control that device. Carry on across further devices and back, in any direction; positions map proportionally along the shared edges.
+- 🎚️ **Crossing on your terms** — cross an edge right away, only while holding a modifier, or after a short dwell against it; a corner guard keeps the pointer home when you aim for a screen corner. Each edge on the layout can be closed or cross its own way.
 - 🔀 **Mac ↔ Windows** — Command and Control swap places between a Mac and a PC, so shortcuts stay under the same fingers. The layout is in logical pixels, so a 150% Windows display lines up with a Mac's.
 - 🧩 **Drag-and-drop layout** — drag the screens of every device in the group into place; the layout is shared by the whole group. **Identify screens** shows each device's number on its own screens.
-- ⌨️ **Hotkeys** — jump to a device by number or to the neighbour in a direction, lock the pointer to a device, or go home and pause crossing.
+- ⌨️ **Hotkeys** — jump to a device by number or to the neighbour in a direction, lock the pointer to a device, or go home and pause crossing. Record your own combinations in the settings.
+- 📌 **Keys that stay here** — combinations you keep local (switching input methods, screenshots) act on this computer even while you control another. Media and volume keys go to the device you control, or stay here.
+- 🖲️ **Per-device pointer and wheel** — each device sets how fast the pointer and the wheel go on it, and can turn scrolling around for a Mac with natural scrolling.
+- 💡 **Always know where you are** — the edge the pointer came in by lights up, a hint says when you pause, lock, jump or lose a device, and inactive screens can dim.
 - ✋ **Take back any time** — touch a controlled device's own mouse or keyboard and control is back there at once. A device that stops answering hands control back within 3 seconds.
 - 🔗 **LAN P2P** — every device is an equal peer; no server, no cloud, no account.
 - 📡 **Zero-config discovery** — mDNS with a UDP multicast fallback; nearby devices just show up.
@@ -41,7 +45,7 @@ Arrange them once. From then on, move the pointer past the edge of one screen an
 
 ### Hotkeys
 
-On a Mac, Alt is the Option key.
+The defaults; record your own under **Settings → Switching**. On a Mac, Alt is the Option key.
 
 | Keys | Action |
 |---|---|
@@ -65,14 +69,27 @@ The digits, arrows and L need the left Alt: on many layouts, AltGr (Ctrl+right A
 
 ## 📥 Install
 
-There is no release yet; the first one comes with the desktop app.
+Grab a build from [Releases](https://github.com/zlx2019/lanroam/releases) once the first one is out.
 
-| Platform | Requires |
-|---|---|
-| macOS | macOS 13 Ventura or later |
-| Windows | Windows 10 or later, x64 |
+| Platform | Requires | Artifact |
+|---|---|---|
+| macOS (Apple Silicon) | macOS 13 Ventura or later | `Lanroam-x.y.z-macos-aarch64.dmg` |
+| macOS (Intel) | macOS 13 Ventura or later | `Lanroam-x.y.z-macos-x64.dmg` |
+| Windows | Windows 10 or later, x64 | `Lanroam-x.y.z-windows-x64-setup.exe` |
+
+Each release carries the command-line node (`lanroam-cli`) too; see [CONTRIBUTING.md](./CONTRIBUTING.md#the-command-line-node).
+
+### 🍎 macOS
+
+Drag Lanroam into Applications. On first launch, it walks you through the **Accessibility** and **Input Monitoring** permissions it needs to capture and inject input.
 
 ### 🪟 Windows
+
+The installer lets Lanroam through the firewall on private networks, which discovery and control need.
+
+> Builds are not signed yet. On macOS, open the app with right-click → **Open** the first time (on macOS 15 and later: System Settings → Privacy & Security → **Open Anyway**), or run `xattr -cr /Applications/Lanroam.app`. Windows SmartScreen may ask for confirmation as well.
+
+### 🧪 Development builds (Windows)
 
 Every push builds the app (`Lanroam.exe`, portable) and the command-line node (`lanroam-cli.exe`) into the rolling [`dev` pre-release](https://github.com/zlx2019/lanroam/releases/tag/dev). Fetch the latest into `%LOCALAPPDATA%\Lanroam\dev` with:
 
@@ -85,12 +102,6 @@ The first time, run it from an elevated PowerShell with `-Firewall`, which lets 
 ```powershell
 & ([scriptblock]::Create((irm "https://raw.githubusercontent.com/zlx2019/lanroam/main/scripts/windows/update.ps1?$(Get-Random)"))) -Firewall
 ```
-
-### 🍎 macOS
-
-No builds yet: [build it from source](#-build-from-source). On first launch, Lanroam walks you through the **Accessibility** and **Input Monitoring** permissions it needs to capture and inject input.
-
-> Development builds are not signed. Windows SmartScreen may ask for confirmation before running `Lanroam.exe`.
 
 ## 🔒 Security
 
@@ -111,16 +122,22 @@ See [SECURITY.md](./SECURITY.md) for the full list and how to report a vulnerabi
 Lanroam needs **Accessibility** and **Input Monitoring** under System Settings → Privacy & Security, and macOS applies them only after the app restarts (Lanroam offers to). When you use the CLI, it is your terminal that needs them.
 
 **The permissions stopped working after an update (macOS).**
-Development builds are only ad-hoc signed, which ties the grants to the exact binary, so every new build invalidates them, and re-ticking the stale entry does nothing. Remove Lanroam from both lists, launch it again, grant the fresh entries, then restart Lanroam.
+Builds are only ad-hoc signed for now, which ties the grants to the exact binary, so every new build invalidates them, and re-ticking the stale entry does nothing. Remove Lanroam from both lists, launch it again, grant the fresh entries, then restart Lanroam.
 
 **Devices never show up on macOS.**
 macOS 15+ asks for **Local Network** permission on first launch. It must be allowed, otherwise discovery fails silently. Re-enable it under System Settings → Privacy & Security → Local Network.
 
 **Devices never show up on Windows.**
-Discovery and control need inbound firewall rules. Run the update script once with `-Firewall` as shown above, or allow `Lanroam.exe` for private networks when Windows asks.
+Discovery and control need an inbound firewall rule for private networks: the installer adds it (for a development build, run the update script once with `-Firewall` as shown above). Make sure Windows counts your network as **Private**, not Public.
 
 **The pointer crosses at the wrong place, or not at all.**
 The pointer only crosses where two screens touch in the layout. Open the layout, press **Identify screens** to see which screen is which, and drag them to match your desk.
+
+**Scrolling goes the wrong way on the other computer.**
+A Mac with natural scrolling scrolls a PC the other way round. On the computer being controlled, turn on **Settings → Keyboard & mouse → Reverse scrolling**; its scrolling speed is set there too.
+
+**The volume keys change the other computer's volume.**
+While you control another device, media and volume keys go there. To keep them on the computer in front of you, choose **This device** under **Settings → Keyboard & mouse → Media and volume keys**.
 
 **Some windows ignore the mouse and keyboard.**
 Secure input is out of reach: on Windows, the lock screen, UAC prompts and windows running as administrator cannot be controlled remotely; on macOS, secure input (password fields, terminals with Secure Keyboard Entry) stops the keyboard from being captured.

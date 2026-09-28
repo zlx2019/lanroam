@@ -46,14 +46,27 @@
 
 ## 📥 安装
 
-目前还没有正式版本，第一个版本会随桌面端应用一起发布。
+第一个版本发布后，从 [Releases](https://github.com/zlx2019/lanroam/releases) 下载。
 
-| 平台 | 系统要求 |
-|---|---|
-| macOS | macOS 13 Ventura 及以上 |
-| Windows | Windows 10 及以上，x64 |
+| 平台 | 系统要求 | 安装包 |
+|---|---|---|
+| macOS（Apple 芯片） | macOS 13 Ventura 及以上 | `Lanroam-x.y.z-macos-aarch64.dmg` |
+| macOS（Intel） | macOS 13 Ventura 及以上 | `Lanroam-x.y.z-macos-x64.dmg` |
+| Windows | Windows 10 及以上，x64 | `Lanroam-x.y.z-windows-x64-setup.exe` |
+
+每个版本也附带命令行节点（`lanroam-cli`），用法见 [CONTRIBUTING.md](./CONTRIBUTING.md#the-command-line-node)。
+
+### 🍎 macOS
+
+把 Lanroam 拖进「应用程序」。首次启动时，Lanroam 会引导你授予捕获和注入输入所需的**辅助功能**与**输入监控**权限。
 
 ### 🪟 Windows
+
+安装程序会在专用网络下为 Lanroam 放行防火墙，设备发现和控制都需要它。
+
+> 目前的安装包都没有签名。macOS 上第一次打开请右键点应用选**打开**（macOS 15 及以上：「系统设置 → 隐私与安全性」里点**仍要打开**），或者运行 `xattr -cr /Applications/Lanroam.app`；Windows SmartScreen 也可能弹出确认提示。
+
+### 🧪 开发版（Windows）
 
 每次推送都会构建应用（`Lanroam.exe`，免安装）和命令行节点（`lanroam-cli.exe`），并发布到滚动更新的 [`dev` 预发布版](https://github.com/zlx2019/lanroam/releases/tag/dev)。用下面的命令把最新版下载到 `%LOCALAPPDATA%\Lanroam\dev`：
 
@@ -66,12 +79,6 @@ irm "https://raw.githubusercontent.com/zlx2019/lanroam/main/scripts/windows/upda
 ```powershell
 & ([scriptblock]::Create((irm "https://raw.githubusercontent.com/zlx2019/lanroam/main/scripts/windows/update.ps1?$(Get-Random)"))) -Firewall
 ```
-
-### 🍎 macOS
-
-暂无构建包，请[从源码构建](#-从源码构建)。首次启动时，Lanroam 会引导你授予捕获和注入输入所需的**辅助功能**与**输入监控**权限。
-
-> 开发版未签名，运行 `Lanroam.exe` 前 Windows SmartScreen 可能会弹出确认提示。
 
 ## 🔒 安全
 
@@ -92,16 +99,22 @@ Lanroam 会转发按键、操控其他电脑的光标，所以细则需要讲明
 Lanroam 需要「系统设置 → 隐私与安全性」中的**辅助功能**和**输入监控**权限，而且 macOS 要等应用重启后才会生效（Lanroam 会提示你重启）。使用 CLI 时，需要授权的是你的终端。
 
 **更新版本后权限失效了（macOS）。**
-开发版只做了临时签名，授权与二进制本体绑定，每次新构建都会让旧授权作废 —— 而且在列表里重新勾选旧条目是没用的。请在两个列表中都移除 Lanroam，重新打开应用并授权新条目，然后重启 Lanroam。
+目前只做了临时签名，授权与二进制本体绑定，每次新构建都会让旧授权作废 —— 而且在列表里重新勾选旧条目是没用的。请在两个列表中都移除 Lanroam，重新打开应用并授权新条目，然后重启 Lanroam。
 
 **macOS 上始终看不到其他设备。**
 macOS 15+ 会在首次启动时申请**本地网络**权限 —— 必须允许，否则设备发现会静默失败。可在「系统设置 → 隐私与安全性 → 本地网络」中重新开启。
 
 **Windows 上始终看不到其他设备。**
-设备发现和控制都需要入站防火墙规则。按上文加上 `-Firewall` 运行一次更新脚本，或在 Windows 询问时允许 `Lanroam.exe` 在专用网络下通信。
+设备发现和控制都需要专用网络下的入站防火墙规则：安装程序会自动添加（开发版请按上文加上 `-Firewall` 运行一次更新脚本）。另外请确认 Windows 把当前网络识别为**专用网络**，而不是公用网络。
 
 **光标穿越的位置不对，或者穿不过去。**
 只有布局里相接的两块屏幕之间才能穿越。打开布局，点**识别屏幕**看清每块屏幕对应哪台设备，再拖成和桌面一致的摆放。
+
+**在另一台电脑上滚动方向是反的。**
+开了「自然滚动」的 Mac 控制 PC 时，滚动方向会反过来。在被控制的那台电脑上打开「设置 → 键盘与鼠标 → 反转滚动方向」，滚动速度也在那里调。
+
+**音量键调的是另一台电脑的音量。**
+控制其他设备时，媒体键和音量键默认发给被控设备。想留在眼前这台电脑上，在「设置 → 键盘与鼠标 → 媒体键与音量键」里选**留在本机**。
 
 **有些窗口不响应鼠标和键盘。**
 安全输入无法远程操控：Windows 上的锁屏、UAC 提示和以管理员身份运行的窗口都控制不了；macOS 上的安全输入（密码框、开启了「安全键盘输入」的终端）会让键盘无法被捕获。
