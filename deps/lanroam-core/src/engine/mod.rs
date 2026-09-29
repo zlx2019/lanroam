@@ -144,9 +144,13 @@ pub enum EngineEvent {
         /// Whether it got in
         admitted: bool,
     },
-    /// Files dragged here are still arriving while their drop waits: show
-    /// how far, where they will land; `None` once the drop is over
-    Receiving(Option<Receiving>),
+    /// Files dragged here are still arriving, while their drop waits or
+    /// after it was made: show how far, where they land (a card per drop,
+    /// by [`Receiving::id`])
+    Receiving(Receiving),
+    /// The drop with this id is over (its files all there, or not coming):
+    /// its card goes
+    ReceivingEnded(u64),
     /// A drag of files could not come here
     DragFailed {
         /// Why (a [`drag_failed`] code)

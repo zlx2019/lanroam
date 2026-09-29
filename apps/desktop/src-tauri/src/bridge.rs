@@ -153,6 +153,10 @@ async fn on_event(app: &AppHandle, event: EngineEvent) {
             overlay::receiving(app, receiving);
             return;
         }
+        EngineEvent::ReceivingEnded(id) => {
+            overlay::received(app, id);
+            return;
+        }
         // Said wherever the pointer is, whatever the hint setting: the
         // user expects the files
         EngineEvent::DragFailed { reason, name } => {

@@ -1779,12 +1779,12 @@ async fn a_folder_goes_over_whole() {
     assert_eq!(names(&paths), ["shots"]);
 
     b.expect("the drop", |event| match event {
-        EngineEvent::Receiving(Some(receiving)) => {
+        EngineEvent::Receiving(receiving) => {
             assert_eq!((receiving.name.as_str(), receiving.count), ("shots", 1));
             assert_eq!(receiving.total, (24 << 20) + 2);
             None
         }
-        EngineEvent::Receiving(None) => Some(()),
+        EngineEvent::ReceivingEnded(_) => Some(()),
         _ => None,
     })
     .await;
@@ -1821,20 +1821,25 @@ async fn an_early_drop_frees_the_pointer() {
     let (_, paths) = b.armed().await;
 
     // Dropped: the card says how far the files are, with no Esc to cancel
-    b.expect("the early drop", |event| match event {
-        EngineEvent::Receiving(Some(receiving)) if !receiving.cancel => Some(()),
-        _ => None,
-    })
-    .await;
+    let id = b
+        .expect("the early drop", |event| match event {
+            EngineEvent::Receiving(receiving) if !receiving.cancel => Some(receiving.id),
+            _ => None,
+        })
+        .await;
     b.injected(&Injected::Button(MouseButton::Left, false))
         .await;
     tokio::time::sleep(SETTLE).await;
     assert!(!a.input.awaiting_drop());
 
-    b.expect("the files delivered", |event| {
-        matches!(event, EngineEvent::Receiving(None)).then_some(())
-    })
-    .await;
+    // The card of this drop goes, and only it
+    let ended = b
+        .expect("the files delivered", |event| match event {
+            EngineEvent::ReceivingEnded(ended) => Some(*ended),
+            _ => None,
+        })
+        .await;
+    assert_eq!(ended, id);
     let calls = b.drag.calls();
     assert!(
         calls
@@ -1969,14 +1974,14 @@ async fn a_promise_nothing_takes_ends() {
     a.input.left(false);
     let id = b
         .expect("the early drop", |event| match event {
-            EngineEvent::Receiving(Some(receiving)) if !receiving.cancel => Some(receiving.id),
+            EngineEvent::Receiving(receiving) if !receiving.cancel => Some(receiving.id),
             _ => None,
         })
         .await;
 
     b.drag.end(id, false);
     b.expect("the card gone", |event| {
-        matches!(event, EngineEvent::Receiving(None)).then_some(())
+        matches!(event, EngineEvent::ReceivingEnded(_)).then_some(())
     })
     .await;
     let reason = b
@@ -2007,14 +2012,14 @@ async fn a_dropped_drag_is_cancelled_from_its_card() {
     let (_, paths) = b.armed().await;
     let id = b
         .expect("the early drop", |event| match event {
-            EngineEvent::Receiving(Some(receiving)) if !receiving.cancel => Some(receiving.id),
+            EngineEvent::Receiving(receiving) if !receiving.cancel => Some(receiving.id),
             _ => None,
         })
         .await;
 
     b.engine.cancel_drop(id).unwrap();
     b.expect("the card gone", |event| {
-        matches!(event, EngineEvent::Receiving(None)).then_some(())
+        matches!(event, EngineEvent::ReceivingEnded(_)).then_some(())
     })
     .await;
     assert!(b.drag.calls().contains(&DragCall::Deliver(id, false)));

@@ -5,17 +5,17 @@
 //! What they show is a scene per display, made of parts that come and go
 //! on their own: this device's number (every display), a hint and a lit
 //! edge (one display each, for a moment), a dimmed screen (every display,
-//! until turned off) and the files of a waiting drop still arriving (one
-//! display, until they are there). A window is shown while its scene has
+//! until turned off) and a card for each drop whose files are still
+//! arriving (on the display it lands on, until they are there). A window is shown while its scene has
 //! anything in it.
 //!
 //! The windows are created on first use and then only shown and hidden. A
 //! freshly created page may miss the event that asked for it, so it also
 //! asks for its scene once loaded ([`scene_of`]).
 //!
-//! The card of a drop still arriving takes clicks (its button cancels it):
-//! its page tells where it is ([`hot_area`]), and while it does, the
-//! pointer is watched and the window takes clicks while it is over there.
+//! The card of a drop made takes clicks (its button cancels it): its page
+//! tells where the cards are ([`hot_areas`]), and while there are any, the
+//! pointer is watched and the window takes clicks while it is over one.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -57,8 +57,8 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 /// or leave an older scene on screen
 static APPLYING: Mutex<()> = Mutex::new(());
 
-/// Where an overlay takes clicks: its window's label, and the area
-static HOT: Mutex<Option<(String, AreaDto)>> = Mutex::new(None);
+/// Where the overlays take clicks: a window's label, and an area of it
+static HOT: Mutex<Vec<(String, AreaDto)>> = Mutex::new(Vec::new());
 
 /// A task watches the pointer over [`HOT`]
 static WATCHING: AtomicBool = AtomicBool::new(false);
@@ -258,8 +258,8 @@ pub struct SceneDto {
     pub glow: Option<GlowDto>,
     /// Darkened
     pub dim: bool,
-    /// Files of a waiting drop still arriving
-    pub receiving: Option<ReceivingDto>,
+    /// Drops whose files are still arriving, a card each
+    pub receiving: Vec<ReceivingDto>,
 }
 
 impl SceneDto {
@@ -269,7 +269,7 @@ impl SceneDto {
             && self.hint.is_none()
             && self.glow.is_none()
             && !self.dim
-            && self.receiving.is_none()
+            && self.receiving.is_empty()
     }
 }
 
@@ -284,8 +284,8 @@ pub struct Overlays {
     glow: Option<(usize, GlowDto)>,
     /// Every display
     dim: bool,
-    /// On one display, by index
-    receiving: Option<(usize, ReceivingDto)>,
+    /// A card per drop, each on one display, by index
+    receiving: Vec<(usize, ReceivingDto)>,
 }
 
 impl Overlays {
@@ -296,7 +296,12 @@ impl Overlays {
             hint: on_display(&self.hint, index),
             glow: on_display(&self.glow, index),
             dim: self.dim,
-            receiving: on_display(&self.receiving, index),
+            receiving: self
+                .receiving
+                .iter()
+                .filter(|(i, _)| *i == index)
+                .map(|(_, card)| card.clone())
+                .collect(),
         }
     }
 }
@@ -350,55 +355,74 @@ pub fn dim(app: &AppHandle, on: bool) {
     change(app, |o| std::mem::replace(&mut o.dim, on) != on);
 }
 
-/// Show how far the files of a waiting drop are, next to where it lands;
-/// `None` once it is over
-pub fn receiving(app: &AppHandle, receiving: Option<Receiving>) {
-    let part = receiving.and_then(|receiving| {
-        let (index, x, y) = on_overlay(app, receiving.at)?;
-        let dto = ReceivingDto {
-            id: receiving.id,
-            x,
-            y,
-            name: receiving.name,
-            count: receiving.count,
-            done: receiving.done,
-            total: receiving.total,
-            cancel: receiving.cancel,
-        };
-        Some((index, dto))
-    });
+/// Show how far the files of a drop are, next to where it lands: its card,
+/// new or updated
+pub fn receiving(app: &AppHandle, receiving: Receiving) {
+    let Some((index, x, y)) = on_overlay(app, receiving.at) else {
+        return;
+    };
+    let card = ReceivingDto {
+        id: receiving.id,
+        x,
+        y,
+        name: receiving.name,
+        count: receiving.count,
+        done: receiving.done,
+        total: receiving.total,
+        cancel: receiving.cancel,
+    };
     change(app, |o| {
-        std::mem::replace(&mut o.receiving, part.clone()) != part
+        match o
+            .receiving
+            .iter_mut()
+            .find(|(_, shown)| shown.id == card.id)
+        {
+            Some(shown) if *shown == (index, card.clone()) => false,
+            Some(shown) => {
+                *shown = (index, card);
+                true
+            }
+            None => {
+                o.receiving.push((index, card));
+                true
+            }
+        }
     });
 }
 
-/// Let the overlay window `label` take clicks in `area` (none: nowhere
-/// any more): only while the pointer is over it, letting them through
+/// The drop `id` is over: its card goes
+pub fn received(app: &AppHandle, id: u64) {
+    change(app, |o| {
+        let before = o.receiving.len();
+        o.receiving.retain(|(_, card)| card.id != id);
+        o.receiving.len() != before
+    });
+}
+
+/// Let the overlay window `label` take clicks in `areas` (none: nowhere
+/// any more): only while the pointer is over one, letting them through
 /// everywhere else
-pub fn hot_area(app: &AppHandle, label: &str, area: Option<AreaDto>) {
+pub fn hot_areas(app: &AppHandle, label: &str, areas: Vec<AreaDto>) {
+    let any = !areas.is_empty();
     {
         let mut hot = lock(&HOT);
-        match area {
-            Some(area) => *hot = Some((label.to_string(), area)),
-            None => {
-                hot.take_if(|(hot, _)| hot == label);
-            }
-        }
+        hot.retain(|(hot, _)| hot != label);
+        hot.extend(areas.into_iter().map(|area| (label.to_string(), area)));
     }
-    if area.is_some() && !WATCHING.swap(true, Ordering::SeqCst) {
+    if any && !WATCHING.swap(true, Ordering::SeqCst) {
         tauri::async_runtime::spawn(watch_hot(app.clone()));
     }
 }
 
-/// Let the overlay whose hot area the pointer is over take clicks, and no
+/// Let the overlay with a hot area under the pointer take clicks, and no
 /// other, until there is no hot area
 async fn watch_hot(app: AppHandle) {
     let mut taking: Option<String> = None;
     loop {
         let hot = lock(&HOT).clone();
         let over = hot
-            .as_ref()
-            .filter(|(label, area)| pointer_in(&app, label, area))
+            .iter()
+            .find(|(label, area)| pointer_in(&app, label, area))
             .map(|(label, _)| label.clone());
         if over != taking {
             if let Some(label) = &taking {
@@ -409,10 +433,10 @@ async fn watch_hot(app: AppHandle) {
             }
             taking = over;
         }
-        if hot.is_none() {
+        if hot.is_empty() {
             WATCHING.store(false, Ordering::SeqCst);
             // Unless one came meanwhile, and no other task took it
-            if lock(&HOT).is_none() || WATCHING.swap(true, Ordering::SeqCst) {
+            if lock(&HOT).is_empty() || WATCHING.swap(true, Ordering::SeqCst) {
                 return;
             }
         }

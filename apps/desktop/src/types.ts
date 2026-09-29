@@ -293,7 +293,8 @@ export interface SceneDto {
   hint: { id: number; hint: Hint } | null;
   glow: { id: number; edge: Edge } | null;
   dim: boolean;
-  receiving: ReceivingDto | null;
+  /** Drops whose files are still arriving, a card each */
+  receiving: ReceivingDto[];
 }
 
 /** What the window asks the keyboard and mouse to do */

@@ -93,7 +93,7 @@ pub fn run() {
             commands::place,
             commands::identify,
             commands::get_overlay,
-            commands::set_overlay_area,
+            commands::set_overlay_areas,
             commands::cancel_drop,
             commands::rename,
             commands::set_swap,

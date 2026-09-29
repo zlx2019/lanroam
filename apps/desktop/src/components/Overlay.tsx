@@ -1,9 +1,9 @@
 // An on-screen overlay: shown by the backend over a whole display, clicks
 // pass through it. It draws the display's scene: this device's number when
 // the group identifies its screens, a hint near the bottom, the edge the
-// pointer came in by, a dimmed screen, how far the files of a drop are
-// (its card's button cancels a drop made already). Its colors are fixed,
-// whatever the theme: it sits on top of any desktop.
+// pointer came in by, a dimmed screen, how far the files of each drop are
+// (a card each; its button cancels a drop made already). Its colors are
+// fixed, whatever the theme: it sits on top of any desktop.
 
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
@@ -58,40 +58,114 @@ export function Overlay() {
         </div>
       )}
       {hint && <HintLine key={hint.id} hint={hint.hint} />}
-      {receiving && <Receiving receiving={receiving} />}
+      {receiving.length > 0 && <Cards cards={receiving} />}
     </div>
   );
 }
 
-/** Where the chip sits from the drop point, and the room it takes */
-const CHIP = { offset: 18, width: 290, height: 76 };
+/** Where a card sits from its drop point, the room it takes, and the gap between two stacked */
+const CHIP = { offset: 18, width: 290, height: 76, gap: 8 };
+
+/** A card, and where it goes */
+interface Placed {
+  card: ReceivingDto;
+  left: number;
+  top: number;
+}
 
 /**
- * The files of a drop still arriving, next to where it lands. Waiting, Esc
- * cancels it (the pointer holds still); dropped, the card's button does:
- * the card then takes clicks, which the backend lets through elsewhere
+ * The cards of the drops whose files are still arriving, stacked where two
+ * would overlap. The cards of drops made take clicks (their buttons): the
+ * backend lets them through everywhere else
  */
-function Receiving({ receiving }: { receiving: ReceivingDto }) {
-  const { t } = useI18n();
-  const { id, x, y, name, count, done, total, cancel } = receiving;
-  const card = useRef<HTMLDivElement>(null);
-  const percent = total > 0 ? Math.min(100, Math.floor((done / total) * 100)) : 0;
-  const what = several(name, count, t);
-  // Below and right of the drop point, kept on the display
-  const left = Math.max(0, Math.min(x + CHIP.offset, window.innerWidth - CHIP.width));
-  const top = Math.max(0, Math.min(y + CHIP.offset, window.innerHeight - CHIP.height));
+function Cards({ cards }: { cards: ReceivingDto[] }) {
+  const placed = stack(cards);
+  const shown = useRef(new Map<number, HTMLDivElement>());
+  // Changes when a card comes, goes, moves or becomes clickable
+  const layout = placed.map(({ card, left, top }) => `${card.id}:${left}:${top}:${card.cancel}`).join(",");
 
   useLayoutEffect(() => {
-    const at = card.current?.getBoundingClientRect();
-    if (cancel || !at) return;
-    api.setOverlayArea({ x: at.left, y: at.top, width: at.width, height: at.height }).catch(console.error);
-    return () => {
-      api.setOverlayArea(null).catch(console.error);
-    };
-  }, [left, top, cancel]);
+    const areas = placed
+      .filter(({ card }) => !card.cancel)
+      .flatMap(({ card }) => {
+        const at = shown.current.get(card.id)?.getBoundingClientRect();
+        return at ? [{ x: at.left, y: at.top, width: at.width, height: at.height }] : [];
+      });
+    api.setOverlayAreas(areas).catch(console.error);
+    // `placed` follows `layout`
+  }, [layout]);
+
+  useEffect(
+    () => () => {
+      api.setOverlayAreas([]).catch(console.error);
+    },
+    [],
+  );
 
   return (
-    <div ref={card} className="ov-receiving" style={{ left, top, width: CHIP.width }}>
+    <>
+      {placed.map(({ card, left, top }) => (
+        <Receiving
+          key={card.id}
+          receiving={card}
+          left={left}
+          top={top}
+          place={(element) => {
+            if (element) shown.current.set(card.id, element);
+            else shown.current.delete(card.id);
+          }}
+        />
+      ))}
+    </>
+  );
+}
+
+/**
+ * Where each card goes: below and right of its drop point, kept on the
+ * display, and below the earlier cards it would overlap
+ */
+function stack(cards: ReceivingDto[]): Placed[] {
+  const placed: Placed[] = [];
+  for (const card of [...cards].sort((a, b) => a.id - b.id)) {
+    const left = clamp(card.x + CHIP.offset, 0, window.innerWidth - CHIP.width);
+    let top = clamp(card.y + CHIP.offset, 0, window.innerHeight - CHIP.height);
+    for (;;) {
+      const under = placed.find((p) => Math.abs(p.left - left) < CHIP.width && Math.abs(p.top - top) < CHIP.height);
+      if (!under) break;
+      top = under.top + CHIP.height + CHIP.gap;
+    }
+    placed.push({ card, left, top: Math.min(top, window.innerHeight - CHIP.height) });
+  }
+  return placed;
+}
+
+/** `value`, kept between `min` and `max` */
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(value, max));
+}
+
+/**
+ * The files of a drop still arriving, next to where it lands (`left`,
+ * `top`). Waiting, Esc cancels it (the pointer holds still); dropped, the
+ * card's button does
+ */
+function Receiving({
+  receiving,
+  left,
+  top,
+  place,
+}: {
+  receiving: ReceivingDto;
+  left: number;
+  top: number;
+  place: (element: HTMLDivElement | null) => void;
+}) {
+  const { t } = useI18n();
+  const { id, name, count, done, total, cancel } = receiving;
+  const percent = total > 0 ? Math.min(100, Math.floor((done / total) * 100)) : 0;
+  const what = several(name, count, t);
+  return (
+    <div ref={place} className="ov-receiving" style={{ left, top, width: CHIP.width }}>
       <IncomingIcon />
       <div className="ov-receiving-body">
         <div className="ov-receiving-line">

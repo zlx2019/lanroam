@@ -465,6 +465,7 @@ fn print_event(event: &EngineEvent, seen: &mut Option<Arc<GroupDoc>>) {
         // files (it has a desktop to drag on)
         EngineEvent::Recorded(_)
         | EngineEvent::Receiving(_)
+        | EngineEvent::ReceivingEnded(_)
         | EngineEvent::DragFailed { .. }
         | EngineEvent::CopiedFiles(_) => {}
         EngineEvent::Group(Some(doc)) => {

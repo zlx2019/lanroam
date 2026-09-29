@@ -46,7 +46,7 @@ export const api = {
   /** What this overlay window shows right now */
   getOverlay: () => invoke<SceneDto>("get_overlay"),
   /** Where the calling overlay takes clicks, if anywhere */
-  setOverlayArea: (area: AreaDto | null) => invoke<void>("set_overlay_area", { area }),
+  setOverlayAreas: (areas: AreaDto[]) => invoke<void>("set_overlay_areas", { areas }),
   /** Cancel a drop whose files are still coming */
   cancelDrop: (id: number) => invoke<void>("cancel_drop", { id }),
   /** Rename this device */

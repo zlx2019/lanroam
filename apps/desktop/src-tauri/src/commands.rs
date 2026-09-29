@@ -179,15 +179,15 @@ pub fn get_overlay(app: AppHandle, window: tauri::WebviewWindow) -> SceneDto {
     overlay::scene_of(&app, window.label())
 }
 
-/// Where the calling overlay window takes clicks, if anywhere (the card of a
-/// drop)
+/// Where the calling overlay window takes clicks (the cards of drops made),
+/// if anywhere
 #[tauri::command]
-pub fn set_overlay_area(
+pub fn set_overlay_areas(
     app: AppHandle,
     window: tauri::WebviewWindow,
-    area: Option<overlay::AreaDto>,
+    areas: Vec<overlay::AreaDto>,
 ) {
-    overlay::hot_area(&app, window.label(), area);
+    overlay::hot_areas(&app, window.label(), areas);
 }
 
 /// Cancel a drop whose files are still coming (the button on its card)

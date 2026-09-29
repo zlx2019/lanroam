@@ -421,7 +421,7 @@ impl Input {
         if let Some(delivering) = self.drags.delivering.iter_mut().find(|d| d.id == id) {
             (delivering.receiving.done, delivering.receiving.total) = (done, total);
             let receiving = delivering.receiving.clone();
-            let _ = self.events.send(EngineEvent::Receiving(Some(receiving)));
+            let _ = self.events.send(EngineEvent::Receiving(receiving));
             return;
         }
         let Some(carried) = self.drags.carried.as_mut().filter(|c| c.id == id) else {
@@ -825,9 +825,7 @@ impl Input {
             cancel: false,
             ..carried.receiving
         };
-        let _ = self
-            .events
-            .send(EngineEvent::Receiving(Some(receiving.clone())));
+        let _ = self.events.send(EngineEvent::Receiving(receiving.clone()));
         self.drags.delivering.push(Delivering {
             id: carried.id,
             dir: carried.dir,
@@ -863,7 +861,7 @@ impl Input {
         if let Some(dir) = delivering.dir {
             discard_later(dir, if ok { KEEP_AFTER_DROP } else { Duration::ZERO });
         }
-        let _ = self.events.send(EngineEvent::Receiving(None));
+        let _ = self.events.send(EngineEvent::ReceivingEnded(id));
         true
     }
 
@@ -997,7 +995,7 @@ impl Input {
         carried.pull.abort();
         if carried.release.is_some() {
             self.stop_waiting(&carried);
-            let _ = self.events.send(EngineEvent::Receiving(None));
+            let _ = self.events.send(EngineEvent::ReceivingEnded(carried.id));
         }
         Some(carried)
     }
@@ -1014,7 +1012,7 @@ impl Input {
     fn show_receiving(&self) {
         if let Some(carried) = &self.drags.carried {
             let receiving = carried.receiving.clone();
-            let _ = self.events.send(EngineEvent::Receiving(Some(receiving)));
+            let _ = self.events.send(EngineEvent::Receiving(receiving));
         }
     }
 
