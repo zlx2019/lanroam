@@ -1,8 +1,12 @@
 """Draw the tray icons, one per status: python3 generate.py (needs rsvg-convert).
 
-Two screens side by side, the filled one holding the pointer; a slash for
-paused, an incoming arrow for controlled, a padlock for locked. Shapes, not
-colors, tell the statuses apart: macOS tints its monochrome templates.
+The brand's capsule mouse under two signal waves, on its 44-unit grid. Shapes,
+not colors, tell the statuses apart, so the macOS monochrome templates read
+too: hollow is here, filled is the pointer on another device, a slash is
+paused, an arrow pointing in is being driven, a padlock is locked (on a
+hollow mouse here, a filled one on another device). Idle, controlling and
+paused are the brand's own drawings; the others cut a badge into the mouse's
+lower right.
 """
 
 import pathlib
@@ -10,65 +14,109 @@ import subprocess
 
 HERE = pathlib.Path(__file__).parent
 
-# The accent color (Windows); templates are black
-ACCENT = "#3ccfbe"
+# Signal waves, mouse body and scroll wheel (the mouse is centered on x = 22)
+WAVES = '<path d="M18.45 11.23A4.5 4.5 0 0 1 25.55 11.23"/><path d="M14.51 8.15A9.5 9.5 0 0 1 29.49 8.15"/>'
+MOUSE = '<rect x="15.5" y="18" width="13" height="21" rx="6.5"/>'
+WHEEL = "M22 23.4v3.2"
+# The pause slash, corner to corner
+SLASH = "M8 6.5L36 38.5"
 
-# Status -> (pointer away from this device, extra marks)
+# Badges as (drawing, knockout): {c} is the ink; the knockout is the badge
+# grown by a gap, cleared out of the mouse so the badge reads over it
+ARROW_PATH = "M37 35H30.5M33.5 32 30.5 35 33.5 38"
+ARROW = (
+    f'<path d="{ARROW_PATH}" fill="none" stroke="{{c}}" stroke-width="2.4" '
+    'stroke-linecap="round" stroke-linejoin="round"/>',
+    f'<path d="{ARROW_PATH}" fill="none" stroke="#000" stroke-width="5.6" '
+    'stroke-linecap="round" stroke-linejoin="round"/>',
+)
+LOCK_BODY = 'x="28" y="31.5" width="9" height="8" rx="1.6"'
+LOCK_SHACKLE = "M30.2 31.7v-2.3a2.3 2.3 0 0 1 4.6 0v2.3"
+LOCK = (
+    f'<rect {LOCK_BODY} fill="{{c}}"/>'
+    f'<path d="{LOCK_SHACKLE}" fill="none" stroke="{{c}}" stroke-width="2.2"/>',
+    f'<rect {LOCK_BODY} fill="#000" stroke="#000" stroke-width="3.2"/>'
+    f'<path d="{LOCK_SHACKLE}" fill="none" stroke="#000" stroke-width="5.4"/>',
+)
+NO_BADGE = ("", "")
+
+# The Windows backdrops: the brand's Signal, and a gray for paused
+SIGNAL = "#12B5A2"
+GRAY = "#7C919A"
+
+# Status -> (filled mouse, scroll wheel, slash, badge, Windows backdrop)
 STATUSES = {
-    "idle": (False, ""),
-    "controlling": (True, ""),
-    "controlled": (
-        False,
-        '<path d="M11.8 2.4H6.4M8 .8 6.4 2.4 8 4" stroke="{c}" stroke-width="1.3" '
-        'fill="none" stroke-linecap="round" stroke-linejoin="round"/>',
-    ),
-    "paused": (False, '<path d="M2 14.5 16 1.5" stroke="{c}" stroke-width="1.6" stroke-linecap="round"/>'),
-    "locked": (
-        True,
-        '<rect x="12" y="1" width="4" height="3" rx=".7" fill="{c}"/>'
-        '<path d="M12.9 1.2v-.3a1.1 1.1 0 0 1 2.2 0v.3" stroke="{c}" stroke-width=".9" fill="none"/>',
-    ),
+    "idle": (False, True, False, NO_BADGE, SIGNAL),
+    "controlling": (True, True, False, NO_BADGE, SIGNAL),
+    "controlled": (False, True, False, ARROW, SIGNAL),
+    "paused": (False, False, True, NO_BADGE, GRAY),
+    "locked": (True, True, False, LOCK, SIGNAL),
+    "locked-home": (False, True, False, LOCK, SIGNAL),
 }
 
+# macOS: tray-icon draws the template 18 pt tall whatever its size, so the
+# template is cropped to the glyphs (waves top to mouse bottom) and drawn at
+# 2x; one width for every status, centered on the mouse, so the menu bar item
+# keeps its width as the status changes
+TEMPLATE_PX = (32, 36)
+TEMPLATE_TOP, TEMPLATE_BOTTOM = 2.75, 40.75
 
-def svg(away: bool, extra: str, color: str) -> str:
-    """One icon, square (the glyph is 18 x 16)"""
-    fill = lambda filled: color if filled else "none"  # noqa: E731
-    # The slash cuts a gap through the screens so it reads over a filled one
-    mask = ""
-    screens_mask = ""
-    if "M2 14.5" in extra:
-        mask = (
-            '<mask id="gap"><rect x="0" y="-1" width="18" height="18" fill="#fff"/>'
-            '<path d="M2 14.5 16 1.5" stroke="#000" stroke-width="3.6" stroke-linecap="round"/></mask>'
-        )
-        screens_mask = ' mask="url(#gap)"'
+# Windows: the whole 44-unit tile
+COLORED_PX = (64, 64)
+
+
+def template_box() -> tuple[float, float, float, float]:
+    """The template's view box, in grid units, for its pixel size"""
+    height = TEMPLATE_BOTTOM - TEMPLATE_TOP
+    width = height * TEMPLATE_PX[0] / TEMPLATE_PX[1]
+    return (22 - width / 2, TEMPLATE_TOP, width, height)
+
+
+def svg(status: tuple, ink: str, backdrop: str | None, box: tuple[float, float, float, float]) -> str:
+    """One icon for `status`, cropped to `box`; `backdrop` is a tile behind the glyph"""
+    filled, wheel, slash, (badge, knockout), _ = status
+    # Shapes cleared out of the mouse: the wheel of a filled one, a gap
+    # around the slash so it reads over the mouse, and the badge's gap
+    cuts = knockout
+    if filled and wheel:
+        cuts += f'<path d="{WHEEL}" stroke="#000" stroke-width="3" stroke-linecap="round"/>'
+    if slash:
+        cuts += f'<path d="{SLASH}" stroke="#000" stroke-width="6.4" stroke-linecap="round"/>'
+    mask = (
+        '<mask id="cut" maskUnits="userSpaceOnUse" x="0" y="0" width="44" height="44">'
+        f'<rect width="44" height="44" fill="#fff"/>{cuts}</mask>'
+    )
+    body = MOUSE.replace("/>", f' fill="{ink}"/>') if filled else MOUSE
+    if wheel and not filled:
+        body += f'<path d="{WHEEL}"/>'
+    glyph = (
+        f'<g mask="url(#cut)" fill="none" stroke="{ink}" stroke-width="3" '
+        f'stroke-linecap="round" stroke-linejoin="round">{WAVES}{body}</g>'
+    )
+    if slash:
+        glyph += f'<path d="{SLASH}" stroke="{ink}" stroke-width="3" stroke-linecap="round" fill="none"/>'
+    ground = f'<rect width="44" height="44" rx="10" fill="{backdrop}"/>' if backdrop else ""
+    view = " ".join(f"{v:g}" for v in box)
     return (
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -1 18 18">'
-        f"<defs>{mask}</defs>"
-        f"<g{screens_mask}>"
-        f'<rect x="1" y="5" width="7" height="6" rx="1.4" stroke="{color}" stroke-width="1.4" fill="{fill(not away)}"/>'
-        f'<rect x="10" y="5" width="7" height="6" rx="1.4" stroke="{color}" stroke-width="1.4" fill="{fill(away)}"/>'
-        "</g>"
-        f"{extra.format(c=color)}"
-        "</svg>"
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{view}">'
+        f"{ground}<defs>{mask}</defs>{glyph}{badge.format(c=ink)}</svg>"
     )
 
 
-def render(markup: str, out: pathlib.Path, size: int) -> None:
+def render(markup: str, out: pathlib.Path, size: tuple[int, int]) -> None:
     """Rasterize with rsvg-convert"""
     subprocess.run(
-        ["rsvg-convert", "-w", str(size), "-h", str(size), "-o", str(out)],
+        ["rsvg-convert", "-w", str(size[0]), "-h", str(size[1]), "-o", str(out)],
         input=markup.encode(),
         check=True,
     )
 
 
 def main() -> None:
-    """Every status, template (macOS, 18 pt at 4x) and colored (Windows)"""
-    for name, (away, extra) in STATUSES.items():
-        render(svg(away, extra, "#000"), HERE / f"{name}-template.png", 72)
-        render(svg(away, extra, ACCENT), HERE / f"{name}.png", 64)
+    """Every status, template (macOS) and colored (Windows)"""
+    for name, status in STATUSES.items():
+        render(svg(status, "#000", None, template_box()), HERE / f"{name}-template.png", TEMPLATE_PX)
+        render(svg(status, "#FFF", status[4], (0, 0, 44, 44)), HERE / f"{name}.png", COLORED_PX)
 
 
 if __name__ == "__main__":

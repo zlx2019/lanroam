@@ -3,8 +3,9 @@
 //!
 //! The menu is rebuilt from each snapshot: members come and go, and the
 //! texts follow the language setting. The icon's shape follows where input
-//! is (two screens, the filled one holding the pointer), so it reads
-//! without color in a monochrome menu bar.
+//! is (a mouse under signal waves: hollow here, filled on another device,
+//! with a badge or a slash for the rest), so it reads without color in a
+//! monochrome menu bar.
 
 use std::sync::Mutex;
 
@@ -50,13 +51,15 @@ enum Status {
     Paused,
     /// Locked on another device
     Locked,
+    /// Locked here: nothing crosses, like paused, until unlocked
+    LockedHome,
 }
 
 /// The status the icon shows now, to change it only when that changes
 static SHOWN: Mutex<Option<Status>> = Mutex::new(None);
 
 /// Picks an icon file by status: a monochrome template on macOS (the menu
-/// bar tints it), the accent color elsewhere so it reads on dark and light
+/// bar tints it), a colored tile elsewhere so it reads on dark and light
 /// taskbars alike
 macro_rules! icon_bytes {
     ($name:literal) => {{
@@ -76,11 +79,13 @@ fn icon(status: Status) -> tauri::Result<Image<'static>> {
         Status::Controlled => icon_bytes!("controlled"),
         Status::Paused => icon_bytes!("paused"),
         Status::Locked => icon_bytes!("locked"),
+        Status::LockedHome => icon_bytes!("locked-home"),
     };
     Image::from_bytes(bytes)
 }
 
-/// Where input is in `snapshot`
+/// Where input is in `snapshot`; here, paused wins over locked, as in the
+/// menu, where the lock is greyed out while paused
 fn status(snapshot: &Snapshot) -> Status {
     let control = &snapshot.control;
     match control.mode {
@@ -88,6 +93,7 @@ fn status(snapshot: &Snapshot) -> Status {
         ControlMode::Controlling => Status::Controlling,
         ControlMode::Controlled => Status::Controlled,
         ControlMode::Idle if control.paused => Status::Paused,
+        ControlMode::Idle if control.locked => Status::LockedHome,
         ControlMode::Idle => Status::Idle,
     }
 }
