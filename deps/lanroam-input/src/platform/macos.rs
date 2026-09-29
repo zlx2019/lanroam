@@ -111,6 +111,14 @@ const SYSTEM_DEFINED: CGEventType = CGEventType(14);
 /// (`NX_SUBTYPE_AUX_CONTROL_BUTTONS`)
 const AUX_CONTROL_BUTTONS: i16 = 8;
 
+/// Field holding a system-defined event's subtype (undocumented: what
+/// `NSEvent.subtype` reads)
+const SYSTEM_SUBTYPE: CGEventField = CGEventField(99);
+
+/// Field holding a system-defined event's first data word (undocumented:
+/// what `NSEvent.data1` reads)
+const SYSTEM_DATA1: CGEventField = CGEventField(149);
+
 /// Key state of a media key event (`data1` bits 8..16): pressed
 const MEDIA_DOWN: isize = 0x0A;
 
@@ -913,14 +921,17 @@ fn translate(ty: CGEventType, event: &CGEvent) -> Translated {
 
 /// The media key a system-defined event reports, if it is one Lanroam
 /// forwards
+///
+/// Read from the event's fields, not through `NSEvent`: turning the event
+/// Caps Lock makes into an `NSEvent` runs the input method's Caps Lock
+/// switching, which must run on the main thread and aborts the process on
+/// the capture thread.
 fn media_key(event: &CGEvent) -> Option<InputEvent> {
-    // NSEvent hands out autoreleased objects; see `post_media`
-    let (subtype, data1) = autoreleasepool(|_| {
-        NSEvent::eventWithCGEvent(event).map(|event| (event.subtype().0, event.data1()))
-    })?;
-    if subtype != AUX_CONTROL_BUTTONS {
+    let ev = Some(event);
+    if CGEvent::integer_value_field(ev, SYSTEM_SUBTYPE) != i64::from(AUX_CONTROL_BUTTONS) {
         return None;
     }
+    let data1 = isize::try_from(CGEvent::integer_value_field(ev, SYSTEM_DATA1)).ok()?;
     let key = (data1 >> 16) & 0xFFFF;
     let down = match (data1 >> 8) & 0xFF {
         MEDIA_DOWN => true,
@@ -1013,10 +1024,11 @@ mod tests {
         assert_eq!(nx_key(usage::MEDIA_NEXT), Some(17));
     }
 
-    /// Media key events read back as the keys they were made for
+    /// Media key events read back as the keys they were made for: the
+    /// undocumented fields `media_key` reads hold what `NSEvent` was given
     #[test]
     fn media_key_events() {
-        let event = |key: isize, state: isize| {
+        let event_of = |subtype: i16, key: isize, state: isize| {
             autoreleasepool(|_| {
                 NSEvent::otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2(
                     NSEventType::SystemDefined,
@@ -1025,7 +1037,7 @@ mod tests {
                     0.0,
                     0,
                     None,
-                    AUX_CONTROL_BUTTONS,
+                    subtype,
                     (key << 16) | (state << 8),
                     -1,
                 )
@@ -1033,6 +1045,7 @@ mod tests {
                 .unwrap()
             })
         };
+        let event = |key: isize, state: isize| event_of(AUX_CONTROL_BUTTONS, key, state);
         assert_eq!(
             media_key(&event(19, MEDIA_DOWN)),
             Some(InputEvent::Key {
@@ -1049,6 +1062,10 @@ mod tests {
         );
         // Brightness up: not forwarded
         assert_eq!(media_key(&event(2, MEDIA_DOWN)), None);
+        // Caps Lock (NX_KEYTYPE_CAPS_LOCK), which comes as one too
+        assert_eq!(media_key(&event(4, MEDIA_DOWN)), None);
+        // Another subtype with a media key's data
+        assert_eq!(media_key(&event_of(7, 16, MEDIA_DOWN)), None);
     }
 
     /// Every modifier key code is in the key map
