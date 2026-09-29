@@ -47,15 +47,14 @@ use objc2_app_kit::{
     NSDraggingInfo, NSDraggingItem, NSDraggingSession, NSDraggingSource, NSEvent,
     NSFilePromiseProvider, NSFilePromiseProviderDelegate, NSPanel, NSPasteboard,
     NSPasteboardNameDrag, NSPasteboardTypeFileURL, NSPasteboardTypeString, NSPasteboardTypeURL,
-    NSPasteboardURLReadingFileURLsOnlyKey, NSPasteboardWriting, NSPopUpMenuWindowLevel,
-    NSRunningApplication, NSView, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
-    NSWorkspace,
+    NSPasteboardURLReadingFileURLsOnlyKey, NSPasteboardWriting, NSPopUpMenuWindowLevel, NSView,
+    NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
 };
 use objc2_core_foundation::{CFRetained, CFString};
 use objc2_core_graphics::{
     CGDisplayBounds, CGEvent, CGEventSource, CGEventSourceStateID, CGEventTapLocation, CGEventType,
     CGMainDisplayID, CGMouseButton, CGWindowListCopyWindowInfo, CGWindowListOption,
-    kCGNullWindowID, kCGWindowAlpha, kCGWindowBounds, kCGWindowOwnerPID,
+    kCGNullWindowID, kCGWindowAlpha, kCGWindowBounds, kCGWindowLayer, kCGWindowOwnerPID,
 };
 use objc2_foundation::{
     NSArray, NSCocoaErrorDomain, NSDictionary, NSError, NSNumber, NSObject, NSObjectProtocol,
@@ -76,8 +75,8 @@ const PROMISE_LIFE: Duration = Duration::from_secs(10 * 60);
 /// that does not has taken nothing
 const PROMISE_GRACE: Duration = Duration::from_secs(3);
 
-/// The app that takes a promise dropped on it
-const FINDER: &str = "com.apple.finder";
+/// The program of the app that takes a promise dropped on it
+const FINDER: &str = "/System/Library/CoreServices/Finder.app/Contents/MacOS/Finder";
 
 /// Type of a promised file, and of a promised folder
 const FILE_TYPE: &str = "public.data";
@@ -281,7 +280,10 @@ impl Dnd {
                 let at = NSEvent::mouseLocation();
                 let catcher = state.show_catcher(mtm, at);
                 state.hide_catcher_later();
+                // The drag looks again at what it is over, so that the
+                // release lands on the catcher, not where it was before
                 once_hit(catcher, at, move |_, state| {
+                    nudge();
                     (state.sink)(Event::Cancelling { id });
                 });
             } else {
@@ -295,7 +297,8 @@ impl Dnd {
 
     /// See [`crate::Dnd::takes`]: a promise lands only on Finder
     pub(crate) fn takes(&self, id: u64, at: Point) -> bool {
-        !lock(&self.promising).contains(&id) || finder_at(at)
+        let promising = lock(&self.promising).contains(&id);
+        !promising || finder_at(at)
     }
 
     /// Keep the promises of drag `id` asked for so far, or break them
@@ -547,19 +550,30 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Whether the window at `at` (Quartz coordinates), Lanroam's own left out,
-/// is Finder's: a folder, or the desktop
+/// Whether the window at `at` (Quartz coordinates) is Finder's: a folder,
+/// or the desktop. Asked of the window server and the kernel, not AppKit:
+/// any thread may ask
 fn finder_at(at: Point) -> bool {
-    objc2::rc::autoreleasepool(|_| {
-        owner_at(at)
-            .and_then(NSRunningApplication::runningApplicationWithProcessIdentifier)
-            .and_then(|app| app.bundleIdentifier())
-            .is_some_and(|bundle| bundle.to_string() == FINDER)
-    })
+    let owner = objc2::rc::autoreleasepool(|_| owner_at(at));
+    owner
+        .and_then(program_of)
+        .is_some_and(|program| program == FINDER)
 }
 
-/// The process owning the frontmost window at `at` (Quartz coordinates),
-/// Lanroam's own left out
+/// The program of process `pid`, if it can be asked
+fn program_of(pid: i32) -> Option<String> {
+    let mut path = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    // SAFETY: a buffer of the size given, which the call fills
+    let len = unsafe { libc::proc_pidpath(pid, path.as_mut_ptr().cast(), path.len() as u32) };
+    let len = usize::try_from(len).ok().filter(|len| *len > 0)?;
+    path.truncate(len);
+    String::from_utf8(path).ok()
+}
+
+/// The process owning the frontmost window at `at` (Quartz coordinates)
+/// that a drop there lands on: an app's window or the desktop. Above them
+/// lie the Dock's full-screen window, menus, the dragged image and
+/// Lanroam's overlays, which take no drop; Lanroam's own are left out too
 fn owner_at(at: Point) -> Option<i32> {
     let list = CGWindowListCopyWindowInfo(CGWindowListOption::OptionOnScreenOnly, kCGNullWindowID)?;
     // SAFETY: an array of dictionaries, toll-free bridged, alive as long as
@@ -571,7 +585,18 @@ fn owner_at(at: Point) -> Option<i32> {
     windows.iter().find_map(|window| {
         let window = window.downcast::<NSDictionary>().ok()?;
         // SAFETY: constant keys CoreGraphics defines
-        let (pid, alpha, bounds) = unsafe { (kCGWindowOwnerPID, kCGWindowAlpha, kCGWindowBounds) };
+        let (pid, layer, alpha, bounds) = unsafe {
+            (
+                kCGWindowOwnerPID,
+                kCGWindowLayer,
+                kCGWindowAlpha,
+                kCGWindowBounds,
+            )
+        };
+        // Normal windows are on layer 0, the desktop below
+        if number(&window, layer).is_none_or(|layer| layer.intValue() > 0) {
+            return None;
+        }
         let pid = number(&window, pid)?.intValue();
         if Some(pid) == own || number(&window, alpha).is_some_and(|a| a.doubleValue() <= 0.0) {
             return None;

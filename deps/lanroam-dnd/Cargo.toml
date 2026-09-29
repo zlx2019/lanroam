@@ -23,10 +23,10 @@ tracing = { workspace = true }
 # The completion handlers of file promises
 block2 = { workspace = true }
 dispatch2 = { workspace = true }
+libc = { workspace = true }
 objc2 = { workspace = true }
 objc2-app-kit = { workspace = true, features = [
     "block2",
-    "libc",
     "NSColor",
     "NSDragging",
     "NSDraggingItem",
@@ -37,7 +37,6 @@ objc2-app-kit = { workspace = true, features = [
     "NSPanel",
     "NSPasteboard",
     "NSResponder",
-    "NSRunningApplication",
     "NSView",
     "NSWindow",
     "NSWorkspace",

@@ -83,14 +83,15 @@ use windows::Win32::UI::Shell::{
     SHCreateShellItemArrayFromIDLists, SHCreateStdEnumFmtEtc, SHDoDragDrop,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GW_HWNDNEXT, GWL_EXSTYLE, GetCursorPos,
-    GetMessageW, GetTopWindow, GetWindow, GetWindowLongW, GetWindowRect, GetWindowThreadProcessId,
-    HWND_TOPMOST, IDC_NO, IsIconic, IsWindowVisible, KillTimer, LWA_ALPHA, LoadCursorW,
-    MA_NOACTIVATE, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW,
-    PostMessageW, QS_ALLINPUT, RegisterClassW, SW_HIDE, SWP_NOACTIVATE, SWP_SHOWWINDOW, SetCursor,
-    SetLayeredWindowAttributes, SetTimer, SetWindowPos, ShowWindow, TranslateMessage, WM_APP,
-    WM_LBUTTONDOWN, WM_MOUSEACTIVATE, WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, GA_ROOT, GW_HWNDNEXT, GWL_EXSTYLE,
+    GetAncestor, GetCursorPos, GetMessageW, GetWindow, GetWindowLongW, GetWindowRect,
+    GetWindowThreadProcessId, HWND_TOPMOST, IDC_NO, IsIconic, IsWindowVisible, KillTimer,
+    LWA_ALPHA, LoadCursorW, MA_NOACTIVATE, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx,
+    PM_REMOVE, PeekMessageW, PostMessageW, QS_ALLINPUT, RegisterClassW, SW_HIDE, SWP_NOACTIVATE,
+    SWP_SHOWWINDOW, SetCursor, SetLayeredWindowAttributes, SetTimer, SetWindowPos, ShowWindow,
+    TranslateMessage, WM_APP, WM_LBUTTONDOWN, WM_MOUSEACTIVATE, WM_TIMER, WNDCLASSW, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    WindowFromPoint,
 };
 use windows::core::{BOOL, HRESULT, PCWSTR, PWSTR, Ref, implement, w};
 
@@ -907,19 +908,30 @@ impl IDropSource_Impl for DropSource_Impl {
     }
 }
 
-/// The top-level window a drop at `at` lands on: the frontmost shown one
-/// holding it, Lanroam's own and see-through ones left out
+/// The top-level window a drop at `at` lands on: the one the system finds
+/// there (see-through ones left out), or, where that is Lanroam's own (the
+/// window the drag started from), the next one down holding it
 fn window_at(at: POINT) -> Option<HWND> {
-    // SAFETY: a plain query
-    let own = unsafe { GetCurrentProcessId() };
-    // SAFETY: walking the top-level windows, front to back
-    let mut window = unsafe { GetTopWindow(None) }.ok()?;
+    // SAFETY: plain queries
+    let (own, found) = unsafe { (GetCurrentProcessId(), WindowFromPoint(at)) };
+    if found.is_invalid() {
+        return None;
+    }
+    // SAFETY: a window found just now
+    let root = unsafe { GetAncestor(found, GA_ROOT) };
+    let mut pid = 0;
+    // SAFETY: a plain query of a window
+    unsafe { GetWindowThreadProcessId(root, Some(&mut pid)) };
+    if pid != own {
+        return Some(root);
+    }
+    let mut window = root;
     loop {
+        // SAFETY: the next window down, while there is one
+        window = unsafe { GetWindow(window, GW_HWNDNEXT) }.ok()?;
         if holds(window, at, own) {
             return Some(window);
         }
-        // SAFETY: the next window down, while there is one
-        window = unsafe { GetWindow(window, GW_HWNDNEXT) }.ok()?;
     }
 }
 
