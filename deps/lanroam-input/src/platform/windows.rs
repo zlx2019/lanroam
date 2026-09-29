@@ -54,14 +54,14 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos,
     GetMessageW, GetSystemMetrics, HC_ACTION, HHOOK, HWND_TOPMOST, KBDLLHOOKSTRUCT, KillTimer,
-    LLKHF_EXTENDED, LLKHF_UP, LWA_ALPHA, MA_NOACTIVATE, MSG, MSLLHOOKSTRUCT, RegisterClassW,
-    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_HIDE,
-    SWP_NOACTIVATE, SWP_SHOWWINDOW, SetCursor, SetCursorPos, SetLayeredWindowAttributes, SetTimer,
-    SetWindowPos, SetWindowsHookExW, ShowWindow, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEHWHEEL,
-    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_XBUTTONDOWN,
-    WM_XBUTTONUP, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-    WS_POPUP, XBUTTON1, XBUTTON2,
+    LLKHF_EXTENDED, LLKHF_INJECTED, LLKHF_UP, LLMHF_INJECTED, LWA_ALPHA, MA_NOACTIVATE, MSG,
+    MSLLHOOKSTRUCT, RegisterClassW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+    SM_YVIRTUALSCREEN, SW_HIDE, SWP_NOACTIVATE, SWP_SHOWWINDOW, SetCursor, SetCursorPos,
+    SetLayeredWindowAttributes, SetTimer, SetWindowPos, SetWindowsHookExW, ShowWindow,
+    UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
+    WM_MBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN,
+    WM_RBUTTONUP, WM_SETCURSOR, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSW, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, XBUTTON1, XBUTTON2,
 };
 use windows_sys::core::BOOL;
 
@@ -355,7 +355,7 @@ impl Hooks {
             }),
             _ => None,
         };
-        let verdict = self.decide(event);
+        let verdict = self.decide(event, info.flags & LLMHF_INJECTED != 0);
         // A motion that goes through moves the cursor, clipped to the desktop
         if message == WM_MOUSEMOVE && verdict == Verdict::Pass && self.parked.is_none() {
             self.last = clip_to_desktop(at);
@@ -370,14 +370,14 @@ impl Hooks {
         }
         let down = info.flags & LLKHF_UP == 0;
         let event = key_usage(info).map(|usage| InputEvent::Key { usage, down });
-        self.decide(event)
+        self.decide(event, info.flags & LLKHF_INJECTED != 0)
     }
 
     /// Run the switch and apply its cursor change: parking needs nothing
     /// but the blocking itself, and the cover; coming back puts the cursor
-    /// in place
-    fn decide(&mut self, event: Option<InputEvent>) -> Verdict {
-        let decision = super::decide(&self.switch, event, &mut self.out, &mut self.sink);
+    /// in place. `injected`: another program sent the event (`SendInput`)
+    fn decide(&mut self, event: Option<InputEvent>, injected: bool) -> Verdict {
+        let decision = super::decide(&self.switch, event, injected, &mut self.out, &mut self.sink);
         match decision.cursor {
             // Held where it is: the hook swallows the motion
             Some(CursorAction::Park) => {

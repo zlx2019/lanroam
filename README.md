@@ -38,7 +38,7 @@ Arrange them once. From then on, move the pointer past the edge of one screen an
 - 📌 **Keys that stay here** — combinations you keep local (switching input methods, screenshots) act on this computer even while you control another. Media and volume keys go to the device you control, or stay here.
 - 🖲️ **Per-device pointer and wheel** — each device sets how fast the pointer and the wheel go on it, and can turn scrolling around for a Mac with natural scrolling.
 - 💡 **Always know where you are** — the edge the pointer came in by lights up, a hint says when you pause, lock, jump or lose a device, and inactive screens can dim.
-- ✋ **Take back any time** — touch a controlled device's own mouse or keyboard and control is back there at once. A device that stops answering hands control back within 3 seconds.
+- ✋ **Take back any time** — type, click or move the mouse on a controlled device itself and control is back there at once; a mouse jolted or a touchpad brushed by accident does not count. A device that stops answering hands control back within 3 seconds.
 - 🔗 **LAN P2P** — every device is an equal peer; no server, no cloud, no account.
 - 📡 **Zero-config discovery** — mDNS with a UDP multicast fallback; nearby devices just show up.
 - 🤝 **Join with a PIN** — a device joins the group by typing the 6-digit PIN a member shows, checked with a password-authenticated key exchange bound to both TLS certificates.

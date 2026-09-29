@@ -445,7 +445,10 @@ impl Tap {
             }
             self.hold(at);
         }
-        let mut decide = |event| super::decide(&self.switch, event, &mut self.out, &mut self.sink);
+        // What other programs post counts as made by hand here: how macOS
+        // tells it from the hardware's is not verified
+        let mut decide =
+            |event| super::decide(&self.switch, event, false, &mut self.out, &mut self.sink);
         let decision = match translated {
             Translated::Event(input) => decide(Some(input)),
             Translated::Toggle(usage) => {

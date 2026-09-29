@@ -138,16 +138,20 @@ fn spawn_capture(
 ///
 /// `None` is an event Lanroam does not forward: it stays local, or is
 /// dropped while the target is controlled so it cannot leak to local apps.
+/// `injected` when another program made the event rather than a hand on
+/// this machine's keyboard or mouse (see [`Switch::handle_injected`]).
 #[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 fn decide(
     switch: &Mutex<Switch>,
     event: Option<InputEvent>,
+    injected: bool,
     out: &mut Vec<Emit>,
     sink: &mut EmitSink,
 ) -> Decision {
     let decision = {
         let mut switch = switch::lock(switch);
         match event {
+            Some(event) if injected => switch.handle_injected(event, out),
             Some(event) => switch.handle(event, out),
             None => Decision {
                 verdict: if switch.is_remote() {

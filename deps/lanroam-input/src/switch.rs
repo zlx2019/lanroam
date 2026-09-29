@@ -61,9 +61,15 @@ use crate::world::World;
 /// one-pixel jitter does not bounce it straight back
 const LANDING_INSET: i32 = 1;
 
-/// Local pointer travel (device units) that counts as someone using this
-/// machine while another device controls it; smaller twitches are ignored
-const TAKEOVER_TRAVEL: f64 = 4.0;
+/// Local pointer travel (device units, net) within [`TAKEOVER_WINDOW`] that
+/// counts as someone using this machine while another device controls it: a
+/// hand on the mouse moves it that far at once, while a mouse jolted by a
+/// knock on the desk or a touchpad brushed in passing does not, and neither
+/// do twitches adding up over time
+const TAKEOVER_TRAVEL: f64 = 40.0;
+
+/// How long local pointer travel adds up (see [`TAKEOVER_TRAVEL`])
+const TAKEOVER_WINDOW: Duration = Duration::from_millis(500);
 
 /// What the capture backend does with the event it just reported
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -351,6 +357,18 @@ struct Dwell {
     since: Instant,
 }
 
+/// Local pointer travel while another device controls this machine, since
+/// the travel started adding up
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Travel {
+    /// When it started
+    since: Instant,
+    /// Net horizontal travel
+    dx: f64,
+    /// Net vertical travel
+    dy: f64,
+}
+
 /// The virtual cursor on another device
 #[derive(Debug, Clone, PartialEq)]
 struct Remote {
@@ -427,8 +445,8 @@ pub struct Switch {
     media_keys: MediaKeys,
     /// Another device controls this machine right now
     controlled: bool,
-    /// Local pointer travel since control was taken
-    local_travel: f64,
+    /// Local pointer travel adding up while controlled
+    travel: Option<Travel>,
     /// The hotkeys
     hotkeys: Hotkeys,
     /// Key combinations that stay on this machine while another device is
@@ -475,7 +493,7 @@ impl Switch {
             speeds: HashMap::new(),
             media_keys: MediaKeys::default(),
             controlled: false,
-            local_travel: 0.0,
+            travel: None,
             hotkeys: Hotkeys::default(),
             keep_local: Vec::new(),
             switching: Switching::default(),
@@ -515,7 +533,13 @@ impl Switch {
                     let p = device.desktop.clamp(remote.pixel());
                     (remote.x, remote.y) = (f64::from(p.x), f64::from(p.y));
                 }
-                None => self.release_requested = true,
+                None => {
+                    // A release already asked for said why (its link dropped)
+                    if !self.release_requested {
+                        tracing::info!(device = %remote.device, "the device controlled left the layout");
+                    }
+                    self.release_requested = true;
+                }
             }
         }
         self.world = world;
@@ -619,7 +643,8 @@ impl Switch {
     ///
     /// Deferred to the next event because only the capture callback may
     /// move the local cursor; the user touching the mouse or keyboard is
-    /// exactly when it matters.
+    /// exactly when it matters. A press in that event was meant for the
+    /// device that let go: it goes nowhere, and neither does its release.
     pub fn request_release(&mut self, device: Option<&str>) {
         if let Some(remote) = &self.remote
             && device.is_none_or(|d| d == remote.device)
@@ -635,11 +660,11 @@ impl Switch {
         self.requests.push(request);
     }
 
-    /// Whether another device controls this machine; while it does, local
-    /// input emits [`Emit::Takeover`] once
+    /// Whether another device controls this machine; while it does, input
+    /// by hand here emits [`Emit::Takeover`] once (see [`Self::handle`])
     pub fn set_controlled(&mut self, controlled: bool) {
         self.controlled = controlled;
-        self.local_travel = 0.0;
+        self.travel = None;
     }
 
     /// Whether a drop of files waits for them to arrive where the pointer
@@ -666,21 +691,46 @@ impl Switch {
         }
     }
 
-    /// Decide what happens to one captured event; messages for other
-    /// devices are appended to `out`
+    /// Decide what happens to one captured event, made by hand on this
+    /// machine's own keyboard or mouse; messages for other devices are
+    /// appended to `out`
+    ///
+    /// While another device controls this machine, a press, a scroll or
+    /// the pointer moved on purpose (far enough within a short while) takes
+    /// this machine back ([`Emit::Takeover`]).
     pub fn handle(&mut self, event: InputEvent, out: &mut Vec<Emit>) -> Decision {
+        self.decide(event, true, out)
+    }
+
+    /// [`Self::handle`] an event another program made on this machine (an
+    /// input method or a key remapper sending keys, say): the same, except
+    /// that it never takes this machine back from the device controlling it
+    pub fn handle_injected(&mut self, event: InputEvent, out: &mut Vec<Emit>) -> Decision {
+        self.decide(event, false, out)
+    }
+
+    /// Decide one event; `by_hand` when someone made it on this machine's
+    /// own keyboard or mouse
+    fn decide(&mut self, event: InputEvent, by_hand: bool, out: &mut Vec<Emit>) -> Decision {
         let mut cursor = None;
-        if std::mem::take(&mut self.release_requested) && self.remote.is_some() {
-            tracing::debug!("control comes back on request");
+        let forced = std::mem::take(&mut self.release_requested) && self.remote.is_some();
+        if forced {
+            tracing::info!(?event, "control comes back at this input");
             cursor = Some(self.come_home(Landing::Centre, out));
         }
         for request in std::mem::take(&mut self.requests) {
             self.run_request(request, out, &mut cursor);
         }
         self.freeze_for_drop(&mut cursor);
-        if self.controlled && self.remote.is_none() && self.used_locally(&event) {
+        if self.controlled && self.remote.is_none() && by_hand && self.used_locally(&event) {
+            let travel = self.travel.map(|travel| (travel.dx, travel.dy));
+            tracing::info!(?event, ?travel, "local input takes this device back");
             self.controlled = false;
             out.push(Emit::Takeover);
+        }
+        // A press bringing control back was meant for the device that let go
+        if forced && let Some(verdict) = self.drop_press(event) {
+            return Decision { verdict, cursor };
         }
         let verdict = match event {
             InputEvent::Motion { at, dx, dy } => self.motion(at, dx, dy, out, &mut cursor),
@@ -706,14 +756,48 @@ impl Switch {
         }
     }
 
-    /// Whether `event` shows someone using this machine's own devices
+    /// Swallow `event` if it presses a key or a button, or scrolls, with
+    /// the press recorded as going nowhere so that its release follows it;
+    /// `None` for anything else
+    fn drop_press(&mut self, event: InputEvent) -> Option<Verdict> {
+        match event {
+            InputEvent::Key { usage, down: true } => {
+                self.keys.insert(usage, (Owner::Dropped, usage));
+            }
+            InputEvent::Button { button, down: true } => {
+                self.buttons[button.index()] = Some(Owner::Dropped);
+            }
+            InputEvent::Wheel { .. } => {}
+            _ => return None,
+        }
+        Some(Verdict::Swallow)
+    }
+
+    /// Whether `event` shows someone using this machine's own devices: a
+    /// press (a release may end a press made before control was taken), a
+    /// scroll, or the pointer moved on purpose (see [`TAKEOVER_TRAVEL`])
     fn used_locally(&mut self, event: &InputEvent) -> bool {
         match *event {
             InputEvent::Motion { dx, dy, .. } => {
-                self.local_travel += dx.abs() + dy.abs();
-                self.local_travel > TAKEOVER_TRAVEL
+                let now = self.clock.now();
+                let travel = self
+                    .travel
+                    .filter(|travel| now.duration_since(travel.since) < TAKEOVER_WINDOW)
+                    .unwrap_or(Travel {
+                        since: now,
+                        dx: 0.0,
+                        dy: 0.0,
+                    });
+                let travel = Travel {
+                    dx: travel.dx + dx,
+                    dy: travel.dy + dy,
+                    ..travel
+                };
+                self.travel = Some(travel);
+                travel.dx.abs() + travel.dy.abs() >= TAKEOVER_TRAVEL
             }
-            _ => true,
+            InputEvent::Key { down, .. } | InputEvent::Button { down, .. } => down,
+            InputEvent::Wheel { .. } => true,
         }
     }
 
@@ -1193,6 +1277,7 @@ impl Switch {
             && let Some(hotkey) = self.hotkey_for(key)
             && self.run_hotkey(hotkey, out, cursor)
         {
+            tracing::info!(?hotkey, "hotkey");
             self.keys.insert(key, (Owner::Dropped, key));
             return Verdict::Swallow;
         }
@@ -1389,6 +1474,7 @@ impl Switch {
         out: &mut Vec<Emit>,
         cursor: &mut Option<CursorAction>,
     ) {
+        tracing::info!(?request, "request");
         match request {
             Request::Pause => {
                 self.run_hotkey(Hotkey::Pause, out, cursor);
@@ -2308,26 +2394,129 @@ mod tests {
         cross_to_pc(&mut sw, 400);
         let world = World::new([device("mac", 0, 1512, 1080, 1.0)]);
         sw.set_world(world, HashSet::new());
+        // The key that brings control back was typed for the PC: it goes
+        // nowhere, nor does its release
         let (d, _) = feed(&mut sw, key(0x04, true));
         assert!(matches!(d.cursor, Some(CursorAction::Release(_))));
-        assert_eq!(d.verdict, Verdict::Pass);
+        assert_eq!(d.verdict, Verdict::Swallow);
+        assert_eq!(feed(&mut sw, key(0x04, false)).0.verdict, Verdict::Swallow);
+        assert_eq!(feed(&mut sw, key(0x04, true)).0.verdict, Verdict::Pass);
     }
 
-    /// Local input while controlled tells the controller to let go, once;
-    /// small twitches do not count
+    /// A click or a scroll that brings control back was meant for the
+    /// device that let go: it goes nowhere here either
+    #[test]
+    fn the_press_bringing_control_back_goes_nowhere() {
+        let mut sw = switch();
+        cross_to_pc(&mut sw, 400);
+        sw.request_release(Some("pc"));
+        let (d, out) = feed(&mut sw, button(MouseButton::Left, true));
+        assert!(matches!(d.cursor, Some(CursorAction::Release(_))));
+        assert_eq!(d.verdict, Verdict::Swallow);
+        assert_eq!(
+            out,
+            [Emit::Leave {
+                device: "pc".into()
+            }]
+        );
+        let (d, out) = feed(&mut sw, button(MouseButton::Left, false));
+        assert_eq!((d.verdict, out.len()), (Verdict::Swallow, 0));
+        assert_eq!(
+            feed(&mut sw, button(MouseButton::Left, true)).0.verdict,
+            Verdict::Pass
+        );
+        feed(&mut sw, button(MouseButton::Left, false));
+
+        cross_to_pc(&mut sw, 400);
+        sw.request_release(None);
+        let (d, _) = feed(&mut sw, InputEvent::Wheel { dx: 0, dy: -120 });
+        assert!(matches!(d.cursor, Some(CursorAction::Release(_))));
+        assert_eq!(d.verdict, Verdict::Swallow);
+    }
+
+    /// Drive `sw` with a clock that moves only when told (see [`wait`])
+    fn manual_clock(sw: &mut Switch) -> Arc<Mutex<Duration>> {
+        let start = Instant::now();
+        let elapsed = Arc::new(Mutex::new(Duration::ZERO));
+        let clock = Arc::clone(&elapsed);
+        sw.set_clock(Clock::new(move || start + *clock.lock().unwrap()));
+        elapsed
+    }
+
+    /// Move a clock made by [`manual_clock`] on by `ms` milliseconds
+    fn wait(elapsed: &Mutex<Duration>, ms: u64) {
+        *elapsed.lock().unwrap() += Duration::from_millis(ms);
+    }
+
+    /// Local input while controlled tells the controller to let go, once:
+    /// a press does, the release of a press made before does not
     #[test]
     fn takeover() {
         let mut sw = switch();
         sw.set_controlled(true);
-        let (d, out) = feed(&mut sw, motion(10, 10, 1.0, 1.0));
+        let (d, out) = feed(&mut sw, key(0x04, false));
         assert_eq!((d.verdict, out.len()), (Verdict::Pass, 0));
-        let (_, out) = feed(&mut sw, motion(10, 10, 2.0, 1.0));
+        let (_, out) = feed(&mut sw, key(0x05, true));
         assert_eq!(out, [Emit::Takeover]);
-        let (_, out) = feed(&mut sw, key(0x04, true));
+        let (_, out) = feed(&mut sw, key(0x06, true));
         assert!(out.is_empty());
         sw.set_controlled(true);
-        let (_, out) = feed(&mut sw, key(0x04, false));
+        let (_, out) = feed(&mut sw, button(MouseButton::Right, true));
         assert_eq!(out, [Emit::Takeover]);
+    }
+
+    /// The pointer takes this machine back only when moved on purpose: far
+    /// enough within a short while. A mouse jolted back and forth, or
+    /// twitches adding up over time, do not
+    #[test]
+    fn takeover_by_the_pointer() {
+        let mut sw = switch();
+        let elapsed = manual_clock(&mut sw);
+        sw.set_controlled(true);
+        for dx in [15.0, -15.0, 15.0, -15.0, 15.0] {
+            assert!(feed(&mut sw, motion(10, 10, dx, 0.0)).1.is_empty());
+        }
+        for _ in 0..10 {
+            wait(&elapsed, 600);
+            assert!(feed(&mut sw, motion(10, 10, 10.0, 0.0)).1.is_empty());
+        }
+        // A hand on the mouse
+        wait(&elapsed, 600);
+        assert!(feed(&mut sw, motion(10, 10, 25.0, 0.0)).1.is_empty());
+        wait(&elapsed, 100);
+        let (d, out) = feed(&mut sw, motion(10, 10, 20.0, -5.0));
+        assert_eq!((d.verdict, out), (Verdict::Pass, vec![Emit::Takeover]));
+    }
+
+    /// What other programs make here (an input method typing, a key
+    /// remapper) never takes this machine back, and otherwise goes where
+    /// input by hand would
+    #[test]
+    fn injected_input_does_not_take_over() {
+        let mut sw = switch();
+        sw.set_controlled(true);
+        let mut out = Vec::new();
+        // Enter, then the pointer thrown across the screen
+        let d = sw.handle_injected(key(0x28, true), &mut out);
+        assert_eq!((d.verdict, out.len()), (Verdict::Pass, 0));
+        let d = sw.handle_injected(motion(10, 10, 500.0, 0.0), &mut out);
+        assert_eq!((d.verdict, out.len()), (Verdict::Pass, 0));
+        // Space by hand
+        let (_, out) = feed(&mut sw, key(0x2C, true));
+        assert_eq!(out, [Emit::Takeover]);
+
+        cross_to_pc(&mut sw, 400);
+        let mut out = Vec::new();
+        let d = sw.handle_injected(key(0x04, true), &mut out);
+        assert_eq!(d.verdict, Verdict::Swallow);
+        assert_eq!(
+            out,
+            [Emit::Key {
+                device: "pc".into(),
+                usage: 0x04,
+                down: true
+            }]
+        );
     }
 
     /// Without the local device in the layout nothing crosses
