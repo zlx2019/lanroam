@@ -32,8 +32,8 @@ Arrange them once. From then on, move the pointer past the edge of one screen an
 - 🎚️ **Crossing on your terms** — cross an edge right away, only while holding a modifier, or after a short dwell against it; a corner guard keeps the pointer home when you aim for a screen corner. Each edge can be closed or cross its own way.
 - 🔀 **Mac ↔ Windows** — Command and Control swap places between a Mac and a PC, so shortcuts stay under the same fingers. The layout is in logical pixels, so a 150% Windows display lines up with a Mac's.
 - 🧩 **Arrange screens** — the Arrange page shows the screens of every device in the group; drag them into place, and the whole group has the new layout. While it is open, the other devices show their numbers on their own screens.
-- 📋 **The clipboard comes along** — copy on one device, move the pointer over and paste on the next; what you copy there comes back with you. Text, images and files: copied files up to 32 MB are fetched ahead as the pointer comes. What a password manager copies never leaves the device, and **Settings → Clipboard** turns sharing or a kind off.
-- 📁 **Drag files across** — hold files or folders in Finder or Explorer, drag them past the edge and drop them on the other computer: its desktop, a folder, or an app window. What lands is checked end to end; **Settings → Files** turns dragging off.
+- 📋 **The clipboard comes along** — copy on one device, move the pointer over and paste on the next; what you copy there comes back with you. Text, images and files: copied files up to 32 MB are fetched ahead as the pointer comes. What a password manager copies never leaves the device, and **Settings → Transfer** turns sharing or a kind off.
+- 📁 **Drag files across** — hold files or folders in Finder or Explorer, drag them past the edge and drop them on the other computer: its desktop, a folder, or an app window. What lands is checked end to end; **Settings → Transfer** turns dragging off.
 - ⌨️ **Hotkeys** — jump to a device by number or to the neighbour in a direction, lock the pointer to a device, or go home and pause crossing. Record your own combinations in the settings.
 - 📌 **Keys that stay here** — combinations you keep local (switching input methods, screenshots) act on this computer even while you control another. Media and volume keys go to the device you control, or stay here.
 - 🖲️ **Per-device pointer and wheel** — each device sets how fast the pointer and the wheel go on it, and can turn scrolling around for a Mac with natural scrolling.
@@ -142,7 +142,7 @@ A Mac with natural scrolling scrolls a PC the other way round. On the computer b
 While you control another device, media and volume keys go there. To keep them on the computer in front of you, choose **Keep here** under **Settings → Control → Media keys**.
 
 **A drag of files stops at the edge.**
-Files cross only where the pointer can, and only between devices that both have dragging on (**Settings → Files**). A drag of anything else, such as selected text or a window, stays at the edge as before.
+Files cross only where the pointer can, and only between devices that both have dragging on (**Settings → Transfer**). A drag of anything else, such as selected text or a window, stays at the edge as before.
 
 **A large drag of files won't drop into some apps.**
 Until all its files are there, a drag carries a promise of them: it drops as soon as you let go, the files keep coming in the background (a card next to it shows how far they are, and its Cancel button stops them), and the pointer stays free. Only Finder, Explorer and the desktop take such a drop; let go on another app, such as a browser or a chat app, and the drag slides back with a hint to drop it on the desktop first (on Windows the cursor already says no over those apps). Drop it on the desktop or in a folder first, then drag it on from there. Small drags arrive as you cross and are not affected.

@@ -1,6 +1,6 @@
-// Settings → Files: whether files are dragged to and from this device. It
-// belongs to this device's entry in the group (the others honour it), so it
-// needs a group.
+// Settings → Transfer, the files part: whether files are dragged to and
+// from this device. It belongs to this device's entry in the group (the
+// others honour it), so it needs a group.
 
 import { useEffect, useState } from "react";
 import { api } from "../api";
@@ -32,12 +32,12 @@ export function FilesSettings({ snapshot, onToast }: { snapshot: Snapshot; onToa
   const noGroup = local ? undefined : t("input.noGroup");
   return (
     <>
+      <div className="group-h">{t("files.title")}</div>
       <div className="group">
-        <Row title={t("files.drag")} hint={noGroup ?? t("files.dragHint")}>
+        <Row title={t("files.drag")} hint={noGroup}>
           <Toggle on={share.drag} label={t("files.drag")} disabled={!local} onChange={(drag) => change({ drag })} />
         </Row>
       </div>
-      <p className="note">{t("files.note")}</p>
     </>
   );
 }

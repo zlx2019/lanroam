@@ -78,8 +78,7 @@ export const zh = {
 
   "settings.general": "通用",
   "settings.control": "控制",
-  "settings.clipboard": "剪贴板",
-  "settings.files": "文件",
+  "settings.transfer": "传输",
   "settings.look": "外观",
   "settings.about": "关于",
   "settings.name": "设备名称",
@@ -154,18 +153,15 @@ export const zh = {
   "input.captureOff": "无法读取本机键鼠，暂时不能控制其他设备：{reason}",
   "input.injectionOff": "其他设备暂时不能控制本机：{reason}",
 
+  "clip.title": "剪贴板",
   "clip.share": "剪贴板共享",
-  "clip.shareHint": "光标移到另一台设备时，剪贴板跟着过去；在那边复制的，回来时一起带回",
   "clip.text": "文本",
   "clip.image": "图片",
-  "clip.imageHint": "截图、复制的图片",
   "clip.files": "文件",
-  "clip.filesHint": "不超过 32 MB 的，光标一过来就提前传好，直接粘贴",
-  "clip.note": "密码管理器复制的内容不会离开本机。",
+  "clip.filesHint": "文件上限 32 MB",
 
+  "files.title": "文件",
   "files.drag": "拖拽文件",
-  "files.dragHint": "按住文件拖过屏幕边缘，放到另一台设备上；两台设备都开启才可以",
-  "files.note": "文件还没传完就松手也会立即放下，文件在后台接着传。这时只有访达、资源管理器和桌面能接收，其他应用会拒收：可以先放到桌面上。",
 
   "hint.paused": "已暂停",
   "hint.pausedSub": "{keys} 恢复",

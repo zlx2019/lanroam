@@ -1,6 +1,6 @@
-// Settings → Clipboard: what of this device's clipboard follows the
-// pointer. It belongs to this device's entry in the group (the others
-// honour it), so it needs a group.
+// Settings → Transfer, the clipboard part: what of this device's clipboard
+// follows the pointer. It belongs to this device's entry in the group (the
+// others honour it), so it needs a group.
 
 import { useEffect, useState } from "react";
 import { api } from "../api";
@@ -39,21 +39,21 @@ export function ClipboardSettings({
   const kinds = !local || !share.on;
   return (
     <>
+      <div className="group-h">{t("clip.title")}</div>
       <div className="group">
-        <Row title={t("clip.share")} hint={noGroup ?? t("clip.shareHint")}>
+        <Row title={t("clip.share")} hint={noGroup}>
           <Toggle on={share.on} label={t("clip.share")} disabled={!local} onChange={(on) => change({ on })} />
         </Row>
         <Row title={t("clip.text")}>
           <Toggle on={share.text} label={t("clip.text")} disabled={kinds} onChange={(text) => change({ text })} />
         </Row>
-        <Row title={t("clip.image")} hint={t("clip.imageHint")}>
+        <Row title={t("clip.image")}>
           <Toggle on={share.image} label={t("clip.image")} disabled={kinds} onChange={(image) => change({ image })} />
         </Row>
         <Row title={t("clip.files")} hint={t("clip.filesHint")}>
           <Toggle on={share.files} label={t("clip.files")} disabled={kinds} onChange={(files) => change({ files })} />
         </Row>
       </div>
-      <p className="note">{t("clip.note")}</p>
     </>
   );
 }
