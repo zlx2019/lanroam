@@ -24,7 +24,7 @@ Every device running Lanroam becomes a peer on the local network. Your devices j
 
 Arrange them once. From then on, move the pointer past the edge of one screen and it lands on the next computer, with the keyboard following along, carried device-to-device over a mutually authenticated TLS 1.3 channel. Lanroam is the third LAN tool in the family, after [Deskmate](https://github.com/zlx2019/deskmate) (file transfer) and [Lanecho](https://github.com/zlx2019/lanecho) (clipboard sync).
 
-> 🚧 **Early development.** The desktop app shares a keyboard and mouse between Macs and Windows PCs; the first release is on its way (see the roadmap below).
+> 🚧 **Not released yet.** Everything on the roadmap below is done; the first release is on its way.
 
 ## ✨ Features
 
@@ -65,9 +65,9 @@ The digits, arrows and L need the left Alt: on many layouts, AltGr (Ctrl+right A
 | M0 | Shared LAN foundation, QUIC transport, integration CLI | ✅ |
 | M1 | Input capture and injection (macOS ↔ Windows) | ✅ |
 | M2 | Desk groups, screen layout, edge crossing, hotkeys | ✅ |
-| M3 | Desktop app: screen arrangement, pairing, tray, settings | 🚧 |
-| M4 | Clipboard hand-off | 🚧 |
-| M5 | Drag and drop files between devices | 🚧 |
+| M3 | Desktop app: screen arrangement, pairing, tray, settings | ✅ |
+| M4 | Clipboard hand-off | ✅ |
+| M5 | Drag and drop files between devices | ✅ |
 
 ## 📥 Install
 
