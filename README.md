@@ -1,8 +1,9 @@
-<p align="center">
-  <img src="./assets/logo.svg" width="96" alt="Lanroam logo" />
-</p>
-
-<h1 align="center">Lanroam</h1>
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./assets/logo-wordmark-dark.svg">
+    <img src="./assets/logo-wordmark.svg" alt="Lanroam" width="460">
+  </picture>
+</h1>
 
 <p align="center">
   One keyboard and mouse for every computer on your LAN — push the pointer off one screen, and it lands on the next.

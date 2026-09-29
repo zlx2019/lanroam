@@ -1,8 +1,9 @@
-<p align="center">
-  <img src="./assets/logo.svg" width="96" alt="Lanroam logo" />
-</p>
-
-<h1 align="center">Lanroam</h1>
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./assets/logo-wordmark-dark.svg">
+    <img src="./assets/logo-wordmark.svg" alt="Lanroam" width="460">
+  </picture>
+</h1>
 
 <p align="center">
 让你在触手可及的视界，自由漫游。
