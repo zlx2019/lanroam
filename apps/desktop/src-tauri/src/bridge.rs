@@ -221,7 +221,12 @@ async fn on_event(app: &AppHandle, event: EngineEvent) {
 pub async fn refresh(app: &AppHandle) {
     let state = app.state::<AppState>();
     let snapshot = snapshot(&state, &app.package_info().version.to_string()).await;
-    tray::update(app, &snapshot);
+    // The tray icon wants the main thread: getting it here clones a handle
+    // that is not thread-safe
+    let (handle, shown) = (app.clone(), snapshot.clone());
+    if let Err(e) = app.run_on_main_thread(move || tray::update(&handle, &shown)) {
+        tracing::warn!("cannot update the tray: {e}");
+    }
     emit(app, events::SNAPSHOT, snapshot);
 }
 

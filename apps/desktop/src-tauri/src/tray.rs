@@ -120,7 +120,8 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Follow a new snapshot: icon, menu and tooltip
+/// Follow a new snapshot: icon, menu and tooltip. On the main thread only:
+/// the tray icon's handle is not thread-safe
 pub fn update(app: &AppHandle, snapshot: &Snapshot) {
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
         return;
