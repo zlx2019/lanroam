@@ -595,6 +595,9 @@ main {
 .dev.drag {
   cursor: grab;
   touch-action: none;
+  /* A layer of its own: moved by left/top in the transparent window,
+     WebKit left its old edges painted behind it as trails */
+  will-change: transform;
 }
 .dev.held {
   cursor: grabbing;
