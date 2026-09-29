@@ -130,7 +130,7 @@ export function SwitchingSettings({
       </div>
       <div className="group">
         <Row title={t("switch.pause")}>{keys("pause", chordLabels(hotkeys.pause, platform, names))}</Row>
-        <Row title={t("switch.lock")} hint={t("switch.lockHint")}>
+        <Row title={t("switch.lock")}>
           {keys("lock", chordLabels(hotkeys.lock, platform, names))}
         </Row>
         <Row title={t("switch.jump")}>{keys("jump", [...modLabels(hotkeys.jump, platform), "1–9"])}</Row>
@@ -139,7 +139,7 @@ export function SwitchingSettings({
 
       <div className="group-h">{t("switch.edges")}</div>
       <div className="group">
-        <Row title={t("switch.mode")} hint={t("switch.modeHint")}>
+        <Row title={t("switch.mode")}>
           <Seg<SwitchMode>
             options={[
               ["direct", t("switch.direct")],
@@ -168,7 +168,7 @@ export function SwitchingSettings({
             <Stepper {...DWELL} unit="ms" value={switching.dwellMs} onChange={(dwellMs) => change({ dwellMs })} />
           </Row>
         )}
-        <Row title={t("switch.corner")} hint={t("switch.cornerHint")}>
+        <Row title={t("switch.corner")}>
           <Stepper {...CORNER} unit="px" value={switching.cornerPx} onChange={(cornerPx) => change({ cornerPx })} />
         </Row>
       </div>
