@@ -136,7 +136,7 @@ impl From<Ask> for Request {
 pub mod join_denied {
     /// Another join is in progress on the sponsor
     pub const BUSY: &str = "busy";
-    /// The sponsor pauses joins after a PIN was used up
+    /// The sponsor pauses joins after a failed one
     pub const COOLDOWN: &str = "cooldown";
     /// The PIN was wrong too many times
     pub const WRONG_PIN: &str = "wrong_pin";

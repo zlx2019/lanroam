@@ -227,8 +227,8 @@ export const zh = {
   "toast.paused": "已暂停",
   "toast.resumed": "已恢复",
 
-  "error.wrong_pin": "PIN 错误次数太多，这次请求已结束。30 秒后可以重新发起。",
-  "error.cooldown": "对方暂时不接受加入请求，请 30 秒后再试。",
+  "error.wrong_pin": "PIN 错误次数太多，这次请求已结束。请稍后再重新发起。",
+  "error.cooldown": "对方暂时不接受加入请求，请稍后再试。",
   "error.busy": "对方正在处理另一个加入请求，请稍后再试。",
   "error.rejected": "对方拒绝了加入请求。",
   "error.timeout": "等太久了，这次请求已结束。",

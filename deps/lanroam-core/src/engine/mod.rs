@@ -788,7 +788,7 @@ async fn accept_loop(
 /// What sponsoring a join needs
 #[derive(Clone)]
 struct JoinWiring {
-    /// One join at a time, with a cooldown after a used-up PIN
+    /// One join at a time, with a cooldown after a failed one
     gate: Arc<Mutex<JoinGate>>,
     /// Wakes the join in progress to turn it down
     reject: Arc<Notify>,
@@ -841,11 +841,12 @@ async fn sponsor(mut link: Link, own: &PeerInfo, wiring: &JoinWiring) {
         link.close_after_flush_because(code).await;
         return;
     }
-    let result = sponsor_join(&mut link, own, &joiner, wiring).await;
+    let mut wrong = 0;
+    let result = sponsor_join(&mut link, own, &joiner, wiring, &mut wrong).await;
     if let Err(e) = &result {
-        tracing::info!(joiner = %joiner.name, "join failed: {e}");
+        tracing::info!(joiner = %joiner.name, wrong, "join failed: {e}");
     }
-    lock().end(Instant::now(), &result);
+    lock().end(Instant::now(), &result, wrong);
     let _ = wiring.events.send(EngineEvent::JoinEnded {
         joiner,
         admitted: result.is_ok(),
@@ -861,12 +862,13 @@ async fn sponsor(mut link: Link, own: &PeerInfo, wiring: &JoinWiring) {
     link.close_after_flush_because(reason).await;
 }
 
-/// The steps of a sponsored join
+/// The steps of a sponsored join, counting the wrong PINs into `wrong`
 async fn sponsor_join(
     link: &mut Link,
     own: &PeerInfo,
     joiner: &PeerInfo,
     wiring: &JoinWiring,
+    wrong: &mut u32,
 ) -> Result<(), JoinError> {
     let pin = join::new_pin()?;
     // Registered before the PIN is shown, so no rejection is missed
@@ -879,7 +881,7 @@ async fn sponsor_join(
         });
     };
     let verified = tokio::select! {
-        verified = join::verify(link, &own.fingerprint, &pin, show_pin) => verified?,
+        verified = join::verify(link, &own.fingerprint, &pin, wrong, show_pin) => verified?,
         () = rejected => {
             join::deny(link, join_denied::REJECTED).await?;
             return Err(JoinError::Denied(join_denied::REJECTED.into()));
