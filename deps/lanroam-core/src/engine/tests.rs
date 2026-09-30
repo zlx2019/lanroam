@@ -1532,6 +1532,37 @@ async fn copied_files_beyond_the_limit_stay() {
     assert_eq!(b.clipboard.content(), None);
 }
 
+/// Files grown past the limit since they were described are cut off as
+/// they come, and the device says they are too large
+#[tokio::test]
+async fn copied_files_grown_past_the_limit_stay() {
+    let (a, b, mut c) = row_of_three().await;
+    let logs = a.dir.0.join("logs");
+    std::fs::create_dir_all(&logs).unwrap();
+    let log = logs.join("app.log");
+    std::fs::write(&log, b"12345").unwrap();
+    a.clipboard.copy(Content::Files(vec![logs]));
+    enter_b(&a, &b).await;
+    b.until_files(&["logs"]).await;
+
+    // The folder grows, but not what was said of it: the copy is the same
+    let size = (32 << 20) + 1;
+    let file = std::fs::File::options().write(true).open(&log).unwrap();
+    file.set_len(size).unwrap();
+    // On to c, which is offered the files as described
+    a.input.push((0, 0), 1000.0, 0.0);
+    let told = c
+        .expect("files too large", |event| match event {
+            EngineEvent::CopiedFiles(CopiedFiles::TooLarge { name, bytes, .. }) => {
+                Some((name.clone(), *bytes))
+            }
+            _ => None,
+        })
+        .await;
+    assert_eq!(told, ("logs".to_string(), size));
+    assert_eq!(c.clipboard.content(), None);
+}
+
 /// A device taking no files gets none
 #[tokio::test]
 async fn copied_files_stay_off_devices_without_them() {

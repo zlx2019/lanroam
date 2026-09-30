@@ -38,7 +38,7 @@ use tokio::sync::{mpsc, watch};
 
 use super::EngineEvent;
 use super::drag::{self, KEEP_AFTER_DROP, failed};
-use super::files::{self, Offers};
+use super::files::{self, FilesError, Offers};
 use super::input::Links;
 use crate::group::ClipboardShare;
 use crate::protocol::{ClipReply, Control, FRAMING, StreamRequest};
@@ -127,6 +127,14 @@ pub(super) enum ClipMsg {
         number: u64,
         /// Why (a [`super::drag_failed`] code)
         reason: &'static str,
+    },
+    /// Files being fetched ahead turned out larger than [`PREFETCH_LIMIT`]:
+    /// they grew since they were described
+    FilesTooLarge {
+        /// Which fetch
+        number: u64,
+        /// Bytes found
+        bytes: u64,
     },
     /// A member offered its clipboard
     Offer {
@@ -359,6 +367,7 @@ impl Clip {
             ClipMsg::TookBack => self.visit = None,
             ClipMsg::Files(offer) => self.on_files(offer).await,
             ClipMsg::FilesFailed { number, reason } => self.on_files_failed(number, reason),
+            ClipMsg::FilesTooLarge { number, bytes } => self.on_files_too_large(number, bytes),
             ClipMsg::Offer {
                 from,
                 kind,
@@ -614,23 +623,13 @@ impl Clip {
         if !self.share(&self.local).allows(Kind::Files) {
             return;
         }
+        // Found too large already, and told: the offer comes again at
+        // every visit
+        if self.skipped.as_ref() == Some(&offer.hash) {
+            return;
+        }
         if offer.bytes > PREFETCH_LIMIT {
-            let limit = PREFETCH_LIMIT;
-            // Told once per copy: the offer comes again at every visit
-            if self.skipped.as_ref() != Some(&offer.hash) {
-                tracing::info!(
-                    bytes = offer.bytes,
-                    limit,
-                    "copied files too large to fetch ahead"
-                );
-                self.skipped = Some(offer.hash);
-                self.emit(CopiedFiles::TooLarge {
-                    name: offer.name,
-                    count: offer.count,
-                    bytes: offer.bytes,
-                    limit,
-                });
-            }
+            self.too_large(offer.hash, offer.name, offer.count, offer.bytes);
             return;
         }
         let stamp = self.stamp().await;
@@ -688,6 +687,33 @@ impl Clip {
                 since: Instant::now(),
             }),
         });
+    }
+
+    /// Leave files copied elsewhere (the copy `hash`) where they are, too
+    /// large to fetch ahead, and tell the user
+    fn too_large(&mut self, hash: String, name: String, count: usize, bytes: u64) {
+        let limit = PREFETCH_LIMIT;
+        tracing::info!(bytes, limit, "copied files too large to fetch ahead");
+        self.skipped = Some(hash);
+        self.emit(CopiedFiles::TooLarge {
+            name,
+            count,
+            bytes,
+            limit,
+        });
+    }
+
+    /// Files being fetched ahead proved too large: what of them came goes,
+    /// and they are not fetched again
+    fn on_files_too_large(&mut self, number: u64, bytes: u64) {
+        let Some(pending) = self.pending.take_if(|p| p.number == number) else {
+            return;
+        };
+        let Some(fetching) = pending.files else {
+            return;
+        };
+        discard_now(fetching.dir);
+        self.too_large(pending.hash, fetching.name, fetching.count, bytes);
     }
 
     /// Files being fetched ahead did not come: what of them came goes
@@ -769,9 +795,10 @@ fn discard_now(dir: PathBuf) {
     tokio::task::spawn_blocking(move || drag::discard(&dir));
 }
 
-/// Fetch the files of `token` from `from` into `dir` (`bytes` in all), and
-/// tell the actor how it went: the files at the top of `dir` on the
-/// clipboard, or why not
+/// Fetch the files of `token` from `from` into `dir` (`bytes` in all, as
+/// described; no more than [`PREFETCH_LIMIT`] are taken), and tell the
+/// actor how it went: the files at the top of `dir` on the clipboard, or
+/// why not
 async fn fetch_files(
     inbox: mpsc::UnboundedSender<ClipMsg>,
     number: u64,
@@ -792,9 +819,13 @@ async fn fetch_files(
         let _ = inbox.send(failed(failed::NO_SPACE));
         return;
     }
-    if let Err(e) = files::pull(&conn, token, &dir, |_| {}, |_, _| {}).await {
+    let limit = Some(PREFETCH_LIMIT);
+    if let Err(e) = files::pull(&conn, token, &dir, limit, |_| {}, |_, _| {}).await {
         tracing::info!("cannot fetch the copied files: {e}");
-        let _ = inbox.send(failed(failed::TRANSFER));
+        let _ = inbox.send(match e {
+            FilesError::TooLarge(bytes) => ClipMsg::FilesTooLarge { number, bytes },
+            _ => failed(failed::TRANSFER),
+        });
         return;
     }
     let listed = tokio::task::spawn_blocking(move || top_level(&dir)).await;

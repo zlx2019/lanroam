@@ -1094,7 +1094,8 @@ async fn pull_files(
     let listed = |entries| {
         let _ = inbox.send(InputMsg::DragListed { id, entries });
     };
-    let pulled = files::pull(&conn, token, &dir, listed, |done, total| {
+    // Dragged by the user, who sees what comes: no limit but the space
+    let pulled = files::pull(&conn, token, &dir, None, listed, |done, total| {
         if last.elapsed() >= PROGRESS_EVERY || done == total {
             last = Instant::now();
             let _ = inbox.send(InputMsg::DragProgress { id, done, total });
