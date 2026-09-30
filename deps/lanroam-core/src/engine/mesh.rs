@@ -51,7 +51,7 @@ const DIAL_DEFER: Duration = Duration::from_secs(2);
 
 /// Links to one peer set up within this span of each other come from both
 /// sides dialing at once; a link arriving later replaces the old one
-const RACE_WINDOW: Duration = Duration::from_secs(5);
+pub(super) const RACE_WINDOW: Duration = Duration::from_secs(5);
 
 /// How long a member whose link was closed as a duplicate may stay unlinked
 /// before it counts as offline (the surviving link is usually on its way)
@@ -563,6 +563,7 @@ impl Mesh {
             .collect();
         for fp in expired {
             self.announced.remove(&fp);
+            let _ = self.wiring.input.send(InputMsg::LinkDown(fp.clone()));
             let name = self.name_of(&fp);
             self.emit(EngineEvent::Offline {
                 fingerprint: fp,
@@ -634,6 +635,9 @@ impl Mesh {
                 .conn
                 .close(close_code::DUPLICATE, b"duplicate link");
             self.links.remove(&fp);
+            // Input on the old link ends with it: the peer may have
+            // restarted, and what it held down there is to be let go
+            let _ = self.wiring.input.send(InputMsg::LinkDown(fp.clone()));
         }
         self.register(link, info, dialed);
     }

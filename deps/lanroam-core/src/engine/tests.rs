@@ -822,6 +822,33 @@ async fn lost_controller_is_released() {
     .await;
 }
 
+/// A controller linking up again while its old link still stands (it
+/// restarted) gets what it held released: the session ends with the link
+/// the new one replaces
+#[tokio::test]
+async fn a_replaced_link_releases_its_controller() {
+    let (a, mut b, _c) = row_of_three().await;
+    let a_name = a.name();
+    a.input.push((999, 500), 5.0, 0.0);
+    a.input.key(0x04, true);
+    b.injected(&Injected::Key(0x04, true)).await;
+    // Past the race window, a new link replaces the old one whoever dialed
+    tokio::time::sleep(mesh::RACE_WINDOW).await;
+    let _again = a
+        .engine
+        .inner
+        .transport
+        .connect(&b.as_peer(), &a.engine.info(), Purpose::Member)
+        .await
+        .unwrap();
+    b.injected(&Injected::Key(0x04, false)).await;
+    b.expect_control(ControlEvent::Freed {
+        name: a_name,
+        fingerprint: a.fp(),
+    })
+    .await;
+}
+
 /// Hotkeys act on the whole group: number 3 jumps straight to c (mid
 /// display), and pausing is reported
 #[tokio::test]
