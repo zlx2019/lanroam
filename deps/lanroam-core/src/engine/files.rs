@@ -184,6 +184,34 @@ fn walk(dir: &Path, rel: &str, entries: &mut Vec<Entry>) {
     }
 }
 
+/// Whether `path` is a folder, and the bytes a drag of it sends, counted by
+/// the rules of [`collect`] without gathering every entry: describing a
+/// large folder takes no memory per file
+pub(super) fn measure(path: &Path) -> std::io::Result<(bool, u64)> {
+    let meta = std::fs::metadata(path)?;
+    if meta.is_dir() {
+        Ok((true, folder_bytes(path)))
+    } else if meta.is_file() {
+        Ok((false, meta.len()))
+    } else {
+        Ok((false, 0))
+    }
+}
+
+/// The bytes of the files in folder `dir`, by the rules of [`walk`]
+fn folder_bytes(dir: &Path) -> u64 {
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    read.flatten()
+        .map(|entry| match entry.file_type() {
+            Ok(kind) if kind.is_dir() => folder_bytes(&entry.path()),
+            Ok(kind) if kind.is_file() => entry.metadata().map_or(0, |meta| meta.len()),
+            _ => 0,
+        })
+        .sum()
+}
+
 /// How many files `entries` hold, and their bytes
 pub(super) fn totals(entries: &[Entry]) -> (u64, u64) {
     entries
@@ -616,6 +644,23 @@ mod tests {
             ]
         );
         assert_eq!(totals(&entries), (3, 5 + 1 + big as u64));
+    }
+
+    /// What is dragged measures what a drag of it sends, links inside a
+    /// folder left out
+    #[test]
+    fn a_drag_measures_what_it_sends() {
+        let dir = TempDir::new();
+        let paths = tree(&dir.0);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.0.join("notes.txt"), dir.0.join("photos/link.txt")).unwrap();
+        for path in &paths {
+            let entries = collect(std::slice::from_ref(path)).unwrap();
+            let folder = matches!(entries.first(), Some(Entry::Dir(_)));
+            let (_, bytes) = totals(&entries);
+            assert_eq!(measure(path).unwrap(), (folder, bytes), "{path:?}");
+        }
+        assert!(measure(&dir.0.join("missing")).is_err());
     }
 
     #[tokio::test]

@@ -6,7 +6,7 @@
 //! document).
 
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use lanroam_input::config::{Chord, Hotkeys, MediaKeys, Scrolling, Switching, is_modifier};
@@ -72,12 +72,16 @@ impl InputSettings {
     }
 
     /// Write the settings to `dir` (temp file + rename, so a crash never
-    /// leaves a torn file)
+    /// leaves a torn file; synced first, or a power cut could leave the
+    /// name on a file never written)
     pub fn save(&self, dir: &Path) -> io::Result<()> {
         fs::create_dir_all(dir)?;
         let target = path(dir);
         let tmp = target.with_extension("json.tmp");
-        fs::write(&tmp, serde_json::to_vec_pretty(self)?)?;
+        let mut file = fs::File::create(&tmp)?;
+        file.write_all(&serde_json::to_vec_pretty(self)?)?;
+        file.sync_all()?;
+        drop(file);
         fs::rename(&tmp, &target)
     }
 }

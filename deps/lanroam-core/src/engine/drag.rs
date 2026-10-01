@@ -169,9 +169,7 @@ pub(super) fn describe(paths: &[PathBuf]) -> Vec<DragItem> {
         .iter()
         .filter_map(|path| {
             let name = path.file_name()?.to_string_lossy().into_owned();
-            let entries = files::collect(std::slice::from_ref(path)).ok()?;
-            let dir = matches!(entries.first(), Some(files::Entry::Dir(_)));
-            let (_, size) = files::totals(&entries);
+            let (dir, size) = files::measure(path).ok()?;
             Some(DragItem { name, size, dir })
         })
         .collect()

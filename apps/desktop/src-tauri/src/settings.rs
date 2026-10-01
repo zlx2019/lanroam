@@ -3,6 +3,7 @@
 //! is the source of truth.
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -78,12 +79,16 @@ impl Settings {
     }
 
     /// Write the preferences (temp file + rename, so a crash never leaves a
-    /// torn file)
+    /// torn file; synced first, or a power cut could leave the name on a
+    /// file never written)
     pub fn save(&self, dir: &Path) -> anyhow::Result<()> {
         fs::create_dir_all(dir)?;
         let target = path(dir);
         let tmp = target.with_extension("json.tmp");
-        fs::write(&tmp, serde_json::to_vec_pretty(self)?)?;
+        let mut file = fs::File::create(&tmp)?;
+        file.write_all(&serde_json::to_vec_pretty(self)?)?;
+        file.sync_all()?;
+        drop(file);
         fs::rename(&tmp, &target)?;
         Ok(())
     }

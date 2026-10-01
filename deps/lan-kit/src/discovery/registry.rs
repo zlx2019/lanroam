@@ -151,19 +151,26 @@ impl Registry {
     /// channel must not flicker it offline), otherwise it goes at once.
     /// ServiceRemoved only names the instance, i.e. the device ID.
     pub(super) fn mdns_removed(&self, device_id: &str, udp_timeout: Duration) {
-        let mut peers = self.lock_peers();
-        let Some((fp, state)) = peers
-            .iter_mut()
-            .find(|(_, s)| s.peer.info.device_id == device_id)
-        else {
-            return;
+        let gone = {
+            let mut peers = self.lock_peers();
+            let Some((fp, state)) = peers
+                .iter_mut()
+                .find(|(_, s)| s.peer.info.device_id == device_id)
+            else {
+                return;
+            };
+            state.mdns_alive = false;
+            let udp_dead = state.last_udp.is_none_or(|t| t.elapsed() > udp_timeout);
+            let fp = fp.clone();
+            // Under the same lock: a heartbeat arriving in between must not
+            // be wiped out by the verdict from before it
+            udp_dead.then(|| {
+                peers.remove(&fp);
+                fp
+            })
         };
-        state.mdns_alive = false;
-        let udp_dead = state.last_udp.is_none_or(|t| t.elapsed() > udp_timeout);
-        let fp = fp.clone();
-        drop(peers);
-        if udp_dead {
-            self.remove(&fp);
+        if let Some(fp) = gone {
+            self.emit(PeerEvent::Down(fp));
         }
     }
 
@@ -192,15 +199,21 @@ impl Registry {
                     probes.push(state.peer.clone());
                 }
             }
-            peers
+            let expired: Vec<String> = peers
                 .iter()
                 .filter(|(_, s)| !s.mdns_alive && s.last_udp.is_none_or(|t| t.elapsed() > timeout))
                 .map(|(fp, _)| fp.clone())
-                .collect()
+                .collect();
+            // Removed under the lock they were judged under, like in
+            // `mdns_removed`
+            for fp in &expired {
+                peers.remove(fp);
+            }
+            expired
         };
         for fp in expired {
             tracing::debug!(fingerprint = %fp, "heartbeat timed out, node is offline");
-            self.remove(&fp);
+            self.emit(PeerEvent::Down(fp));
         }
         probes
     }
@@ -213,7 +226,7 @@ impl Registry {
             .is_some_and(|s| s.last_udp.is_some_and(|t| t.elapsed() <= timeout))
     }
 
-    /// Apply a failed probe directly: clear the mDNS flag and remove the node
+    /// Apply a failed probe directly: remove the node
     ///
     /// Only the fallback for when no mDNS daemon is available; the regular
     /// path leaves the verdict to mDNS cache verification (see
@@ -221,17 +234,20 @@ impl Registry {
     /// is newer evidence and keeps the node: a probe can only refute liveness
     /// that rests on mDNS alone.
     pub(super) fn probe_failed(&self, fingerprint: &str, udp_timeout: Duration) {
-        let mut peers = self.lock_peers();
-        let Some(state) = peers.get_mut(fingerprint) else {
-            return;
-        };
-        if state.last_udp.is_some_and(|t| t.elapsed() <= udp_timeout) {
-            return;
+        {
+            let mut peers = self.lock_peers();
+            let Some(state) = peers.get(fingerprint) else {
+                return;
+            };
+            if state.last_udp.is_some_and(|t| t.elapsed() <= udp_timeout) {
+                return;
+            }
+            // Under the lock the heartbeat was checked under, like in
+            // `mdns_removed`
+            peers.remove(fingerprint);
         }
-        state.mdns_alive = false;
-        drop(peers);
         tracing::info!(fingerprint = %fingerprint, "identity probe failed, node is gone");
-        self.remove(fingerprint);
+        self.emit(PeerEvent::Down(fingerprint.to_string()));
     }
 
     /// Snapshot of the online nodes
