@@ -23,8 +23,10 @@ use crate::protocol::{
     ALPN, Control, FRAMING, PROTOCOL_VERSION, Purpose, reason_code, version_compatible,
 };
 
-/// Budget per candidate address for the QUIC + TLS handshake
-pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+/// Budget per candidate address for the QUIC + TLS handshake; longer in
+/// this crate's tests, which run many handshakes at once, on machines that
+/// may be busy (right after a build): 3 s ran out there
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(if cfg!(test) { 10 } else { 3 });
 
 /// Budget for the Hello gate after the QUIC handshake; blocks connections
 /// that squat without ever saying Hello

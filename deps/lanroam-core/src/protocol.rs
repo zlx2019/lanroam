@@ -84,6 +84,8 @@ pub mod reason_code {
     pub const NOT_A_MEMBER: &str = "not_a_member";
     /// The dialer was removed from the acceptor's desk group
     pub const REMOVED: &str = "removed";
+    /// The acceptor answers as many link measurements as it takes at once
+    pub const BUSY: &str = "busy";
 }
 
 /// Why a controlled device let go ([`Control::Released`])

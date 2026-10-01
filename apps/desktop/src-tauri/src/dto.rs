@@ -458,6 +458,7 @@ impl From<EngineError> for CommandError {
             | EngineError::Transport(TransportError::Unreachable) => "unreachable",
             EngineError::Transport(_) => "connection",
             EngineError::Grouped => "grouped",
+            EngineError::JoinInProgress => "join_in_progress",
             EngineError::NoGroup => "no_group",
             EngineError::NotAMember(_) => "not_a_member",
             EngineError::InvalidName => "invalid_name",

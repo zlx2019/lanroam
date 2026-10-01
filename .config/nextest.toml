@@ -1,0 +1,6 @@
+# The identity probe test waits out the whole handshake budget for a closed
+# port (10 s in lanroam-core's tests): started first, it runs alongside the
+# others instead of after them
+[[profile.default.overrides]]
+filter = 'test(=transport::tests::probe_reports_identity)'
+priority = 100

@@ -237,6 +237,7 @@ export const zh = {
   "error.connection": "连接中断了，请重试。",
   "error.gone": "对方已经不在网络上了。",
   "error.grouped": "本机已经在一个桌面组里，请先离开。",
+  "error.join_in_progress": "本机正在处理另一个加入请求，请先完成或拒绝它。",
   "error.no_group": "本机不在桌面组里。",
   "error.pin_format": "PIN 是 6 位数字。",
   "error.invalid_name": "设备名称需要 1 到 40 个字符。",

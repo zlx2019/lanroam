@@ -114,10 +114,13 @@ pub fn normalize_pin(typed: &str) -> Option<String> {
 }
 
 /// The sponsor's limits on joins: one at a time, and a pause after a
-/// failure, growing while wrong PINs keep coming
+/// failure, growing while wrong PINs keep coming. The device joining a
+/// group itself takes it too, so it sponsors no join meanwhile: whichever
+/// ended second would put it in a second group, where it is a member no
+/// one ever reaches
 #[derive(Debug, Default)]
 pub struct JoinGate {
-    /// A join is in progress
+    /// A join is in progress, sponsored or made
     busy: bool,
     /// Joins are turned away until then
     closed_until: Option<Instant>,
@@ -160,6 +163,21 @@ impl JoinGate {
             SHORT_COOLDOWN
         };
         self.closed_until = Some(now + pause);
+    }
+
+    /// Let this device join a group itself; false while another join is
+    /// in progress, sponsored or made
+    pub fn begin_joining(&mut self) -> bool {
+        if self.busy {
+            return false;
+        }
+        self.busy = true;
+        true
+    }
+
+    /// This device is done joining a group; pauses do not apply to it
+    pub fn end_joining(&mut self) {
+        self.busy = false;
     }
 }
 
@@ -561,6 +579,20 @@ mod tests {
         gate.end(t0, &Err(JoinError::PinUsedUp), PIN_ATTEMPTS);
         assert_eq!(gate.begin(t0 + SHORT_COOLDOWN), Err(join_denied::COOLDOWN));
         gate.begin(t0 + COOLDOWN).unwrap();
+    }
+
+    /// A device joining a group sponsors no join meanwhile, nor joins
+    /// twice, and one sponsoring a join does not join a group
+    #[test]
+    fn joining_takes_the_gate() {
+        let t0 = Instant::now();
+        let mut gate = JoinGate::default();
+        assert!(gate.begin_joining());
+        assert!(!gate.begin_joining());
+        assert_eq!(gate.begin(t0), Err(join_denied::BUSY));
+        gate.end_joining();
+        gate.begin(t0).unwrap();
+        assert!(!gate.begin_joining());
     }
 
     /// A wrong PIN pauses the gate however the join ended, twice as long

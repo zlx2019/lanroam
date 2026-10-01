@@ -822,6 +822,29 @@ async fn lost_controller_is_released() {
     .await;
 }
 
+/// A few link measurements are answered at once; one more is turned away
+#[tokio::test]
+async fn link_measurements_are_limited() {
+    let (a, b) = (TestEngine::start(), TestEngine::start());
+    let (peer, info) = (a.as_peer(), b.engine.info());
+    let dial = || {
+        b.engine
+            .inner
+            .transport
+            .connect(&peer, &info, Purpose::Diag)
+    };
+    let mut answered = Vec::new();
+    for _ in 0..MEASUREMENTS {
+        let mut link = dial().await.unwrap();
+        diag::ping_stream(&mut link, 1).await.unwrap();
+        answered.push(link);
+    }
+    let mut more = dial().await.unwrap();
+    assert!(diag::ping_stream(&mut more, 1).await.is_err());
+    let reason = closed_because(more.connection()).await;
+    assert_eq!(reason.as_deref(), Some(reason_code::BUSY));
+}
+
 /// A controller linking up again while its old link still stands (it
 /// restarted) gets what it held released: the session ends with the link
 /// the new one replaces
@@ -909,6 +932,37 @@ async fn rejected_join() {
         .await;
     assert!(!admitted);
     assert!(b.engine.group().is_none());
+}
+
+/// A device joining a group lets no other device in meanwhile, and one
+/// letting another in joins no group meanwhile: whichever ended second
+/// would put it in a second group, a member there no one ever reaches
+#[tokio::test]
+async fn joining_and_letting_in_exclude_each_other() {
+    let (mut a, mut b, c) = (
+        TestEngine::start(),
+        TestEngine::start(),
+        TestEngine::start(),
+    );
+    let pin_shown =
+        |event: &EngineEvent| matches!(event, EngineEvent::JoinPin { .. }).then_some(());
+
+    let joining = a.engine.join(&b.as_peer()).await.unwrap();
+    b.expect("PIN", pin_shown).await;
+    let refused = c.engine.join(&a.as_peer()).await.map(drop);
+    assert!(
+        matches!(&refused, Err(EngineError::Join(JoinError::Denied(code))) if code == join_denied::BUSY),
+        "{refused:?}"
+    );
+    drop(joining);
+
+    let _letting_in = c.engine.join(&a.as_peer()).await.unwrap();
+    a.expect("PIN", pin_shown).await;
+    let refused = a.engine.join(&b.as_peer()).await.map(drop);
+    assert!(
+        matches!(refused, Err(EngineError::JoinInProgress)),
+        "{refused:?}"
+    );
 }
 
 /// Every attempt shows the PIN again with the attempts left, so the
@@ -1174,6 +1228,25 @@ async fn input_settings_take_effect() {
         Err(EngineError::InvalidSettings)
     ));
     assert_eq!(a.engine.input_settings(), settings);
+}
+
+/// Input settings changed many times at once end up the same in the file
+/// and in use
+#[tokio::test(flavor = "multi_thread")]
+async fn input_settings_saved_at_once_agree() {
+    let a = TestEngine::start();
+    let saves: Vec<_> = (0..32)
+        .map(|corner_px| {
+            let engine = a.engine.clone();
+            let mut settings = InputSettings::default();
+            settings.switching.corner_px = corner_px;
+            tokio::spawn(async move { engine.set_input_settings(settings).await })
+        })
+        .collect();
+    for save in saves {
+        save.await.unwrap().unwrap();
+    }
+    assert_eq!(InputSettings::load(&a.dir.0), a.engine.input_settings());
 }
 
 /// A closed edge reaches the whole group, and the pointer no longer

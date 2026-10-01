@@ -36,7 +36,7 @@ use lanroam_clipboard::Clipboard;
 use lanroam_input::config::{Chord, EdgeSettings};
 use lanroam_input::{Edge, Point};
 use thiserror::Error;
-use tokio::sync::{Notify, mpsc, oneshot, watch};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::diag;
@@ -46,7 +46,7 @@ use crate::layout::LayoutError;
 use crate::node::{Node, NodeConfig, NodeError};
 use crate::protocol::{Purpose, join_denied, reason_code};
 use crate::settings::InputSettings;
-use crate::transport::{Incoming, Link, Transport, TransportError, closed_because};
+use crate::transport::{Incoming, Link, Transport, TransportError, close_code, closed_because};
 use clipboard::Clip;
 use input::{Input, InputMsg};
 use mesh::{Mesh, Msg, Wiring};
@@ -57,6 +57,16 @@ const SCREEN_POLL: Duration = Duration::from_secs(2);
 
 /// Longest device name, in characters
 pub const MAX_NAME_CHARS: usize = 40;
+
+/// Incoming handshakes run at once at most: anyone on the LAN may connect,
+/// and more wait for their turn rather than pile up
+const HANDSHAKES: usize = 32;
+
+/// Link measurements (`lanroam ping`) answered at once at most
+const MEASUREMENTS: usize = 4;
+
+/// Longest a link measurement is answered
+const MEASUREMENT_LIFE: Duration = Duration::from_secs(5 * 60);
 
 /// Engine errors
 #[derive(Debug, Error)]
@@ -101,6 +111,9 @@ pub enum EngineError {
     /// The engine has stopped
     #[error("the engine has stopped")]
     Stopped,
+    /// Another join is in progress on this device, sponsored or made
+    #[error("another join is in progress on this device; finish or decline it first")]
+    JoinInProgress,
 }
 
 /// What the engine tells its user
@@ -209,8 +222,13 @@ struct Inner {
     data_dir: Option<PathBuf>,
     /// The input settings in use
     input_settings: Mutex<InputSettings>,
+    /// Held while new input settings are saved and put in use, one change
+    /// at a time
+    saving_settings: tokio::sync::Mutex<()>,
     /// Wakes the join being sponsored, to turn it down
     reject: Arc<Notify>,
+    /// One join at a time on this device, sponsored or made
+    join_gate: Arc<Mutex<JoinGate>>,
     /// The mesh's inbox
     inbox: mpsc::UnboundedSender<Msg>,
     /// The input actor's inbox
@@ -285,6 +303,7 @@ impl Engine {
         };
         let (local_tx, local_rx) = watch::channel(info.clone());
         let reject = Arc::new(Notify::new());
+        let join_gate = Arc::new(Mutex::new(JoinGate::default()));
         let (input_tx, input_inbox) = mpsc::unbounded_channel();
         let (links_tx, links_rx) = watch::channel(Arc::default());
         let (clip_tx, clip_inbox) = mpsc::unbounded_channel();
@@ -339,6 +358,7 @@ impl Engine {
             inbox_tx.clone(),
             events_tx,
             Arc::clone(&reject),
+            Arc::clone(&join_gate),
         )));
         if let Some(mut peer_events) = peer_events {
             let inbox = inbox_tx.clone();
@@ -357,7 +377,9 @@ impl Engine {
                 info: local_rx,
                 data_dir,
                 input_settings: Mutex::new(input_settings),
+                saving_settings: tokio::sync::Mutex::new(()),
                 reject,
+                join_gate,
                 inbox: inbox_tx,
                 input: input_tx,
                 doc: doc_rx,
@@ -402,6 +424,9 @@ impl Engine {
     /// Returns once the sponsor shows its PIN; answer with it through
     /// [`Joining::answer`]. Dropping the [`Joining`] cancels.
     pub async fn join(&self, sponsor: &Peer) -> Result<Joining, EngineError> {
+        // Held until the join is over, so no join sponsored here meanwhile
+        // puts this device in a group first
+        let turn = JoinTurn::take(&self.inner.join_gate).ok_or(EngineError::JoinInProgress)?;
         if self.group().is_some() {
             return Err(EngineError::Grouped);
         }
@@ -415,6 +440,7 @@ impl Engine {
             link,
             challenge,
             engine: self.clone(),
+            _turn: turn,
         })
     }
 
@@ -524,11 +550,15 @@ impl Engine {
             .clone()
     }
 
-    /// Use and save new input settings
+    /// Use and save new input settings; changes made at once are saved and
+    /// put in use one after the other
     pub async fn set_input_settings(&self, settings: InputSettings) -> Result<(), EngineError> {
         if !settings.valid() {
             return Err(EngineError::InvalidSettings);
         }
+        // Interleaved, one change could end up in the file and another in
+        // use
+        let _saving = self.inner.saving_settings.lock().await;
         if let Some(dir) = self.inner.data_dir.clone() {
             let saved = settings.clone();
             tokio::task::spawn_blocking(move || saved.save(&dir))
@@ -653,6 +683,33 @@ pub struct Joining {
     challenge: Challenge,
     /// The engine to adopt the group into
     engine: Engine,
+    /// This device's turn to join, given back when the join is over
+    _turn: JoinTurn,
+}
+
+/// This device's turn to join a group itself, taken from its join gate and
+/// given back when dropped
+struct JoinTurn(Arc<Mutex<JoinGate>>);
+
+impl JoinTurn {
+    /// Take the turn, unless a join is in progress here, sponsored or made
+    fn take(gate: &Arc<Mutex<JoinGate>>) -> Option<Self> {
+        let taken = gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .begin_joining();
+        taken.then(|| Self(Arc::clone(gate)))
+    }
+}
+
+impl Drop for JoinTurn {
+    /// Give the turn back
+    fn drop(&mut self) {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .end_joining();
+    }
 }
 
 impl Joining {
@@ -766,14 +823,20 @@ async fn accept_loop(
     inbox: mpsc::UnboundedSender<Msg>,
     events: mpsc::UnboundedSender<EngineEvent>,
     reject: Arc<Notify>,
+    gate: Arc<Mutex<JoinGate>>,
 ) {
     let join = JoinWiring {
-        gate: Arc::new(Mutex::new(JoinGate::default())),
+        gate,
         reject,
         inbox: inbox.clone(),
         events,
     };
+    let handshakes = Arc::new(Semaphore::new(HANDSHAKES));
+    let measurements = Arc::new(Semaphore::new(MEASUREMENTS));
     while let Some(incoming) = transport.accept().await {
+        let Ok(handshaking) = Arc::clone(&handshakes).acquire_owned().await else {
+            return;
+        };
         let info = info.borrow().clone();
         tokio::spawn(serve_incoming(
             incoming,
@@ -781,6 +844,8 @@ async fn accept_loop(
             doc.clone(),
             inbox.clone(),
             join.clone(),
+            handshaking,
+            Arc::clone(&measurements),
         ));
     }
 }
@@ -798,18 +863,23 @@ struct JoinWiring {
     events: mpsc::UnboundedSender<EngineEvent>,
 }
 
-/// Run the handshake of one incoming connection and hand the link to what
-/// its purpose calls for
+/// Run the handshake of one incoming connection, `handshaking` among the
+/// handshakes allowed at once, and hand the link to what its purpose calls
+/// for; `measurements` holds the slots of link measurements
 async fn serve_incoming(
     incoming: Incoming,
     info: PeerInfo,
     doc: watch::Receiver<Option<Arc<GroupDoc>>>,
     inbox: mpsc::UnboundedSender<Msg>,
     join: JoinWiring,
+    handshaking: OwnedSemaphorePermit,
+    measurements: Arc<Semaphore>,
 ) {
     let from = incoming.remote_address();
     let admit = |peer: &PeerInfo, purpose| admission(doc.borrow().as_deref(), peer, purpose);
-    let link = match incoming.handshake(&info, admit).await {
+    let handshake = incoming.handshake(&info, admit).await;
+    drop(handshaking);
+    let link = match handshake {
         Ok(link) => link,
         // Discovery probing our identity
         Err(e) if e.is_probe() => return,
@@ -826,7 +896,25 @@ async fn serve_incoming(
             });
         }
         Purpose::Join => sponsor(link, &info, &join).await,
-        Purpose::Diag => diag::respond(link).await,
+        Purpose::Diag => measure(link, &measurements).await,
+    }
+}
+
+/// Answer a link measurement for [`MEASUREMENT_LIFE`] at most, if one of
+/// the `slots` is free
+async fn measure(link: Link, slots: &Semaphore) {
+    let Ok(_slot) = slots.try_acquire() else {
+        tracing::debug!(from = %link.remote().name, "turned a link measurement away");
+        link.close_after_flush_because(reason_code::BUSY).await;
+        return;
+    };
+    let conn = link.connection().clone();
+    if tokio::time::timeout(MEASUREMENT_LIFE, diag::respond(link))
+        .await
+        .is_err()
+    {
+        // Its echo of datagrams ends with the connection
+        conn.close(close_code::NORMAL, b"measured long enough");
     }
 }
 

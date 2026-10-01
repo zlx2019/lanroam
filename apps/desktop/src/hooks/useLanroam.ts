@@ -18,11 +18,16 @@ export function useSnapshot(): Snapshot | null {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   useEffect(() => {
     let alive = true;
+    // A snapshot pushed before the one asked for arrives is the newer
+    let pushed = false;
     api
       .getSnapshot()
-      .then((s) => alive && setSnapshot(s))
+      .then((s) => alive && !pushed && setSnapshot(s))
       .catch(console.error);
-    const unlisten = listen<Snapshot>(EVENTS.SNAPSHOT, (e) => setSnapshot(e.payload));
+    const unlisten = listen<Snapshot>(EVENTS.SNAPSHOT, (e) => {
+      pushed = true;
+      setSnapshot(e.payload);
+    });
     return () => {
       alive = false;
       unlisten.then((u) => u()).catch(console.error);

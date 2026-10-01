@@ -222,6 +222,7 @@ export const en: Record<TextKey, string> = {
   "error.connection": "The connection dropped; try again.",
   "error.gone": "That device has left the network.",
   "error.grouped": "This device is in a desk group already; leave it first.",
+  "error.join_in_progress": "This device is handling another join request; finish or decline it first.",
   "error.no_group": "This device is not in a desk group.",
   "error.pin_format": "A PIN is 6 digits.",
   "error.invalid_name": "A device name needs 1 to 40 characters.",

@@ -28,6 +28,7 @@ use lanroam_input::switch::{self, Emit, Request, Switch};
 use lanroam_input::world::World;
 use lanroam_input::{InputError, MouseButton, Point, Rect};
 use tokio::sync::{mpsc, oneshot, watch};
+use tokio::time::MissedTickBehavior;
 
 use super::EngineEvent;
 use super::clipboard::ClipMsg;
@@ -563,6 +564,8 @@ impl Input {
     /// Run until shut down
     pub(super) async fn run(mut self, mut inbox: mpsc::UnboundedReceiver<InputMsg>) {
         let mut heartbeat = tokio::time::interval(HEARTBEAT);
+        // After a sleep or a stall, one heartbeat rather than a burst
+        heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 msg = inbox.recv() => {

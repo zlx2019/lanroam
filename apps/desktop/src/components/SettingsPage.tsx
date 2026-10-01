@@ -193,17 +193,25 @@ function General({
 function Control({ snapshot, onToast }: { snapshot: Snapshot; onToast: (message: string) => void }) {
   const { t } = useI18n();
   const [settings, setSettings] = useState<InputSettings | null>(null);
+  // Saves go out one after another, in the order they were made
+  const saving = useRef(Promise.resolve());
 
   useEffect(() => {
     api.getInputSettings().then(setSettings).catch(console.error);
   }, []);
 
-  /** Save and use new input settings */
+  /** Show new input settings at once, so the next change builds on them,
+   * and save them after the ones before; a failed save shows the settings
+   * in use again */
   const save = (next: InputSettings) => {
-    api
-      .saveInputSettings(next)
-      .then(() => setSettings(next))
-      .catch((e) => onToast(formatError(t, e)));
+    setSettings(next);
+    saving.current = saving.current
+      .then(() => api.saveInputSettings(next))
+      .catch((e) => {
+        onToast(formatError(t, e));
+        return api.getInputSettings().then(setSettings);
+      })
+      .catch(console.error);
   };
 
   if (!settings) return null;

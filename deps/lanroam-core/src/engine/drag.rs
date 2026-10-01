@@ -11,6 +11,7 @@
 //! device and fetched ahead of a paste land in folders of the same kind
 //! (see [`super::clipboard`]).
 
+use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -178,7 +179,27 @@ pub(super) fn describe(paths: &[PathBuf]) -> Vec<DragItem> {
 
 /// Where the folders of drags coming here go
 fn root() -> PathBuf {
-    std::env::temp_dir().join("lanroam-drops")
+    root_for(cfg!(any(target_os = "macos", windows)), |name| {
+        std::env::var_os(name)
+    })
+}
+
+/// [`root`] on a system whose temporary folder is the user's own
+/// (`private_temp`: macOS, Windows) or not, reading the environment through
+/// `var`. A temporary folder shared by all users (/tmp) would let the
+/// others read the files, or put a link where the folders go, so there
+/// they go to the user's cache folder
+fn root_for(private_temp: bool, var: impl Fn(&str) -> Option<OsString>) -> PathBuf {
+    let temp = || std::env::temp_dir().join("lanroam-drops");
+    if private_temp {
+        return temp();
+    }
+    // An unset, empty or relative XDG_CACHE_HOME means ~/.cache
+    let cache = var("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+        .or_else(|| var("HOME").map(|home| PathBuf::from(home).join(".cache")));
+    cache.map_or_else(temp, |cache| cache.join("lanroam").join("drops"))
 }
 
 /// A new, empty folder for files coming here, told apart by `name`
@@ -275,6 +296,40 @@ mod tests {
         assert!(paths[0].is_file() && paths[1].is_dir());
         discard(&dir);
         assert!(!dir.exists());
+    }
+
+    /// Drops go to the temporary folder where it is the user's own, and to
+    /// the user's cache folder where it is shared
+    #[cfg(unix)]
+    #[test]
+    fn drops_stay_out_of_shared_folders() {
+        /// An environment holding `vars`
+        fn env<'a>(vars: &'a [(&str, &str)]) -> impl Fn(&str) -> Option<OsString> + 'a {
+            move |name| {
+                vars.iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| OsString::from(*value))
+            }
+        }
+
+        let temp = std::env::temp_dir().join("lanroam-drops");
+        let home = [("HOME", "/home/zero")];
+        assert_eq!(root_for(true, env(&home)), temp);
+        assert_eq!(
+            root_for(false, env(&home)),
+            PathBuf::from("/home/zero/.cache/lanroam/drops")
+        );
+        let xdg = [("HOME", "/home/zero"), ("XDG_CACHE_HOME", "/data/cache")];
+        assert_eq!(
+            root_for(false, env(&xdg)),
+            PathBuf::from("/data/cache/lanroam/drops")
+        );
+        let relative = [("HOME", "/home/zero"), ("XDG_CACHE_HOME", "cache")];
+        assert_eq!(
+            root_for(false, env(&relative)),
+            PathBuf::from("/home/zero/.cache/lanroam/drops")
+        );
+        assert_eq!(root_for(false, env(&[])), temp);
     }
 
     #[test]
