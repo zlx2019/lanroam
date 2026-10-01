@@ -16,7 +16,7 @@ use lanroam_core::lanroam_input::{InputError, MouseButton, Point, Rect, keymap};
 pub(crate) struct DryRunInput;
 
 impl InputBackend for DryRunInput {
-    fn screens(&self) -> Result<(Vec<Rect>, u32), InputError> {
+    fn screens(&self) -> Result<(Vec<Rect>, Vec<u32>), InputError> {
         PlatformInput.screens()
     }
 

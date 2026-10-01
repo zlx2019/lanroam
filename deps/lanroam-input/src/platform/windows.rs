@@ -118,9 +118,14 @@ pub(super) fn scale() -> Result<u32, InputError> {
     // SAFETY: plain call; with MONITOR_DEFAULTTOPRIMARY it always returns a
     // monitor
     let primary = unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) };
+    monitor_scale(primary)
+}
+
+/// A monitor's DPI scale in percent
+fn monitor_scale(monitor: HMONITOR) -> Result<u32, InputError> {
     let (mut dpi_x, mut dpi_y) = (0u32, 0u32);
     // SAFETY: both out-pointers are valid for the call
-    let hr = unsafe { GetDpiForMonitor(primary, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) };
+    let hr = unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) };
     if hr < 0 || dpi_x == 0 {
         return Err(InputError::Os(format!("GetDpiForMonitor failed ({hr:#x})")));
     }
@@ -129,31 +134,42 @@ pub(super) fn scale() -> Result<u32, InputError> {
 
 /// Monitor rectangles, in physical pixels
 pub(super) fn displays() -> Result<Vec<Rect>, InputError> {
+    screens().map(|(displays, _)| displays)
+}
+
+/// Monitor rectangles in physical pixels, with each monitor's DPI scale in
+/// percent (the primary monitor's for one whose DPI cannot be read)
+pub(super) fn screens() -> Result<(Vec<Rect>, Vec<u32>), InputError> {
     dpi_aware();
-    let mut rects: Vec<Rect> = Vec::new();
-    // SAFETY: the callback only runs during this call, and `rects` outlives
-    // it
+    let mut monitors: Vec<(Rect, Option<u32>)> = Vec::new();
+    // SAFETY: the callback only runs during this call, and `monitors`
+    // outlives it
     let ok = unsafe {
         EnumDisplayMonitors(
             null_mut(),
             null(),
             Some(collect_monitor),
-            (&raw mut rects) as LPARAM,
+            (&raw mut monitors) as LPARAM,
         )
     };
-    if ok == 0 || rects.is_empty() {
+    if ok == 0 || monitors.is_empty() {
         return Err(InputError::Os(
             "EnumDisplayMonitors found no monitor".into(),
         ));
     }
-    Ok(rects)
+    let fallback = || scale().unwrap_or(100);
+    Ok(monitors
+        .into_iter()
+        .map(|(rect, scale)| (rect, scale.unwrap_or_else(fallback)))
+        .unzip())
 }
 
-/// `EnumDisplayMonitors` callback: append the monitor's rectangle
+/// `EnumDisplayMonitors` callback: append the monitor's rectangle and its
+/// scale, if it can be read
 ///
 /// # Safety
 ///
-/// `data` must be the `Vec<Rect>` passed by [`displays`].
+/// `data` must be the `Vec<(Rect, Option<u32>)>` passed by [`screens`].
 unsafe extern "system" fn collect_monitor(
     monitor: HMONITOR,
     _hdc: HDC,
@@ -161,7 +177,7 @@ unsafe extern "system" fn collect_monitor(
     data: LPARAM,
 ) -> BOOL {
     // SAFETY: see above; the enumeration is synchronous
-    let rects = unsafe { &mut *(data as *mut Vec<Rect>) };
+    let monitors = unsafe { &mut *(data as *mut Vec<(Rect, Option<u32>)>) };
     let mut info = MONITORINFO {
         cbSize: size_of::<MONITORINFO>() as u32,
         ..Default::default()
@@ -169,7 +185,8 @@ unsafe extern "system" fn collect_monitor(
     // SAFETY: `info` is a MONITORINFO with its size set
     if unsafe { GetMonitorInfoW(monitor, &mut info) } != 0 {
         let r = info.rcMonitor;
-        rects.push(Rect::new(r.left, r.top, r.right - r.left, r.bottom - r.top));
+        let rect = Rect::new(r.left, r.top, r.right - r.left, r.bottom - r.top);
+        monitors.push((rect, monitor_scale(monitor).ok()));
     }
     TRUE
 }

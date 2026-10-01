@@ -119,8 +119,8 @@ pub(super) enum Msg {
     Screens {
         /// Display rectangles, in device coordinates
         displays: Vec<Rect>,
-        /// Device units per logical pixel, in percent
-        scale: u32,
+        /// Each display's device units per logical pixel, in percent
+        scales: Vec<u32>,
     },
     /// Move a member on the layout canvas
     Place {
@@ -320,9 +320,9 @@ pub(super) struct Mesh {
     saver: Option<Saver>,
     /// The document; `None` outside a group
     doc: Option<GroupDoc>,
-    /// This device's displays (device coordinates) and scale (percent);
-    /// `None` until first read
-    screens: Option<(Vec<Rect>, u32)>,
+    /// This device's displays (device coordinates) and each one's scale
+    /// (percent); `None` until first read
+    screens: Option<(Vec<Rect>, Vec<u32>)>,
     /// The Command / Control swap setting, once changed while running
     swap_cmd_ctrl: Option<bool>,
     /// The pointer speed, once changed while running
@@ -442,8 +442,8 @@ impl Mesh {
                     let _ = reply.send(doc.clone());
                 }
             }
-            Msg::Screens { displays, scale } => {
-                let screens = Some((displays, scale));
+            Msg::Screens { displays, scales } => {
+                let screens = Some((displays, scales));
                 if screens != self.screens {
                     self.screens = screens;
                     self.commit();
@@ -918,9 +918,8 @@ impl Mesh {
         profile.device_id.clone_from(&self.info.device_id);
         profile.name.clone_from(&self.info.name);
         profile.platform.clone_from(&self.info.platform);
-        if let Some((displays, scale)) = &self.screens {
-            profile.displays.clone_from(displays);
-            profile.scale = *scale;
+        if let Some((displays, scales)) = &self.screens {
+            profile.set_displays(displays, scales);
         }
         if let Some(on) = self.swap_cmd_ctrl {
             profile.swap_cmd_ctrl = on;

@@ -66,9 +66,15 @@ pub struct Profile {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub displays: Vec<Rect>,
     /// Device units per logical pixel, in percent (see
-    /// [`lanroam_input::platform::scale`])
+    /// [`lanroam_input::platform::scale`]): the primary display's, and
+    /// every display's unless `display_scales` says otherwise
     #[serde(default = "full_scale")]
     pub scale: u32,
+    /// Each display's scale, in the order of `displays`, where they differ
+    /// (a Windows PC with displays at 200% and 100%); empty otherwise.
+    /// Since protocol 2.7: older members use `scale` for every display
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub display_scales: Vec<u32>,
     /// Swap Command and Control on input from a device of the other
     /// platform, so shortcuts stay under the same fingers
     #[serde(default = "enabled")]
@@ -165,11 +171,27 @@ impl Profile {
             platform: info.platform.clone(),
             displays: Vec::new(),
             scale: full_scale(),
+            display_scales: Vec::new(),
             swap_cmd_ctrl: enabled(),
             pointer_speed: normal_speed(),
             clipboard: ClipboardShare::default(),
             files: FileShare::default(),
         }
+    }
+
+    /// Take the displays as read, with each one's scale: `scale` becomes
+    /// the primary display's (the one older members use for all), and
+    /// `display_scales` lists them all only where they differ
+    pub fn set_displays(&mut self, displays: &[Rect], scales: &[u32]) {
+        let primary = lanroam_input::world::primary(displays);
+        self.displays = displays.to_vec();
+        self.scale = scales.get(primary).copied().unwrap_or_else(full_scale);
+        let differ = scales.iter().any(|scale| *scale != self.scale);
+        self.display_scales = if differ && scales.len() == displays.len() {
+            scales.to_vec()
+        } else {
+            Vec::new()
+        };
     }
 
     /// Whether both say the same, revisions aside
@@ -545,6 +567,26 @@ mod tests {
         let before = doc.clone();
         doc.admit(&info("b"));
         assert_eq!(doc, before);
+    }
+
+    /// Displays of one scale give it once; displays of their own scales
+    /// are listed, `scale` keeping the primary display's for older members,
+    /// whose documents read as before
+    #[test]
+    fn display_scales() {
+        let mut profile = Profile::new(&info("pc"));
+        let laptop = Rect::new(0, 0, 2880, 1800);
+        let display = Rect::new(2880, 0, 1920, 1080);
+        profile.set_displays(&[display, laptop], &[150, 150]);
+        assert_eq!((profile.scale, profile.display_scales.len()), (150, 0));
+        profile.set_displays(&[display, laptop], &[100, 200]);
+        assert_eq!(profile.scale, 200);
+        assert_eq!(profile.display_scales, [100, 200]);
+
+        let older = serde_json::to_value(Profile::new(&info("mac"))).unwrap();
+        assert!(older.get("display_scales").is_none());
+        let read: Profile = serde_json::from_value(older).unwrap();
+        assert!(read.display_scales.is_empty());
     }
 
     /// A removal beats an old copy that still lists the device, and a

@@ -49,9 +49,9 @@ const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Access to the keyboard, mouse and displays (the platform's, or a test's)
 pub trait InputBackend: Send + Sync {
-    /// The displays (device coordinates) and the scale (device units per
-    /// logical pixel, in percent)
-    fn screens(&self) -> Result<(Vec<Rect>, u32), InputError>;
+    /// The displays (device coordinates) and each one's scale (device units
+    /// per logical pixel, in percent), in the same order
+    fn screens(&self) -> Result<(Vec<Rect>, Vec<u32>), InputError>;
     /// Start capturing, deciding each event with `switch`; the capture runs
     /// until the returned guard is dropped
     fn capture(
@@ -67,8 +67,8 @@ pub trait InputBackend: Send + Sync {
 pub struct PlatformInput;
 
 impl InputBackend for PlatformInput {
-    fn screens(&self) -> Result<(Vec<Rect>, u32), InputError> {
-        Ok((platform::displays()?, platform::scale()?))
+    fn screens(&self) -> Result<(Vec<Rect>, Vec<u32>), InputError> {
+        platform::screens()
     }
 
     fn capture(

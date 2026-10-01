@@ -221,7 +221,7 @@ struct FakeInput {
 }
 
 impl InputBackend for FakeInput {
-    fn screens(&self) -> Result<(Vec<lanroam_input::Rect>, u32), InputError> {
+    fn screens(&self) -> Result<(Vec<lanroam_input::Rect>, Vec<u32>), InputError> {
         // The tests report screens themselves, at once
         Err(InputError::Unsupported("fake screens"))
     }
@@ -582,7 +582,8 @@ impl TestEngine {
     /// Report one display of `width`x`height` at `scale` percent
     fn screens(&self, width: i32, height: i32, scale: u32) {
         let displays = vec![lanroam_input::Rect::new(0, 0, width, height)];
-        let msg = Msg::Screens { displays, scale };
+        let scales = vec![scale];
+        let msg = Msg::Screens { displays, scales };
         self.engine.inner.inbox.send(msg).unwrap();
     }
 }
@@ -634,6 +635,38 @@ async fn layout_syncs() {
         matches!(refused, Err(EngineError::Layout(LayoutError::Overlap(..)))),
         "{refused:?}"
     );
+}
+
+/// Displays of their own scales reach the group, which lays each out at
+/// its logical size: a 200% laptop with a 100% display at its right is
+/// 1440 + 1920 wide
+#[tokio::test]
+async fn display_scales_reach_the_group() {
+    use lanroam_input::Rect;
+
+    let (mut a, b) = (TestEngine::start(), TestEngine::start());
+    a.sees(&[&b]);
+    b.sees(&[&a]);
+    a.screens(2560, 1440, 100);
+    join(&b, &mut a).await;
+    let displays = vec![Rect::new(0, 0, 2880, 1800), Rect::new(2880, 0, 1920, 1080)];
+    let scales = vec![200, 100];
+    let msg = Msg::Screens { displays, scales };
+    b.engine.inner.inbox.send(msg).unwrap();
+    let fb = b.fp();
+    a.until("b's displays at their own scales", |status| {
+        status.doc.as_ref().is_some_and(|doc| {
+            let profile = &doc.devices[&fb].profile;
+            profile.scale == 200 && profile.display_scales == [200, 100]
+        })
+    })
+    .await;
+    let world = crate::layout::world(&a.engine.group().unwrap());
+    let width = world
+        .device(&fb)
+        .and_then(lanroam_input::world::Device::bounds)
+        .map(|area| area.right - area.left);
+    assert_eq!(width, Some(3360.0));
 }
 
 impl TestEngine {

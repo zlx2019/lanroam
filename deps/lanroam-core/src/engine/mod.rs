@@ -762,9 +762,9 @@ async fn poll_screens(backend: Arc<dyn InputBackend>, inbox: mpsc::UnboundedSend
             .unwrap_or_else(|e| Err(lanroam_input::InputError::Os(e.to_string())));
         match read {
             Ok(screens) if last.as_ref() != Some(&screens) => {
-                let (displays, scale) = screens.clone();
+                let (displays, scales) = screens.clone();
                 last = Some(screens);
-                if inbox.send(Msg::Screens { displays, scale }).is_err() {
+                if inbox.send(Msg::Screens { displays, scales }).is_err() {
                     return;
                 }
             }
