@@ -44,7 +44,7 @@ pub const COOLDOWN: Duration = Duration::from_secs(30);
 
 /// The longest a sponsor turns joins away after wrong PINs: at worst it
 /// hears [`PIN_ATTEMPTS`] guesses every 15 minutes
-const MAX_COOLDOWN: Duration = Duration::from_secs(15 * 60);
+pub const MAX_COOLDOWN: Duration = Duration::from_secs(15 * 60);
 
 /// How long a sponsor turns joins away after a join that failed without a
 /// wrong PIN, so repeated requests cannot flood it with PINs
