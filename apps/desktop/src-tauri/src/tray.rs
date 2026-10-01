@@ -1,8 +1,9 @@
 //! The tray icon and its menu: the state, pause and lock, a jump to any
 //! online member, the settings, quitting.
 //!
-//! The menu is rebuilt from each snapshot: members come and go, and the
-//! texts follow the language setting. The icon's shape follows where input
+//! The menu follows each snapshot: members come and go, and the texts
+//! follow the language setting. It is set anew only when what it shows
+//! changed, since that replaces a menu the user has open. The icon's shape follows where input
 //! is (a mouse under signal waves: hollow here, filled on another device,
 //! with a badge or a slash for the rest), so it reads without color in a
 //! monochrome menu bar.
@@ -58,6 +59,36 @@ enum Status {
 /// The status the icon shows now, to change it only when that changes
 static SHOWN: Mutex<Option<Status>> = Mutex::new(None);
 
+/// One line of the tray menu
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Line {
+    /// Words that cannot be chosen
+    Heading(String),
+    /// An item to choose
+    Item {
+        /// Its ID (see [`ids`])
+        id: String,
+        /// Its words
+        text: String,
+    },
+    /// An item with a check mark
+    Check {
+        /// Its ID (see [`ids`])
+        id: String,
+        /// Its words
+        text: String,
+        /// It can be chosen
+        enabled: bool,
+        /// It is checked
+        checked: bool,
+    },
+    /// A line between groups of items
+    Separator,
+}
+
+/// The lines the menu shows now, to set it anew only when they change
+static SHOWN_LINES: Mutex<Option<Vec<Line>>> = Mutex::new(None);
+
 /// Picks an icon file by status: a monochrome template on macOS (the menu
 /// bar tints it), a colored tile elsewhere so it reads on dark and light
 /// taskbars alike
@@ -100,7 +131,9 @@ fn status(snapshot: &Snapshot) -> Status {
 
 /// Create the tray icon with its first menu
 pub fn setup(app: &AppHandle) -> tauri::Result<()> {
-    let menu = build_menu(app, None)?;
+    let lines = menu_lines(texts(app), None);
+    let menu = build_menu(app, &lines)?;
+    *lock(&SHOWN_LINES) = Some(lines);
     *lock(&SHOWN) = Some(Status::Idle);
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon(Status::Idle)?)
@@ -142,11 +175,15 @@ pub fn update(app: &AppHandle, snapshot: &Snapshot) {
             tracing::warn!("cannot update the tray icon: {e}");
         }
     }
-    let line = status_line(app, snapshot);
-    let rebuilt = build_menu(app, Some(snapshot)).and_then(|menu| tray.set_menu(Some(menu)));
-    if let Err(e) = rebuilt {
-        tracing::warn!("cannot update the tray menu: {e}");
+    let t = texts(app);
+    let lines = menu_lines(t, Some(snapshot));
+    if lock(&SHOWN_LINES).as_ref() != Some(&lines) {
+        match build_menu(app, &lines).and_then(|menu| tray.set_menu(Some(menu))) {
+            Ok(()) => *lock(&SHOWN_LINES) = Some(lines),
+            Err(e) => tracing::warn!("cannot update the tray menu: {e}"),
+        }
     }
+    let line = status_line(t, snapshot);
     let _ = tray.set_tooltip(Some(format!("Lanroam · {line}")));
 }
 
@@ -159,9 +196,9 @@ fn texts(app: &AppHandle) -> &'static Texts {
     locale::texts(Lang::from_setting(&language))
 }
 
-/// The state word heading the menu, as the main window shows it
-fn status_line(app: &AppHandle, snapshot: &Snapshot) -> &'static str {
-    let t = texts(app);
+/// The state word heading the menu, as the main window shows it, in the
+/// words `t`
+fn status_line(t: &Texts, snapshot: &Snapshot) -> &'static str {
     let others_online = snapshot
         .group
         .as_ref()
@@ -175,75 +212,78 @@ fn status_line(app: &AppHandle, snapshot: &Snapshot) -> &'static str {
     }
 }
 
-/// The menu for `snapshot` (a bare one before the first)
-fn build_menu(app: &AppHandle, snapshot: Option<&Snapshot>) -> tauri::Result<Menu<Wry>> {
-    let t = texts(app);
-    let menu = Menu::new(app)?;
+/// The lines of the menu for `snapshot` (a bare one before the first), in
+/// the words `t`
+fn menu_lines(t: &Texts, snapshot: Option<&Snapshot>) -> Vec<Line> {
+    let item = |id: &str, text: &str| Line::Item {
+        id: id.to_string(),
+        text: text.to_string(),
+    };
+    let mut lines = Vec::new();
     if let Some(snapshot) = snapshot {
-        let status = MenuItem::new(app, status_line(app, snapshot), false, None::<&str>)?;
-        menu.append(&status)?;
-        menu.append(&PredefinedMenuItem::separator(app)?)?;
+        lines.push(Line::Heading(status_line(t, snapshot).to_string()));
+        lines.push(Line::Separator);
         if let Some(group) = &snapshot.group {
             let paused = snapshot.control.paused;
-            let pause_text = if paused { t.resume } else { t.pause };
-            menu.append(&MenuItem::with_id(
-                app,
-                ids::PAUSE,
-                pause_text,
-                true,
-                None::<&str>,
-            )?)?;
+            lines.push(item(ids::PAUSE, if paused { t.resume } else { t.pause }));
             // Nothing to lock while paused (the pointer stays here anyway),
             // but a lock from before can still be undone
             let locked = snapshot.control.locked || snapshot.control.peer_locked;
-            menu.append(&CheckMenuItem::with_id(
-                app,
-                ids::LOCK,
-                t.lock,
-                !paused || locked,
-                locked,
-                None::<&str>,
-            )?)?;
-            menu.append(&PredefinedMenuItem::separator(app)?)?;
-            menu.append(&MenuItem::new(app, t.switch_to, false, None::<&str>)?)?;
+            lines.push(Line::Check {
+                id: ids::LOCK.to_string(),
+                text: t.lock.to_string(),
+                enabled: !paused || locked,
+                checked: locked,
+            });
+            lines.push(Line::Separator);
+            lines.push(Line::Heading(t.switch_to.to_string()));
             let here = match snapshot.control.mode {
                 ControlMode::Controlling => snapshot.control.peer_fingerprint.as_deref(),
                 _ => None,
             };
             for device in group.devices.iter().filter(|d| d.number.is_some()) {
-                let mut label = format!("{}  {}", device.number.unwrap_or_default(), device.name);
+                let mut text = format!("{}  {}", device.number.unwrap_or_default(), device.name);
                 if !device.online {
-                    label.push_str(&format!(" · {}", t.offline));
+                    text.push_str(&format!(" · {}", t.offline));
                 }
-                let current = here.map_or(device.local, |fp| fp == device.fingerprint);
-                let item = CheckMenuItem::with_id(
-                    app,
-                    format!("{}{}", ids::JUMP, device.fingerprint),
-                    label,
-                    device.online,
-                    current,
-                    None::<&str>,
-                )?;
-                menu.append(&item)?;
+                lines.push(Line::Check {
+                    id: format!("{}{}", ids::JUMP, device.fingerprint),
+                    text,
+                    enabled: device.online,
+                    checked: here.map_or(device.local, |fp| fp == device.fingerprint),
+                });
             }
-            menu.append(&PredefinedMenuItem::separator(app)?)?;
+            lines.push(Line::Separator);
         }
     }
-    menu.append(&MenuItem::with_id(
-        app,
-        ids::SETTINGS,
-        t.settings,
-        true,
-        None::<&str>,
-    )?)?;
-    menu.append(&PredefinedMenuItem::separator(app)?)?;
-    menu.append(&MenuItem::with_id(
-        app,
-        ids::QUIT,
-        t.quit,
-        true,
-        None::<&str>,
-    )?)?;
+    lines.push(item(ids::SETTINGS, t.settings));
+    lines.push(Line::Separator);
+    lines.push(item(ids::QUIT, t.quit));
+    lines
+}
+
+/// A menu showing `lines`
+fn build_menu(app: &AppHandle, lines: &[Line]) -> tauri::Result<Menu<Wry>> {
+    let menu = Menu::new(app)?;
+    for line in lines {
+        match line {
+            Line::Heading(text) => menu.append(&MenuItem::new(app, text, false, None::<&str>)?)?,
+            Line::Item { id, text } => {
+                menu.append(&MenuItem::with_id(app, id, text, true, None::<&str>)?)?;
+            }
+            Line::Check {
+                id,
+                text,
+                enabled,
+                checked,
+            } => {
+                let check =
+                    CheckMenuItem::with_id(app, id, text, *enabled, *checked, None::<&str>)?;
+                menu.append(&check)?;
+            }
+            Line::Separator => menu.append(&PredefinedMenuItem::separator(app)?)?,
+        }
+    }
     Ok(menu)
 }
 
@@ -276,5 +316,106 @@ pub fn show_main_window(app: &AppHandle) {
         let _ = window.show();
         let _ = window.set_focus();
         material::blur_behind(&window);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use lanroam_core::group::{ClipboardShare, FileShare};
+
+    use super::*;
+    use crate::dto::{ControlDto, DeviceDto, GroupDto, InputDto, SelfDto};
+
+    /// A member named `name`, numbered `number` once placed
+    fn device(name: &str, number: Option<usize>, online: bool, local: bool) -> DeviceDto {
+        DeviceDto {
+            fingerprint: format!("fp-{name}"),
+            name: name.to_string(),
+            platform: "macos".to_string(),
+            online,
+            local,
+            number,
+            displays: 1,
+            resolution: String::new(),
+            scale: 100,
+            swap: false,
+            pointer_speed: 100,
+            clipboard: ClipboardShare::default(),
+            files: FileShare::default(),
+            rect: None,
+            origin: None,
+            screens: Vec::new(),
+        }
+    }
+
+    /// This device in a group of `devices`
+    fn snapshot(devices: Vec<DeviceDto>) -> Snapshot {
+        Snapshot {
+            device: SelfDto {
+                fingerprint: "fp-here".to_string(),
+                name: "here".to_string(),
+                platform: "macos".to_string(),
+                version: "0".to_string(),
+            },
+            group: Some(GroupDto {
+                id: "group".to_string(),
+                devices,
+                edges: Vec::new(),
+            }),
+            control: ControlDto::default(),
+            input: InputDto::default(),
+        }
+    }
+
+    /// Before the first snapshot: the settings and quitting only
+    #[test]
+    fn a_bare_menu() {
+        let t = locale::texts(Lang::En);
+        let item = |id: &str, text: &str| Line::Item {
+            id: id.to_string(),
+            text: text.to_string(),
+        };
+        assert_eq!(
+            menu_lines(t, None),
+            [
+                item(ids::SETTINGS, t.settings),
+                Line::Separator,
+                item(ids::QUIT, t.quit)
+            ]
+        );
+    }
+
+    /// Each placed member to jump to, this device checked and offline ones
+    /// not to be chosen; the same state gives the same lines, so the menu
+    /// is not set anew, and a change gives others
+    #[test]
+    fn members_to_jump_to() {
+        let t = locale::texts(Lang::En);
+        let mut shown = snapshot(vec![
+            device("here", Some(1), true, true),
+            device("pc", Some(2), false, false),
+            device("new", None, true, false),
+        ]);
+        let lines = menu_lines(t, Some(&shown));
+        let jumps: Vec<&Line> = lines
+            .iter()
+            .filter(|line| matches!(line, Line::Check { id, .. } if id.starts_with(ids::JUMP)))
+            .collect();
+        let jump = |name: &str, text: String, enabled, checked| Line::Check {
+            id: format!("{}fp-{name}", ids::JUMP),
+            text,
+            enabled,
+            checked,
+        };
+        assert_eq!(
+            jumps,
+            [
+                &jump("here", "1  here".to_string(), true, true),
+                &jump("pc", format!("2  pc · {}", t.offline), false, false),
+            ]
+        );
+        assert_eq!(menu_lines(t, Some(&shown.clone())), lines);
+        shown.control.paused = true;
+        assert_ne!(menu_lines(t, Some(&shown)), lines);
     }
 }

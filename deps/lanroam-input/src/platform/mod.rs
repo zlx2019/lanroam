@@ -73,6 +73,12 @@ pub fn scale() -> Result<u32, InputError> {
     imp::scale()
 }
 
+/// This machine's displays, as [`displays`], with each one's scale, as
+/// [`scale`] (Windows monitors may each have their own)
+pub fn screens() -> Result<(Vec<Rect>, Vec<u32>), InputError> {
+    imp::screens()
+}
+
 /// Start capturing local input, deciding each event with `switch`
 ///
 /// Fails with [`InputError::PermissionDenied`] when the OS withholds the

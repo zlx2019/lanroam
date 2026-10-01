@@ -37,11 +37,17 @@ pub const PIN_DIGITS: usize = 6;
 /// Wrong answers one PIN survives before it is used up
 pub const PIN_ATTEMPTS: u32 = 3;
 
-/// How long a sponsor turns joins away after a PIN was used up
+/// How long a sponsor turns joins away after a join that failed with a
+/// wrong PIN; twice as long for each such join until one gets in, up to
+/// [`MAX_COOLDOWN`]
 pub const COOLDOWN: Duration = Duration::from_secs(30);
 
-/// How long a sponsor turns joins away after any other failed join, so
-/// repeated requests cannot flood it with PINs
+/// The longest a sponsor turns joins away after wrong PINs: at worst it
+/// hears [`PIN_ATTEMPTS`] guesses every 15 minutes
+pub const MAX_COOLDOWN: Duration = Duration::from_secs(15 * 60);
+
+/// How long a sponsor turns joins away after a join that failed without a
+/// wrong PIN, so repeated requests cannot flood it with PINs
 const SHORT_COOLDOWN: Duration = Duration::from_secs(3);
 
 /// How long a sponsor waits for an answer: a person reads and types the PIN
@@ -108,13 +114,19 @@ pub fn normalize_pin(typed: &str) -> Option<String> {
 }
 
 /// The sponsor's limits on joins: one at a time, and a pause after a
-/// failure
+/// failure, growing while wrong PINs keep coming. The device joining a
+/// group itself takes it too, so it sponsors no join meanwhile: whichever
+/// ended second would put it in a second group, where it is a member no
+/// one ever reaches
 #[derive(Debug, Default)]
 pub struct JoinGate {
-    /// A join is in progress
+    /// A join is in progress, sponsored or made
     busy: bool,
     /// Joins are turned away until then
     closed_until: Option<Instant>,
+    /// The pause after the last join that failed with a wrong PIN, unless
+    /// a join got in since
+    wrong_pause: Option<Duration>,
 }
 
 impl JoinGate {
@@ -130,16 +142,42 @@ impl JoinGate {
         Ok(())
     }
 
-    /// A join is over; failures close the gate for a while, longest when
-    /// the PIN was used up
-    pub fn end(&mut self, now: Instant, result: &Result<(), JoinError>) {
+    /// A join is over, after `wrong` wrong PINs. A failure closes the gate
+    /// for a while: with a wrong PIN, however the join ended (a joiner
+    /// leaving before the PIN is used up must not get a new one sooner),
+    /// for [`COOLDOWN`], then twice as long each time until a join gets in;
+    /// without one, briefly
+    pub fn end(&mut self, now: Instant, result: &Result<(), JoinError>, wrong: u32) {
         self.busy = false;
-        let pause = match result {
-            Ok(()) => return,
-            Err(JoinError::PinUsedUp) => COOLDOWN,
-            Err(_) => SHORT_COOLDOWN,
+        if result.is_ok() {
+            self.wrong_pause = None;
+            return;
+        }
+        let pause = if wrong > 0 {
+            let pause = self
+                .wrong_pause
+                .map_or(COOLDOWN, |last| (last * 2).min(MAX_COOLDOWN));
+            self.wrong_pause = Some(pause);
+            pause
+        } else {
+            SHORT_COOLDOWN
         };
         self.closed_until = Some(now + pause);
+    }
+
+    /// Let this device join a group itself; false while another join is
+    /// in progress, sponsored or made
+    pub fn begin_joining(&mut self) -> bool {
+        if self.busy {
+            return false;
+        }
+        self.busy = true;
+        true
+    }
+
+    /// This device is done joining a group; pauses do not apply to it
+    pub fn end_joining(&mut self) {
+        self.busy = false;
     }
 }
 
@@ -263,8 +301,9 @@ pub struct Verified {
 }
 
 /// Run the PIN attempts until the joiner proves it knows `pin` (sponsor
-/// side); `on_round` hears the attempts left as each one starts, the
-/// current one included
+/// side); `wrong` counts the wrong answers, kept when the joiner leaves
+/// or the verify is dropped, and `on_round` hears the attempts left as
+/// each one starts, the current one included
 ///
 /// Denies the join itself when the PIN is used up or the joiner falls
 /// silent; the caller then only closes the link.
@@ -272,6 +311,7 @@ pub async fn verify(
     link: &mut Link,
     own_fp: &str,
     pin: &str,
+    wrong: &mut u32,
     mut on_round: impl FnMut(u32),
 ) -> Result<Verified, JoinError> {
     let joiner_fp = link.remote().fingerprint.clone();
@@ -299,6 +339,7 @@ pub async fn verify(
                 proof: proof(&key, SPONSOR_PROOF),
             });
         }
+        *wrong += 1;
     }
     deny(link, join_denied::WRONG_PIN).await?;
     Err(JoinError::PinUsedUp)
@@ -334,7 +375,8 @@ mod tests {
     /// The sponsor side of a whole join: verify, then accept with a fresh
     /// group of the two
     async fn sponsor(mut link: Link, own: PeerInfo, pin: &str) -> Result<(), JoinError> {
-        let result = match verify(&mut link, &own.fingerprint, pin, |_| {}).await {
+        let mut wrong = 0;
+        let result = match verify(&mut link, &own.fingerprint, pin, &mut wrong, |_| {}).await {
             Ok(verified) => {
                 let mut doc = GroupDoc::new(&own);
                 doc.admit(link.remote());
@@ -407,6 +449,25 @@ mod tests {
             "{doc:?}"
         );
         assert!(matches!(task.await.unwrap(), Err(JoinError::PinUsedUp)));
+    }
+
+    /// A joiner that leaves after a wrong PIN has it counted all the same
+    #[tokio::test]
+    async fn wrong_pins_count_when_the_joiner_leaves() {
+        let (a, b, mut joiner_link, mut sponsor_link) = TestNode::link_pair().await;
+        let own_fp = b.info.fingerprint.clone();
+        let task = tokio::spawn(async move {
+            let mut wrong = 0;
+            let result = verify(&mut sponsor_link, &own_fp, "123456", &mut wrong, |_| {}).await;
+            (result, wrong)
+        });
+        let challenge = recv_challenge(&mut joiner_link).await.unwrap();
+        let verdict = answer(&mut joiner_link, &a.info.fingerprint, &challenge, "654321").await;
+        assert!(matches!(verdict, Ok(Verdict::Retry(_))), "{verdict:?}");
+        joiner_link.close();
+        let (result, wrong) = task.await.unwrap();
+        assert!(matches!(result, Err(JoinError::Transport(_))), "{result:?}");
+        assert_eq!(wrong, 1);
     }
 
     /// A relay between the joiner and the real sponsor gets nowhere, even
@@ -502,20 +563,63 @@ mod tests {
         assert_eq!(normalize_pin("١٢٣٤٥٦"), None);
     }
 
-    /// One join at a time; failures pause the gate, a used-up PIN longest
+    /// One join at a time; failures pause the gate, briefly without a
+    /// wrong PIN
     #[test]
     fn gate() {
         let t0 = Instant::now();
         let mut gate = JoinGate::default();
         gate.begin(t0).unwrap();
         assert_eq!(gate.begin(t0), Err(join_denied::BUSY));
-        gate.end(t0, &Ok(()));
+        gate.end(t0, &Ok(()), 0);
         gate.begin(t0).unwrap();
-        gate.end(t0, &Err(JoinError::Timeout("x")));
+        gate.end(t0, &Err(JoinError::Timeout("x")), 0);
         assert_eq!(gate.begin(t0), Err(join_denied::COOLDOWN));
         gate.begin(t0 + SHORT_COOLDOWN).unwrap();
-        gate.end(t0, &Err(JoinError::PinUsedUp));
+        gate.end(t0, &Err(JoinError::PinUsedUp), PIN_ATTEMPTS);
         assert_eq!(gate.begin(t0 + SHORT_COOLDOWN), Err(join_denied::COOLDOWN));
         gate.begin(t0 + COOLDOWN).unwrap();
+    }
+
+    /// A device joining a group sponsors no join meanwhile, nor joins
+    /// twice, and one sponsoring a join does not join a group
+    #[test]
+    fn joining_takes_the_gate() {
+        let t0 = Instant::now();
+        let mut gate = JoinGate::default();
+        assert!(gate.begin_joining());
+        assert!(!gate.begin_joining());
+        assert_eq!(gate.begin(t0), Err(join_denied::BUSY));
+        gate.end_joining();
+        gate.begin(t0).unwrap();
+        assert!(!gate.begin_joining());
+    }
+
+    /// A wrong PIN pauses the gate however the join ended, twice as long
+    /// each time until a join gets in
+    #[test]
+    fn wrong_pins_pause_longer_each_time() {
+        let mut gate = JoinGate::default();
+        let mut now = Instant::now();
+        // The joiner guessed once, then left
+        let left: Result<(), JoinError> = Err(TransportError::Unreachable.into());
+        let mut pauses = Vec::new();
+        for _ in 0..7 {
+            gate.begin(now).unwrap();
+            gate.end(now, &left, 1);
+            let until = gate.closed_until.unwrap();
+            let early = until - Duration::from_millis(1);
+            assert_eq!(gate.begin(early), Err(join_denied::COOLDOWN));
+            pauses.push((until - now).as_secs());
+            now = until;
+        }
+        assert_eq!(pauses, [30, 60, 120, 240, 480, 900, 900]);
+
+        // Getting in, even after a wrong PIN, starts over
+        gate.begin(now).unwrap();
+        gate.end(now, &Ok(()), 1);
+        gate.begin(now).unwrap();
+        gate.end(now, &left, 1);
+        assert_eq!(gate.closed_until, Some(now + COOLDOWN));
     }
 }

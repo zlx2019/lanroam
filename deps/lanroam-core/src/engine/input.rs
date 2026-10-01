@@ -28,6 +28,7 @@ use lanroam_input::switch::{self, Emit, Request, Switch};
 use lanroam_input::world::World;
 use lanroam_input::{InputError, MouseButton, Point, Rect};
 use tokio::sync::{mpsc, oneshot, watch};
+use tokio::time::MissedTickBehavior;
 
 use super::EngineEvent;
 use super::clipboard::ClipMsg;
@@ -48,9 +49,9 @@ const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Access to the keyboard, mouse and displays (the platform's, or a test's)
 pub trait InputBackend: Send + Sync {
-    /// The displays (device coordinates) and the scale (device units per
-    /// logical pixel, in percent)
-    fn screens(&self) -> Result<(Vec<Rect>, u32), InputError>;
+    /// The displays (device coordinates) and each one's scale (device units
+    /// per logical pixel, in percent), in the same order
+    fn screens(&self) -> Result<(Vec<Rect>, Vec<u32>), InputError>;
     /// Start capturing, deciding each event with `switch`; the capture runs
     /// until the returned guard is dropped
     fn capture(
@@ -66,8 +67,8 @@ pub trait InputBackend: Send + Sync {
 pub struct PlatformInput;
 
 impl InputBackend for PlatformInput {
-    fn screens(&self) -> Result<(Vec<Rect>, u32), InputError> {
-        Ok((platform::displays()?, platform::scale()?))
+    fn screens(&self) -> Result<(Vec<Rect>, Vec<u32>), InputError> {
+        platform::screens()
     }
 
     fn capture(
@@ -563,6 +564,8 @@ impl Input {
     /// Run until shut down
     pub(super) async fn run(mut self, mut inbox: mpsc::UnboundedReceiver<InputMsg>) {
         let mut heartbeat = tokio::time::interval(HEARTBEAT);
+        // After a sleep or a stall, one heartbeat rather than a burst
+        heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 msg = inbox.recv() => {

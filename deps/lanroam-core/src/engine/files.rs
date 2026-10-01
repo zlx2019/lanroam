@@ -78,6 +78,9 @@ pub(super) enum FilesError {
     /// Nothing moved for too long
     #[error("the transfer stalled")]
     Stalled,
+    /// More bytes than the pull takes: those found
+    #[error("too large: {0} bytes")]
+    TooLarge(u64),
     /// A part out of place
     #[error("unexpected {0} in the stream")]
     Unexpected(&'static str),
@@ -179,6 +182,34 @@ fn walk(dir: &Path, rel: &str, entries: &mut Vec<Entry>) {
             entries.push(Entry::File(path, rel, meta.len()));
         }
     }
+}
+
+/// Whether `path` is a folder, and the bytes a drag of it sends, counted by
+/// the rules of [`collect`] without gathering every entry: describing a
+/// large folder takes no memory per file
+pub(super) fn measure(path: &Path) -> std::io::Result<(bool, u64)> {
+    let meta = std::fs::metadata(path)?;
+    if meta.is_dir() {
+        Ok((true, folder_bytes(path)))
+    } else if meta.is_file() {
+        Ok((false, meta.len()))
+    } else {
+        Ok((false, 0))
+    }
+}
+
+/// The bytes of the files in folder `dir`, by the rules of [`walk`]
+fn folder_bytes(dir: &Path) -> u64 {
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    read.flatten()
+        .map(|entry| match entry.file_type() {
+            Ok(kind) if kind.is_dir() => folder_bytes(&entry.path()),
+            Ok(kind) if kind.is_file() => entry.metadata().map_or(0, |meta| meta.len()),
+            _ => 0,
+        })
+        .sum()
 }
 
 /// How many files `entries` hold, and their bytes
@@ -284,13 +315,15 @@ pub(super) async fn serve(
     Ok(())
 }
 
-/// Pull the files of `token` from the device behind `conn` into `dir`,
-/// telling `listed` what is coming (unless the other side is older than
-/// that) and `progress` the bytes so far and in all
+/// Pull the files of `token` from the device behind `conn` into `dir`, up
+/// to `limit` bytes if given, telling `listed` what is coming (unless the
+/// other side is older than that) and `progress` the bytes so far and in
+/// all
 pub(super) async fn pull(
     conn: &quinn::Connection,
     token: String,
     dir: &Path,
+    limit: Option<u64>,
     listed: impl FnOnce(Vec<Listed>),
     progress: impl FnMut(u64, u64),
 ) -> Result<(), FilesError> {
@@ -301,7 +334,7 @@ pub(super) async fn pull(
     };
     FRAMING.write(&mut send, &request).await?;
     send.finish()?;
-    receive_entries(&mut recv, dir, listed, progress).await
+    receive_entries(&mut recv, dir, limit, listed, progress).await
 }
 
 /// Write `entries` as a [`DragReply`] and [`DragPart`]s, listed first if
@@ -378,25 +411,31 @@ where
 }
 
 /// Read what [`send_entries`] writes into `dir`, telling `listed` about a
-/// listing
+/// listing; past `limit` bytes, if given, it stops before writing more:
+/// told so by the total, or by the file that would go past
 async fn receive_entries<R>(
     r: &mut R,
     dir: &Path,
+    limit: Option<u64>,
     listed: impl FnOnce(Vec<Listed>),
     mut progress: impl FnMut(u64, u64),
 ) -> Result<(), FilesError>
 where
     R: AsyncRead + Unpin,
 {
-    let total = match read_frame(r).await? {
-        DragReply::Files { bytes, .. } => bytes,
-        DragReply::Listing { bytes, .. } => {
-            listed(receive_listing(r).await?);
-            bytes
-        }
+    let over = |bytes: u64| limit.is_some_and(|limit| bytes > limit);
+    let (total, listing) = match read_frame(r).await? {
+        DragReply::Files { bytes, .. } => (bytes, false),
+        DragReply::Listing { bytes, .. } => (bytes, true),
         DragReply::Gone => return Err(FilesError::Gone),
     };
-    let mut done = 0;
+    if over(total) {
+        return Err(FilesError::TooLarge(total));
+    }
+    if listing {
+        listed(receive_listing(r).await?);
+    }
+    let mut done: u64 = 0;
     let mut buf = vec![0u8; CHUNK];
     loop {
         match read_frame(r).await? {
@@ -404,6 +443,10 @@ where
                 tokio::fs::create_dir_all(dir.join(safe_path(&path)?)).await?;
             }
             DragPart::File { path, size } => {
+                let after = done.saturating_add(size);
+                if over(after) {
+                    return Err(FilesError::TooLarge(after));
+                }
                 let to = dir.join(safe_path(&path)?);
                 if let Some(parent) = to.parent() {
                     tokio::fs::create_dir_all(parent).await?;
@@ -603,6 +646,23 @@ mod tests {
         assert_eq!(totals(&entries), (3, 5 + 1 + big as u64));
     }
 
+    /// What is dragged measures what a drag of it sends, links inside a
+    /// folder left out
+    #[test]
+    fn a_drag_measures_what_it_sends() {
+        let dir = TempDir::new();
+        let paths = tree(&dir.0);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.0.join("notes.txt"), dir.0.join("photos/link.txt")).unwrap();
+        for path in &paths {
+            let entries = collect(std::slice::from_ref(path)).unwrap();
+            let folder = matches!(entries.first(), Some(Entry::Dir(_)));
+            let (_, bytes) = totals(&entries);
+            assert_eq!(measure(path).unwrap(), (folder, bytes), "{path:?}");
+        }
+        assert!(measure(&dir.0.join("missing")).is_err());
+    }
+
     #[tokio::test]
     async fn a_tree_travels_whole() {
         let (from, to) = (TempDir::new(), TempDir::new());
@@ -614,6 +674,7 @@ mod tests {
         receive_entries(
             &mut r,
             &to.0,
+            None,
             |entries| listing = Some(entries),
             |done, total| seen.push((done, total)),
         )
@@ -664,6 +725,7 @@ mod tests {
         receive_entries(
             &mut r,
             &to.0,
+            None,
             |entries| listing = Some(entries),
             |done, _| {
                 first_bytes.get_or_insert(done);
@@ -698,7 +760,7 @@ mod tests {
             };
             FRAMING.write(&mut w, &hash).await.unwrap();
         });
-        let got = receive_entries(&mut r, &to.0, |_| {}, |_, _| {}).await;
+        let got = receive_entries(&mut r, &to.0, None, |_| {}, |_, _| {}).await;
         assert!(
             matches!(got, Err(FilesError::Mismatch(ref path)) if path == "x.bin"),
             "{got:?}"
@@ -711,7 +773,7 @@ mod tests {
         let to = TempDir::new();
         let (mut w, mut r) = tokio::io::duplex(1024);
         FRAMING.write(&mut w, &DragReply::Gone).await.unwrap();
-        let got = receive_entries(&mut r, &to.0, |_| {}, |_, _| {}).await;
+        let got = receive_entries(&mut r, &to.0, None, |_| {}, |_, _| {}).await;
         assert!(matches!(got, Err(FilesError::Gone)), "{got:?}");
 
         let (mut w, mut r) = tokio::io::duplex(1024);
@@ -723,7 +785,7 @@ mod tests {
             path: "../out".into(),
         };
         FRAMING.write(&mut w, &escape).await.unwrap();
-        let got = receive_entries(&mut r, &to.0, |_| {}, |_, _| {}).await;
+        let got = receive_entries(&mut r, &to.0, None, |_| {}, |_, _| {}).await;
         assert!(matches!(got, Err(FilesError::Path(_))), "{got:?}");
 
         // In a listing too
@@ -733,8 +795,65 @@ mod tests {
             .await
             .unwrap();
         FRAMING.write(&mut w, &escape).await.unwrap();
-        let got = receive_entries(&mut r, &to.0, |_| {}, |_, _| {}).await;
+        let got = receive_entries(&mut r, &to.0, None, |_| {}, |_, _| {}).await;
         assert!(matches!(got, Err(FilesError::Path(_))), "{got:?}");
+    }
+
+    /// A pull takes up to its limit; past it, it stops before writing
+    /// more, told so by the total or by the file that would go past
+    #[tokio::test]
+    async fn past_the_limit_is_refused() {
+        let from = TempDir::new();
+        let entries = collect(&tree(&from.0)).unwrap();
+        let (_, bytes) = totals(&entries);
+        let pull = |limit: u64| {
+            let entries = entries.clone();
+            async move {
+                let to = TempDir::new();
+                let (mut w, mut r) = tokio::io::duplex(64 * 1024);
+                tokio::spawn(async move { send_entries(&mut w, &entries, true).await });
+                let got = receive_entries(&mut r, &to.0, Some(limit), |_| {}, |_, _| {}).await;
+                (got, to)
+            }
+        };
+        let (got, _to) = pull(bytes).await;
+        assert!(got.is_ok(), "{got:?}");
+        let (got, to) = pull(bytes - 1).await;
+        assert!(
+            matches!(got, Err(FilesError::TooLarge(b)) if b == bytes),
+            "{got:?}"
+        );
+        assert_eq!(std::fs::read_dir(&to.0).unwrap().count(), 0);
+
+        // Files adding up to more than the total they came with
+        let to = TempDir::new();
+        let (mut w, mut r) = tokio::io::duplex(64 * 1024);
+        tokio::spawn(async move {
+            let file = |path: &str, size| DragPart::File {
+                path: path.into(),
+                size,
+            };
+            let hash = blake3::hash(b"a").to_hex().to_string();
+            FRAMING
+                .write(&mut w, &DragReply::Files { count: 2, bytes: 2 })
+                .await
+                .unwrap();
+            FRAMING.write(&mut w, &file("a.bin", 1)).await.unwrap();
+            w.write_all(b"a").await.unwrap();
+            FRAMING
+                .write(&mut w, &DragPart::Hash { hash })
+                .await
+                .unwrap();
+            FRAMING.write(&mut w, &file("b.bin", 100)).await.unwrap();
+        });
+        let got = receive_entries(&mut r, &to.0, Some(10), |_| {}, |_, _| {}).await;
+        assert!(matches!(got, Err(FilesError::TooLarge(101))), "{got:?}");
+        let landed: Vec<String> = std::fs::read_dir(&to.0)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(landed, ["a.bin"]);
     }
 
     #[test]

@@ -5,7 +5,10 @@
 //! its origin (where its desktop's (0, 0) sits) and its scale (device units
 //! per canvas unit: 1 for macOS points, the DPI scale for Windows' physical
 //! pixels), so a 150% Windows display and a Mac display of the same logical
-//! size line up.
+//! size line up. Displays of one device may have scales of their own (a
+//! Windows PC with displays at 200% and 100%): each then takes its own
+//! logical size, placed from the primary display out so that displays
+//! touching on the device touch on the canvas too.
 //!
 //! Crossing is proportional: where two devices touch, the whole of each
 //! one's side crosses, position mapped by its share of the side (the bottom
@@ -62,43 +65,110 @@ pub struct Device {
     pub desktop: Desktop,
     /// Canvas position of the device's origin
     pub origin: Point,
-    /// Device units per canvas unit
+    /// Device units per canvas unit on its primary display (see
+    /// [`primary`]), and on the others unless they have scales of their own
     pub scale: f64,
+    /// Where each display sits on the canvas, in the desktop's order
+    frames: Vec<Frame>,
+}
+
+/// Where a display sits on the canvas, relative to its device's origin
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Frame {
+    /// Canvas position of the display's left edge
+    left: f64,
+    /// Canvas position of the display's top edge
+    top: f64,
+    /// Device units per canvas unit on the display
+    scale: f64,
 }
 
 impl Device {
-    /// A device from its displays, placement and scale (a non-positive
-    /// scale counts as 1)
+    /// A device from its displays, placement and scale, the same on every
+    /// display (a non-positive scale counts as 1)
     pub fn new(key: impl Into<String>, desktop: Desktop, origin: Point, scale: f64) -> Self {
+        let scale = valid_scale(scale);
+        let frames = uniform(desktop.displays(), scale);
         Self {
             key: key.into(),
             desktop,
             origin,
-            scale: if scale > 0.0 { scale } else { 1.0 },
+            scale,
+            frames,
         }
     }
 
-    /// A device position on the canvas
-    pub fn to_canvas(&self, x: f64, y: f64) -> (f64, f64) {
+    /// A device whose displays each have a scale of their own (a Windows PC
+    /// with displays at 200% and 100%): each display takes its own logical
+    /// size on the canvas, and displays that touch on the device still
+    /// touch there. Where that cannot be (displays apart, or overlapping
+    /// once placed), every display takes the primary display's scale
+    pub fn scaled(
+        key: impl Into<String>,
+        displays: impl IntoIterator<Item = (Rect, f64)>,
+        origin: Point,
+    ) -> Self {
+        let (rects, scales): (Vec<Rect>, Vec<f64>) = displays
+            .into_iter()
+            .filter(|(display, _)| !display.is_empty())
+            .map(|(display, scale)| (display, valid_scale(scale)))
+            .unzip();
+        let scale = scales.get(primary(&rects)).copied().unwrap_or(1.0);
+        let frames = place(&rects, &scales)
+            .filter(|frames| !frames_overlap(&rects, frames))
+            .unwrap_or_else(|| uniform(&rects, scale));
+        Self {
+            key: key.into(),
+            desktop: Desktop::new(rects),
+            origin,
+            scale,
+            frames,
+        }
+    }
+
+    /// The frame of `display`, one of the desktop's (the primary display's
+    /// scale applied to any other rectangle)
+    fn frame(&self, display: &Rect) -> Frame {
+        let index = self.desktop.displays().iter().position(|d| d == display);
+        index
+            .and_then(|index| self.frames.get(index).copied())
+            .unwrap_or_else(|| uniform(std::slice::from_ref(display), self.scale)[0])
+    }
+
+    /// Device units per canvas unit at `p`: on the display there, the
+    /// primary display's off every display
+    pub fn scale_at(&self, p: Point) -> f64 {
+        self.desktop
+            .display_at(p)
+            .map_or(self.scale, |display| self.frame(display).scale)
+    }
+
+    /// A device position on `display` on the canvas
+    pub fn to_canvas(&self, display: &Rect, x: f64, y: f64) -> (f64, f64) {
+        let frame = self.frame(display);
         (
-            f64::from(self.origin.x) + x / self.scale,
-            f64::from(self.origin.y) + y / self.scale,
+            f64::from(self.origin.x) + frame.left + (x - f64::from(display.x)) / frame.scale,
+            f64::from(self.origin.y) + frame.top + (y - f64::from(display.y)) / frame.scale,
         )
     }
 
-    /// A canvas position in the device's coordinates
-    pub fn from_canvas(&self, x: f64, y: f64) -> (f64, f64) {
+    /// A canvas position in the device's coordinates, as `display` maps it
+    pub fn from_canvas(&self, display: &Rect, x: f64, y: f64) -> (f64, f64) {
+        let frame = self.frame(display);
         (
-            (x - f64::from(self.origin.x)) * self.scale,
-            (y - f64::from(self.origin.y)) * self.scale,
+            f64::from(display.x) + (x - f64::from(self.origin.x) - frame.left) * frame.scale,
+            f64::from(display.y) + (y - f64::from(self.origin.y) - frame.top) * frame.scale,
         )
     }
 
     /// A display's area on the canvas
     pub fn area(&self, display: &Rect) -> Area {
-        let (left, top) = self.to_canvas(f64::from(display.x), f64::from(display.y));
-        let (right, bottom) =
-            self.to_canvas(f64::from(display.right()), f64::from(display.bottom()));
+        let (left, top) = self.to_canvas(display, f64::from(display.x), f64::from(display.y));
+        let (right, bottom) = self.to_canvas(
+            display,
+            f64::from(display.right()),
+            f64::from(display.bottom()),
+        );
         Area {
             left,
             top,
@@ -109,8 +179,115 @@ impl Device {
 
     /// The area all displays cover on the canvas
     pub fn bounds(&self) -> Option<Area> {
-        self.desktop.bounds().map(|b| self.area(&b))
+        self.desktop
+            .displays()
+            .iter()
+            .map(|display| self.area(display))
+            .reduce(|a, b| Area {
+                left: a.left.min(b.left),
+                top: a.top.min(b.top),
+                right: a.right.max(b.right),
+                bottom: a.bottom.max(b.bottom),
+            })
     }
+}
+
+/// A usable scale: a non-positive one counts as 1
+fn valid_scale(scale: f64) -> f64 {
+    if scale > 0.0 { scale } else { 1.0 }
+}
+
+/// Which of `displays` is the primary one: the display holding the
+/// device's (0, 0), else the first
+pub fn primary(displays: &[Rect]) -> usize {
+    displays
+        .iter()
+        .position(|display| display.contains(Point::new(0, 0)))
+        .unwrap_or(0)
+}
+
+/// The frames of `displays` all at one `scale`: their device positions
+/// scaled
+fn uniform(displays: &[Rect], scale: f64) -> Vec<Frame> {
+    displays
+        .iter()
+        .map(|display| Frame {
+            left: f64::from(display.x) / scale,
+            top: f64::from(display.y) / scale,
+            scale,
+        })
+        .collect()
+}
+
+/// The frames of `displays` at their own `scales`: the primary display
+/// where one scale would put it, then each display touching one placed
+/// already beside it. `None` when some display touches none of them
+fn place(displays: &[Rect], scales: &[f64]) -> Option<Vec<Frame>> {
+    let first = primary(displays);
+    let start = uniform(displays.get(first..=first)?, *scales.get(first)?).pop();
+    let mut frames: Vec<Option<Frame>> = vec![None; displays.len()];
+    frames[first] = start;
+    let mut queue = std::collections::VecDeque::from([first]);
+    while let Some(a) = queue.pop_front() {
+        let Some(placed) = frames[a] else {
+            continue;
+        };
+        for b in 0..displays.len() {
+            if frames[b].is_none()
+                && let Some(frame) = beside(&displays[a], placed, &displays[b], scales[b])
+            {
+                frames[b] = Some(frame);
+                queue.push_back(b);
+            }
+        }
+    }
+    frames.into_iter().collect()
+}
+
+/// The frame of display `b`, at `scale`, where it shares a side with
+/// display `a`, placed at `at`: flush against it, and as far along the
+/// side as on the device, counted in `a`'s scale. `None` if they share no
+/// side
+fn beside(a: &Rect, at: Frame, b: &Rect, scale: f64) -> Option<Frame> {
+    let along = |offset: i32| f64::from(offset) / at.scale;
+    let rows = b.y < a.bottom() && a.y < b.bottom();
+    let columns = b.x < a.right() && a.x < b.right();
+    let (left, top) = if rows && b.x == a.right() {
+        (at.left + along(a.width), at.top + along(b.y - a.y))
+    } else if rows && b.right() == a.x {
+        (
+            at.left - f64::from(b.width) / scale,
+            at.top + along(b.y - a.y),
+        )
+    } else if columns && b.y == a.bottom() {
+        (at.left + along(b.x - a.x), at.top + along(a.height))
+    } else if columns && b.bottom() == a.y {
+        (
+            at.left + along(b.x - a.x),
+            at.top - f64::from(b.height) / scale,
+        )
+    } else {
+        return None;
+    };
+    Some(Frame { left, top, scale })
+}
+
+/// Whether two of `displays`, placed at `frames`, overlap on the canvas
+fn frames_overlap(displays: &[Rect], frames: &[Frame]) -> bool {
+    let areas: Vec<Area> = displays
+        .iter()
+        .zip(frames)
+        .map(|(display, frame)| Area {
+            left: frame.left,
+            top: frame.top,
+            right: frame.left + f64::from(display.width) / frame.scale,
+            bottom: frame.top + f64::from(display.height) / frame.scale,
+        })
+        .collect();
+    areas
+        .iter()
+        .enumerate()
+        .any(|(i, a)| areas[i + 1..].iter().any(|b| a.overlaps(b)))
 }
 
 /// Where two devices touch: the pointer crosses between their sides
@@ -189,7 +366,7 @@ impl World {
         let display = source.desktop.display_at(at)?;
         let (line, _, _) = source.area(display).side(edge);
         // The pointer's pixel centre, projected on the canvas
-        let (cx, cy) = source.to_canvas(f64::from(at.x) + 0.5, f64::from(at.y) + 0.5);
+        let (cx, cy) = source.to_canvas(display, f64::from(at.x) + 0.5, f64::from(at.y) + 0.5);
         let along = match edge {
             Edge::Left | Edge::Right => cy,
             Edge::Top | Edge::Bottom => cx,
@@ -232,7 +409,7 @@ impl World {
         let source = self.device(from)?;
         let display = source.desktop.display_at(at)?;
         let (_, lo, hi) = source.area(display).side(edge);
-        let (cx, cy) = source.to_canvas(f64::from(at.x) + 0.5, f64::from(at.y) + 0.5);
+        let (cx, cy) = source.to_canvas(display, f64::from(at.x) + 0.5, f64::from(at.y) + 0.5);
         let along = match edge {
             Edge::Left | Edge::Right => cy,
             Edge::Top | Edge::Bottom => cx,
@@ -347,8 +524,8 @@ impl World {
 /// side facing `edge`, at canvas position `along` on that side
 fn landing(target: &Device, display: &Rect, edge: Edge, along: f64, inset: i32) -> Point {
     let (x, y) = match edge {
-        Edge::Left | Edge::Right => target.from_canvas(0.0, along),
-        Edge::Top | Edge::Bottom => target.from_canvas(along, 0.0),
+        Edge::Left | Edge::Right => target.from_canvas(display, 0.0, along),
+        Edge::Top | Edge::Bottom => target.from_canvas(display, along, 0.0),
     };
     let inside = display.clamp(Point::floor(x, y));
     display.clamp(match edge {
@@ -582,5 +759,109 @@ mod tests {
                 .cross("a", Point::new(999, 500), Edge::Right, 1)
                 .is_none()
         );
+    }
+
+    /// A Windows laptop at 200% (2880x1800 physical, its primary display)
+    /// with a 100% display (1920x1080) at `external`
+    fn laptop_with(external: Rect) -> Device {
+        Device::scaled(
+            "pc",
+            [(external, 1.0), (Rect::new(0, 0, 2880, 1800), 2.0)],
+            Point::new(0, 0),
+        )
+    }
+
+    /// The canvas area as (left, top, right, bottom)
+    fn edges(area: Area) -> (f64, f64, f64, f64) {
+        (area.left, area.top, area.right, area.bottom)
+    }
+
+    /// Displays of their own scales keep their logical sizes and still
+    /// touch, wherever they sit around the primary one
+    #[test]
+    fn displays_keep_their_own_scales() {
+        let laptop = Rect::new(0, 0, 2880, 1800);
+        // Right of the laptop, 360 physical pixels lower: a fifth of its side
+        let right = Rect::new(2880, 360, 1920, 1080);
+        let pc = laptop_with(right);
+        assert_eq!(pc.scale, 2.0);
+        assert_eq!(edges(pc.area(&laptop)), (0.0, 0.0, 1440.0, 900.0));
+        assert_eq!(edges(pc.area(&right)), (1440.0, 180.0, 3360.0, 1260.0));
+        assert_eq!(edges(pc.bounds().unwrap()), (0.0, 0.0, 3360.0, 1260.0));
+
+        let left = Rect::new(-1920, 900, 1920, 1080);
+        let pc = laptop_with(left);
+        assert_eq!(edges(pc.area(&left)), (-1920.0, 450.0, 0.0, 1530.0));
+        let above = Rect::new(480, -1080, 1920, 1080);
+        let pc = laptop_with(above);
+        assert_eq!(edges(pc.area(&above)), (240.0, -1080.0, 2160.0, 0.0));
+
+        // Positions go to the canvas and back on either display
+        let pc = laptop_with(right);
+        for (display, x, y) in [(laptop, 100.5, 1700.5), (right, 4000.5, 400.5)] {
+            let (cx, cy) = pc.to_canvas(&display, x, y);
+            assert_eq!(pc.from_canvas(&display, cx, cy), (x, y));
+        }
+        assert_eq!(pc.scale_at(Point::new(10, 10)), 2.0);
+        assert_eq!(pc.scale_at(Point::new(3000, 400)), 1.0);
+        assert_eq!(pc.scale_at(Point::new(-5, -5)), 2.0);
+    }
+
+    /// Displays of one scale go where one scale puts them, and so do
+    /// displays that would overlap once each took its own size
+    #[test]
+    fn one_scale_where_own_scales_cannot_be() {
+        let displays = [
+            Rect::new(0, 0, 2880, 1620),
+            Rect::new(2880, 0, 1920, 1080),
+            Rect::new(0, 1620, 1920, 1080),
+        ];
+        let areas = |device: &Device| -> Vec<(f64, f64, f64, f64)> {
+            displays.iter().map(|d| edges(device.area(d))).collect()
+        };
+        let one = Device::new("pc", Desktop::new(displays), Point::new(10, 20), 1.5);
+        let own = Device::scaled("pc", displays.map(|d| (d, 1.5)), Point::new(10, 20));
+        assert_eq!(areas(&own), areas(&one));
+
+        // Below the primary, a display as wide as both at 100% would run
+        // into the one at its right
+        let clashing = [
+            Rect::new(0, 0, 2000, 1000),
+            Rect::new(2000, 0, 1000, 1000),
+            Rect::new(0, 1000, 3000, 1000),
+        ];
+        let one = Device::new("pc", Desktop::new(clashing), Point::new(0, 0), 2.0);
+        let own = Device::scaled(
+            "pc",
+            [(clashing[0], 2.0), (clashing[1], 1.0), (clashing[2], 1.0)],
+            Point::new(0, 0),
+        );
+        let areas = |device: &Device| -> Vec<(f64, f64, f64, f64)> {
+            clashing.iter().map(|d| edges(device.area(d))).collect()
+        };
+        assert_eq!(areas(&own), areas(&one));
+    }
+
+    /// The pointer crosses into a display of its own scale where it faces
+    /// on the canvas, and comes back where it left
+    #[test]
+    fn crosses_into_a_display_of_its_own_scale() {
+        let external = Rect::new(2880, 0, 1920, 1080);
+        let world = World::new([
+            laptop_with(external),
+            single("mac", (3360, 0), 1440, 900, 1.0),
+        ]);
+        // Half way down the Mac's 900 points, half way down the external
+        // display's 1080 pixels
+        let (pc, at) = world
+            .cross("mac", Point::new(0, 450), Edge::Left, 1)
+            .unwrap();
+        assert_eq!(pc.key, "pc");
+        assert_eq!(at, Point::new(4798, 540));
+        let (mac, back) = world
+            .cross("pc", Point::new(4799, 540), Edge::Right, 1)
+            .unwrap();
+        assert_eq!(mac.key, "mac");
+        assert_eq!(back, Point::new(1, 450));
     }
 }

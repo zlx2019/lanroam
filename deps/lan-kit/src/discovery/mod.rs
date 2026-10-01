@@ -28,6 +28,7 @@ use thiserror::Error;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio::time::MissedTickBehavior;
 
 pub use self::probe::{IdentityProbe, ProbeFuture};
 use self::probe::{ProbeTiming, probe_peer};
@@ -320,6 +321,8 @@ impl DiscoveryService {
         };
         tasks.push(tokio::spawn(async move {
             let mut tick = tokio::time::interval(config.heartbeat_interval);
+            // After a sleep, one sweep rather than one per period missed
+            tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
             loop {
                 tick.tick().await;
                 for peer in sweeper.sweep(config.peer_timeout) {

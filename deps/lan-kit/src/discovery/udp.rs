@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tokio::net::UdpSocket;
 use tokio::task::JoinHandle;
+use tokio::time::MissedTickBehavior;
 
 use super::registry::{PeerSource, Registry};
 use super::{DiscoveryError, Peer};
@@ -156,6 +157,9 @@ pub(super) async fn start_udp(
         let target = (channel.group, channel.port);
         let mut buf = vec![0u8; RECV_BUF];
         let mut heartbeat = tokio::time::interval(channel.heartbeat);
+        // After a sleep (which Windows' clock counts), one announcement
+        // rather than one per period missed, each answered by every peer
+        heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 _ = heartbeat.tick() => {
@@ -269,6 +273,8 @@ pub(super) async fn membership_watchdog(
     let mut wall = std::time::SystemTime::now();
     let mut mono = Instant::now();
     let mut tick = tokio::time::interval(TICK);
+    // After a sleep, one check rather than a rejoin per period missed
+    tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     // Log the first silent cycle and the recovery at info, retries at debug:
     // in passive mode on an empty network recovery can never be proven, and
     // that must not flood the log

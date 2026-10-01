@@ -21,13 +21,20 @@ export function JoinWindow() {
 
   useEffect(() => {
     let timer: number | undefined;
-    api.getJoinPrompt().then(setPrompt).catch(console.error);
+    // What an event said before the prompt asked for arrives is newer
+    let told = false;
+    api
+      .getJoinPrompt()
+      .then((p) => !told && setPrompt(p))
+      .catch(console.error);
     const unlistenPrompt = listen<JoinPromptDto>(EVENTS.JOIN_PROMPT, (e) => {
+      told = true;
       clearTimeout(timer);
       setEnded(null);
       setPrompt(e.payload);
     });
     const unlistenEnded = listen<JoinEndedDto>(EVENTS.JOIN_ENDED, (e) => {
+      told = true;
       setEnded(e.payload);
       timer = window.setTimeout(() => {
         getCurrentWindow().hide().catch(console.error);

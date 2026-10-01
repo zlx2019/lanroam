@@ -51,7 +51,7 @@ const DIAL_DEFER: Duration = Duration::from_secs(2);
 
 /// Links to one peer set up within this span of each other come from both
 /// sides dialing at once; a link arriving later replaces the old one
-const RACE_WINDOW: Duration = Duration::from_secs(5);
+pub(super) const RACE_WINDOW: Duration = Duration::from_secs(5);
 
 /// How long a member whose link was closed as a duplicate may stay unlinked
 /// before it counts as offline (the surviving link is usually on its way)
@@ -119,8 +119,8 @@ pub(super) enum Msg {
     Screens {
         /// Display rectangles, in device coordinates
         displays: Vec<Rect>,
-        /// Device units per logical pixel, in percent
-        scale: u32,
+        /// Each display's device units per logical pixel, in percent
+        scales: Vec<u32>,
     },
     /// Move a member on the layout canvas
     Place {
@@ -259,19 +259,70 @@ struct Dial {
     attempt: u64,
 }
 
+/// Saves the group document off the actor, one save at a time and only
+/// the latest document: a save syncs the file to disk, milliseconds that
+/// input going through the actor must not wait for
+struct Saver {
+    /// The document to save (`None`: no group)
+    doc: watch::Sender<Option<GroupDoc>>,
+    /// The task saving it
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Saver {
+    /// Start saving to `store`
+    fn start(store: GroupStore) -> Self {
+        let (doc, docs) = watch::channel(None);
+        let task = tokio::spawn(save_docs(store, docs));
+        Self { doc, task }
+    }
+
+    /// Save `doc` once the save under way is done, unless a newer one
+    /// comes first
+    fn save(&self, doc: Option<GroupDoc>) {
+        self.doc.send_replace(doc);
+    }
+
+    /// Wait until the last document is saved
+    async fn finish(self) {
+        drop(self.doc);
+        let _ = self.task.await;
+    }
+}
+
+/// Save each document `docs` gets, the latest when several came during a
+/// save, until the saver is finished
+async fn save_docs(store: GroupStore, mut docs: watch::Receiver<Option<GroupDoc>>) {
+    while docs.changed().await.is_ok() {
+        let doc = docs.borrow_and_update().clone();
+        let store = store.clone();
+        let saved = tokio::task::spawn_blocking(move || store.save(doc.as_ref())).await;
+        if let Err(e) = saved.map_err(std::io::Error::other).and_then(|saved| saved) {
+            tracing::warn!("cannot save the group document: {e}");
+        }
+    }
+}
+
+/// Whether `doc` fills most of a frame: the whole document travels in one,
+/// and past it members stop syncing and joins fail
+fn fills_a_frame(doc: &GroupDoc) -> bool {
+    let most = FRAMING.max_len() as usize / 4 * 3;
+    serde_json::to_vec(doc).is_ok_and(|json| json.len() > most)
+}
+
 /// The actor
 pub(super) struct Mesh {
     /// This device
     info: PeerInfo,
     /// QUIC endpoint, for dialing
     transport: Arc<Transport>,
-    /// The document on disk
-    store: GroupStore,
+    /// Saves the document to disk, off the actor; taken at shutdown
+    saver: Option<Saver>,
     /// The document; `None` outside a group
     doc: Option<GroupDoc>,
-    /// This device's displays (device coordinates) and scale (percent);
-    /// `None` until first read
-    screens: Option<(Vec<Rect>, u32)>,
+    /// This device's displays (device coordinates) and each one's scale
+    /// (percent); `None` until first read
+    screens: Option<(Vec<Rect>, Vec<u32>)>,
     /// The Command / Control swap setting, once changed while running
     swap_cmd_ctrl: Option<bool>,
     /// The pointer speed, once changed while running
@@ -297,6 +348,8 @@ pub(super) struct Mesh {
     next_id: u64,
     /// Number of the latest dial
     next_attempt: u64,
+    /// The document fills most of a frame (warned once until it shrinks)
+    doc_large: bool,
 }
 
 impl Mesh {
@@ -311,7 +364,7 @@ impl Mesh {
         Self {
             info,
             transport,
-            store,
+            saver: Some(Saver::start(store)),
             doc,
             screens: None,
             swap_cmd_ctrl: None,
@@ -326,6 +379,7 @@ impl Mesh {
             announced: HashMap::new(),
             next_id: 0,
             next_attempt: 0,
+            doc_large: false,
         }
     }
 
@@ -341,6 +395,10 @@ impl Mesh {
                         // Dropping the entries closes the links
                         self.links.clear();
                         self.publish_links();
+                        // Stopped once the last document is on disk
+                        if let Some(saver) = self.saver.take() {
+                            saver.finish().await;
+                        }
                         let _ = reply.send(());
                         break;
                     }
@@ -384,8 +442,8 @@ impl Mesh {
                     let _ = reply.send(doc.clone());
                 }
             }
-            Msg::Screens { displays, scale } => {
-                let screens = Some((displays, scale));
+            Msg::Screens { displays, scales } => {
+                let screens = Some((displays, scales));
                 if screens != self.screens {
                     self.screens = screens;
                     self.commit();
@@ -563,6 +621,7 @@ impl Mesh {
             .collect();
         for fp in expired {
             self.announced.remove(&fp);
+            let _ = self.wiring.input.send(InputMsg::LinkDown(fp.clone()));
             let name = self.name_of(&fp);
             self.emit(EngineEvent::Offline {
                 fingerprint: fp,
@@ -634,6 +693,9 @@ impl Mesh {
                 .conn
                 .close(close_code::DUPLICATE, b"duplicate link");
             self.links.remove(&fp);
+            // Input on the old link ends with it: the peer may have
+            // restarted, and what it held down there is to be let go
+            let _ = self.wiring.input.send(InputMsg::LinkDown(fp.clone()));
         }
         self.register(link, info, dialed);
     }
@@ -856,9 +918,8 @@ impl Mesh {
         profile.device_id.clone_from(&self.info.device_id);
         profile.name.clone_from(&self.info.name);
         profile.platform.clone_from(&self.info.platform);
-        if let Some((displays, scale)) = &self.screens {
-            profile.displays.clone_from(displays);
-            profile.scale = *scale;
+        if let Some((displays, scales)) = &self.screens {
+            profile.set_displays(displays, scales);
         }
         if let Some(on) = self.swap_cmd_ctrl {
             profile.swap_cmd_ctrl = on;
@@ -942,6 +1003,15 @@ impl Mesh {
             doc.place(own, at, own);
         }
         let doc = doc.clone();
+        let large = fills_a_frame(&doc);
+        if large && !self.doc_large {
+            tracing::warn!(
+                records = doc.devices.len(),
+                "the group document nears the largest message members can send, past \
+                 which they stop syncing; records of removed devices stay in it"
+            );
+        }
+        self.doc_large = large;
         self.save();
         let shared = Arc::new(doc.clone());
         self.wiring
@@ -1000,11 +1070,11 @@ impl Mesh {
         }
     }
 
-    /// Save the document; a failure is logged, the group carries on in
-    /// memory
+    /// Save the document, off the actor; a failure is logged, the group
+    /// carries on in memory
     fn save(&self) {
-        if let Err(e) = self.store.save(self.doc.as_ref()) {
-            tracing::warn!("cannot save the group document: {e}");
+        if let Some(saver) = &self.saver {
+            saver.save(self.doc.clone());
         }
     }
 
@@ -1272,8 +1342,57 @@ async fn write_link(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
-    use crate::test_util::TestNode;
+    use crate::test_util::{TempDir, TestNode};
+
+    /// Device info for the document tests
+    fn info(name: &str) -> PeerInfo {
+        PeerInfo {
+            device_id: format!("id-{name}"),
+            name: name.to_string(),
+            fingerprint: format!("fp-{name}"),
+            platform: "macos".to_string(),
+            os_version: None,
+            props: BTreeMap::new(),
+        }
+    }
+
+    /// A document of a few devices is far from filling a frame; one that
+    /// kept the records of a hundred and fifty devices is not
+    #[test]
+    fn large_documents_are_noticed() {
+        let mut doc = GroupDoc::new(&info("a"));
+        assert!(!fills_a_frame(&doc));
+        for n in 0..150 {
+            let name = format!("{n:064}");
+            doc.admit(&info(&name));
+            doc.remove(&format!("fp-{name}"));
+        }
+        assert!(fills_a_frame(&doc));
+    }
+
+    /// Documents saved in a row leave the latest on disk once the saver is
+    /// finished; no group leaves no file
+    #[tokio::test]
+    async fn the_latest_document_is_saved() {
+        let dir = TempDir::new();
+        let store = GroupStore::new(&dir.0);
+        let saver = Saver::start(store.clone());
+        let mut doc = GroupDoc::new(&info("a"));
+        for name in ["b", "c", "d"] {
+            doc.admit(&info(name));
+            saver.save(Some(doc.clone()));
+        }
+        saver.finish().await;
+        assert_eq!(store.load().unwrap(), Some(doc));
+
+        let saver = Saver::start(store.clone());
+        saver.save(None);
+        saver.finish().await;
+        assert_eq!(store.load().unwrap(), None);
+    }
 
     /// A message too large for a frame is left out, and the link keeps
     /// working

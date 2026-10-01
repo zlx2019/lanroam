@@ -227,8 +227,8 @@ export const zh = {
   "toast.paused": "已暂停",
   "toast.resumed": "已恢复",
 
-  "error.wrong_pin": "PIN 错误次数太多，这次请求已结束。30 秒后可以重新发起。",
-  "error.cooldown": "对方暂时不接受加入请求，请 30 秒后再试。",
+  "error.wrong_pin": "PIN 错误次数太多，这次请求已结束。请稍后再重新发起。",
+  "error.cooldown": "对方暂时不接受加入请求，请稍后再试。",
   "error.busy": "对方正在处理另一个加入请求，请稍后再试。",
   "error.rejected": "对方拒绝了加入请求。",
   "error.timeout": "等太久了，这次请求已结束。",
@@ -237,6 +237,7 @@ export const zh = {
   "error.connection": "连接中断了，请重试。",
   "error.gone": "对方已经不在网络上了。",
   "error.grouped": "本机已经在一个桌面组里，请先离开。",
+  "error.join_in_progress": "本机正在处理另一个加入请求，请先完成或拒绝它。",
   "error.no_group": "本机不在桌面组里。",
   "error.pin_format": "PIN 是 6 位数字。",
   "error.invalid_name": "设备名称需要 1 到 40 个字符。",

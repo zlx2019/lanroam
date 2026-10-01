@@ -115,6 +115,8 @@ pub async fn ping_datagrams(
     let mut stats = RttStats::default();
     let mut answered = HashSet::new();
     let mut tick = tokio::time::interval(interval);
+    // Pings keep their spacing after a stall rather than go out in a burst
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut deadline: Option<tokio::time::Instant> = None;
     while answered.len() < count as usize {
         let grace_over = async {

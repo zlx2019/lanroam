@@ -20,7 +20,7 @@ mod settings;
 mod state;
 mod tray;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use tauri::{AppHandle, Manager, RunEvent, WebviewWindowBuilder, WindowEvent};
 
@@ -37,7 +37,7 @@ const LOG_FILE: &str = "lanroam.log";
 
 /// Run the app until it quits
 pub fn run() {
-    init_logging();
+    let log = init_logging();
     let built = tauri::Builder::default()
         // First, so that a second start exits at once and raises this one
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -49,7 +49,12 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .setup(|app| {
+        .setup(move |app| {
+            // Emptied only now: a second start quits before this, in the
+            // single-instance plugin, and must leave the first one's log
+            if let Some(log) = &log {
+                empty_log(log);
+            }
             setup(app.handle());
             Ok(())
         })
@@ -220,34 +225,54 @@ fn startup_failed(app: &AppHandle, error: &anyhow::Error) {
 }
 
 /// Log to stderr, and to `lanroam.log` in the data directory when it can
-/// be opened (the only place to look for a build without a console)
-fn init_logging() {
+/// be opened (the only place to look for a build without a console); the
+/// log file's path, if it is logged to
+fn init_logging() -> Option<PathBuf> {
     use tracing_subscriber::EnvFilter;
     use tracing_subscriber::fmt::writer::MakeWriterExt as _;
 
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let dir = std::env::var_os("LANROAM_DATA_DIR")
-        .map(std::path::PathBuf::from)
+        .map(PathBuf::from)
         .or_else(|| {
             std::env::var_os("HOME")
                 .or_else(|| std::env::var_os("USERPROFILE"))
                 .map(|home| Path::new(&home).join(".lanroam"))
         });
-    let file = dir.and_then(|dir| open_log(&dir));
+    let path = dir.map(|dir| dir.join(LOG_FILE));
     let builder = tracing_subscriber::fmt().with_env_filter(filter);
-    let _ = match file {
-        Some(file) => builder
-            .with_ansi(false)
-            .with_writer(std::io::stderr.and(std::sync::Mutex::new(file)))
-            .try_init(),
-        None => builder.try_init(),
+    let Some(file) = path.as_deref().and_then(open_log) else {
+        let _ = builder.try_init();
+        return None;
     };
+    let _ = builder
+        .with_ansi(false)
+        .with_writer(std::io::stderr.and(std::sync::Mutex::new(file)))
+        .try_init();
+    path
 }
 
-/// The log file, emptied at each start
-fn open_log(dir: &Path) -> Option<std::fs::File> {
-    std::fs::create_dir_all(dir).ok()?;
-    std::fs::File::create(dir.join(LOG_FILE)).ok()
+/// The log file at `path`, opened to append: a second start opens it too,
+/// before it learns Lanroam runs already and quits (see [`empty_log`])
+fn open_log(path: &Path) -> Option<std::fs::File> {
+    std::fs::create_dir_all(path.parent()?).ok()?;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .ok()
+}
+
+/// Empty the log file at `path`, once this is the only Lanroam running; the
+/// logger appends, so it goes on from the top
+fn empty_log(path: &Path) {
+    let emptied = std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(path);
+    if let Err(e) = emptied {
+        tracing::warn!("cannot empty the log file: {e}");
+    }
 }
 
 /// Wait for Ctrl-C, or SIGTERM on unix

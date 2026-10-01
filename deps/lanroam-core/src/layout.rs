@@ -29,14 +29,23 @@ pub enum LayoutError {
     Overlap(String, String),
 }
 
-/// A member's device on the canvas with its origin at `at`
+/// A member's device on the canvas with its origin at `at`, each display
+/// at its own scale where the profile lists them
 fn device_at(fingerprint: &str, record: &DeviceRecord, at: Point) -> Device {
-    Device::new(
-        fingerprint,
-        Desktop::new(record.profile.displays.iter().copied()),
-        at,
-        f64::from(record.profile.scale) / 100.0,
-    )
+    let profile = &record.profile;
+    let ratio = |scale: u32| f64::from(scale) / 100.0;
+    let scales = &profile.display_scales;
+    if !scales.is_empty() && scales.len() == profile.displays.len() {
+        let displays = profile.displays.iter().copied();
+        Device::scaled(
+            fingerprint,
+            displays.zip(scales.iter().copied().map(ratio)),
+            at,
+        )
+    } else {
+        let desktop = Desktop::new(profile.displays.iter().copied());
+        Device::new(fingerprint, desktop, at, ratio(profile.scale))
+    }
 }
 
 /// The canvas device of a member, if it is placed
@@ -88,21 +97,17 @@ pub fn spot_beside(
 ) -> Result<Point, LayoutError> {
     let record = member(doc, fingerprint)?;
     let anchor_record = member(doc, anchor)?;
-    let bounds = Desktop::new(record.profile.displays.iter().copied())
+    // The device's block on the canvas, with its origin at (0, 0): its
+    // size, and where it starts relative to its origin
+    let block = device_at(fingerprint, record, Point::new(0, 0))
         .bounds()
         .ok_or_else(|| LayoutError::NoDisplays(record.profile.name.clone()))?;
     let anchor_area = device(anchor, anchor_record)
         .and_then(|d| d.bounds())
         .ok_or_else(|| LayoutError::Unplaced(anchor_record.profile.name.clone()))?;
 
-    // The device's block on the canvas: its size, and where it starts
-    // relative to its origin
-    let scale = f64::from(record.profile.scale) / 100.0;
-    let (width, height) = (
-        f64::from(bounds.width) / scale,
-        f64::from(bounds.height) / scale,
-    );
-    let (dx, dy) = (f64::from(bounds.x) / scale, f64::from(bounds.y) / scale);
+    let (width, height) = (block.right - block.left, block.bottom - block.top);
+    let (dx, dy) = (block.left, block.top);
     let offset = f64::from(offset);
     let (left, top) = match side {
         Edge::Right => (anchor_area.right, anchor_area.top + offset),
@@ -215,6 +220,22 @@ mod tests {
             (edges[0].first_span, edges[0].second_span),
             ((0.0, 1440.0), (180.0, 1260.0))
         );
+    }
+
+    /// A device whose displays have scales of their own takes the logical
+    /// size of each: a 200% laptop with a 100% display at its right is
+    /// 1440 + 1920 wide
+    #[test]
+    fn displays_of_their_own_scales() {
+        let mut doc = group(&[("mac", 2560, 1440, 100), ("pc", 2880, 1800, 200)]);
+        let displays = [Rect::new(0, 0, 2880, 1800), Rect::new(2880, 0, 1920, 1080)];
+        let pc = doc.devices.get_mut("pc").unwrap();
+        pc.profile.set_displays(&displays, &[200, 100]);
+        doc.place("mac", Point::new(0, 0), "mac");
+        let spot = |side| spot_beside(&doc, "pc", side, "mac", 0).unwrap();
+        assert_eq!(spot(Edge::Left), Point::new(-3360, 0));
+        doc.place("pc", spot(Edge::Right), "mac");
+        assert_eq!(newcomer_spot(&doc, "mac"), Point::new(2560 + 3360, 0));
     }
 
     /// Spots are refused where devices would overlap, and errors name the

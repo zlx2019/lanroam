@@ -224,6 +224,13 @@ pub(super) fn displays() -> Result<Vec<Rect>, InputError> {
         .collect())
 }
 
+/// The displays, each at 100: points are logical pixels on every display
+pub(super) fn screens() -> Result<(Vec<Rect>, Vec<u32>), InputError> {
+    let displays = displays()?;
+    let scales = vec![100; displays.len()];
+    Ok((displays, scales))
+}
+
 /// Accessibility and Input Monitoring, as granted right now
 pub(super) fn permissions() -> Permissions {
     Permissions {

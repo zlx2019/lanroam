@@ -22,7 +22,9 @@
 //! control with [`Control::Enter`] / [`Control::Leave`] and streams input in
 //! the controlled device's coordinates (pointer motion as
 //! [`Datagram::Motion`]). The controlled side may end it with
-//! [`Control::Released`]. Displays travel in the group document.
+//! [`Control::Released`]. Displays travel in the group document; since 2.7
+//! a profile may give each display a scale of its own, where an older peer
+//! takes its one scale for every display.
 //!
 //! Clipboards follow the pointer: a member offers its clipboard with
 //! [`Control::ClipOffer`] (a summary), and the receiver fetches the content
@@ -55,7 +57,7 @@ use serde::{Deserialize, Serialize};
 use crate::group::GroupDoc;
 
 /// Protocol version (major.minor), checked by the Hello gate
-pub const PROTOCOL_VERSION: &str = "2.6";
+pub const PROTOCOL_VERSION: &str = "2.7";
 
 /// ALPN of the QUIC connections; a client speaking anything else is refused
 /// during the TLS handshake
@@ -84,6 +86,8 @@ pub mod reason_code {
     pub const NOT_A_MEMBER: &str = "not_a_member";
     /// The dialer was removed from the acceptor's desk group
     pub const REMOVED: &str = "removed";
+    /// The acceptor answers as many link measurements as it takes at once
+    pub const BUSY: &str = "busy";
 }
 
 /// Why a controlled device let go ([`Control::Released`])
@@ -136,7 +140,7 @@ impl From<Ask> for Request {
 pub mod join_denied {
     /// Another join is in progress on the sponsor
     pub const BUSY: &str = "busy";
-    /// The sponsor pauses joins after a PIN was used up
+    /// The sponsor pauses joins after a failed one
     pub const COOLDOWN: &str = "cooldown";
     /// The PIN was wrong too many times
     pub const WRONG_PIN: &str = "wrong_pin";

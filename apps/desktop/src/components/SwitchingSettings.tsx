@@ -4,7 +4,7 @@
 // (this device's keyboard, or the controlling device's), so even ones the
 // OS or a hotkey would take are seen; changes save at once.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "../api";
 import { EVENTS } from "../events";
@@ -45,16 +45,25 @@ export function SwitchingSettings({
   const { t } = useI18n();
   const [names, setNames] = useState<Record<string, string>>({});
   const [recording, setRecording] = useState<Target | null>(null);
+  // The latest settings, for a combination recorded after they changed
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
   const platform = snapshot.device.platform;
 
   useEffect(() => {
     api.keyNames().then(setNames).catch(console.error);
   }, []);
 
-  // While recording: the combination arrives as an event; leaving the
-  // window or the page stops it, or it would catch keys meant elsewhere
+  // While recording: the engine records, and the combination arrives as
+  // an event; leaving the window or the page stops it, or it would catch
+  // keys meant elsewhere. Started and stopped here in pairs, so the stop
+  // of one recording cannot land after the start of the next
   useEffect(() => {
     if (!recording) return;
+    api.recordKeys(true).catch((e) => {
+      setRecording(null);
+      onToast(formatError(t, e));
+    });
     const unlisten = listen<Chord | null>(EVENTS.RECORDED, (e) => {
       setRecording(null);
       if (e.payload) apply(recording, e.payload);
@@ -66,24 +75,15 @@ export function SwitchingSettings({
       unlisten.then((u) => u()).catch(console.error);
       api.recordKeys(false).catch(console.error);
     };
-    // `apply` reads the settings this effect depends on
-  }, [recording, settings]);
+    // Only another target restarts it: `apply` reads the latest settings
+  }, [recording]);
 
   /** Start recording for `target`, or stop when it is already */
-  const record = (target: Target) => {
-    if (recording === target) {
-      setRecording(null);
-      return;
-    }
-    setRecording(target);
-    api.recordKeys(true).catch((e) => {
-      setRecording(null);
-      onToast(formatError(t, e));
-    });
-  };
+  const record = (target: Target) => setRecording(recording === target ? null : target);
 
   /** Put a recorded combination where it was recorded for */
   const apply = (target: Target, chord: Chord) => {
+    const settings = settingsRef.current;
     const words = { alt: altKey(platform), meta: platform === "macos" ? "Cmd" : "Win" };
     if (target === "keep") {
       if (settings.keepLocal.some((c) => sameChord(c, chord))) return onToast(t("switch.duplicate"));

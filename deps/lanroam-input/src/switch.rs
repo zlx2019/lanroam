@@ -842,9 +842,15 @@ impl Switch {
             return Verdict::Swallow;
         }
         // Same physical travel on every device (source units to logical
-        // pixels to the target's units), at the target's pointer speed
-        let local_scale = self.world.device(&self.local).map_or(1.0, |d| d.scale);
-        let k = target.scale / local_scale * self.speed_of(&remote.device);
+        // pixels to the target's units), at the target's pointer speed;
+        // the scales are those of the displays the pointers are on (the
+        // local one where it stays while another device is controlled)
+        let local_scale = self
+            .world
+            .device(&self.local)
+            .map_or(1.0, |d| d.scale_at(self.departed));
+        let here = Point::floor(remote.x, remote.y);
+        let k = target.scale_at(here) / local_scale * self.speed_of(&remote.device);
         let (x, y) = match target.desktop.step((remote.x, remote.y), dx * k, dy * k) {
             Step::Inside(x, y) => {
                 self.keep_dwell(&remote.device, Point::floor(x, y));
@@ -1754,6 +1760,37 @@ mod tests {
                 at: Point::new(16, 600)
             }]
         );
+    }
+
+    /// On a device whose displays have scales of their own, pointer travel
+    /// follows the scale of the display the pointer is on: a 200% laptop,
+    /// then the 100% display at its right
+    #[test]
+    fn motion_follows_the_display_scale() {
+        let mut sw = Switch::new("mac");
+        let pc = Device::scaled(
+            "pc",
+            [
+                (Rect::new(0, 0, 2880, 1800), 2.0),
+                (Rect::new(2880, 0, 1920, 1080), 1.0),
+            ],
+            Point::new(1512, 0),
+        );
+        sw.set_world(
+            World::new([device("mac", 0, 1512, 1080, 1.0), pc]),
+            HashSet::new(),
+        );
+        cross_to_pc(&mut sw, 400);
+        let moved = |sw: &mut Switch, dx: f64| match feed(sw, motion(0, 0, dx, 0.0)).1[..] {
+            [Emit::Motion { at, .. }] => at,
+            ref out => panic!("{out:?}"),
+        };
+        // 400.5 of the Mac's 1080 is 333.75 of the laptop's 900 logical
+        let on_laptop = moved(&mut sw, 10.0);
+        assert_eq!(on_laptop, Point::new(21, 667));
+        let on_display = moved(&mut sw, 1500.0);
+        assert_eq!(on_display, Point::new(3021, 667));
+        assert_eq!(moved(&mut sw, 10.0), Point::new(3031, 667));
     }
 
     /// The pointer goes at the speed of the device it is on

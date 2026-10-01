@@ -304,7 +304,9 @@ pub async fn restart_input(app: AppHandle, state: State<'_, AppState>) -> Reply<
 /// Start Lanroam over (some permissions only apply to a new process)
 #[tauri::command]
 pub fn relaunch(app: AppHandle) {
-    app.restart();
+    // Through the exit events, so the engine shuts down first: `restart`
+    // on the main thread, where this command runs, skips them
+    app.request_restart();
 }
 
 /// The app's preferences as the settings page edits them

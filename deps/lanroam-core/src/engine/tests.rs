@@ -221,7 +221,7 @@ struct FakeInput {
 }
 
 impl InputBackend for FakeInput {
-    fn screens(&self) -> Result<(Vec<lanroam_input::Rect>, u32), InputError> {
+    fn screens(&self) -> Result<(Vec<lanroam_input::Rect>, Vec<u32>), InputError> {
         // The tests report screens themselves, at once
         Err(InputError::Unsupported("fake screens"))
     }
@@ -582,7 +582,8 @@ impl TestEngine {
     /// Report one display of `width`x`height` at `scale` percent
     fn screens(&self, width: i32, height: i32, scale: u32) {
         let displays = vec![lanroam_input::Rect::new(0, 0, width, height)];
-        let msg = Msg::Screens { displays, scale };
+        let scales = vec![scale];
+        let msg = Msg::Screens { displays, scales };
         self.engine.inner.inbox.send(msg).unwrap();
     }
 }
@@ -634,6 +635,38 @@ async fn layout_syncs() {
         matches!(refused, Err(EngineError::Layout(LayoutError::Overlap(..)))),
         "{refused:?}"
     );
+}
+
+/// Displays of their own scales reach the group, which lays each out at
+/// its logical size: a 200% laptop with a 100% display at its right is
+/// 1440 + 1920 wide
+#[tokio::test]
+async fn display_scales_reach_the_group() {
+    use lanroam_input::Rect;
+
+    let (mut a, b) = (TestEngine::start(), TestEngine::start());
+    a.sees(&[&b]);
+    b.sees(&[&a]);
+    a.screens(2560, 1440, 100);
+    join(&b, &mut a).await;
+    let displays = vec![Rect::new(0, 0, 2880, 1800), Rect::new(2880, 0, 1920, 1080)];
+    let scales = vec![200, 100];
+    let msg = Msg::Screens { displays, scales };
+    b.engine.inner.inbox.send(msg).unwrap();
+    let fb = b.fp();
+    a.until("b's displays at their own scales", |status| {
+        status.doc.as_ref().is_some_and(|doc| {
+            let profile = &doc.devices[&fb].profile;
+            profile.scale == 200 && profile.display_scales == [200, 100]
+        })
+    })
+    .await;
+    let world = crate::layout::world(&a.engine.group().unwrap());
+    let width = world
+        .device(&fb)
+        .and_then(lanroam_input::world::Device::bounds)
+        .map(|area| area.right - area.left);
+    assert_eq!(width, Some(3360.0));
 }
 
 impl TestEngine {
@@ -822,6 +855,56 @@ async fn lost_controller_is_released() {
     .await;
 }
 
+/// A few link measurements are answered at once; one more is turned away
+#[tokio::test]
+async fn link_measurements_are_limited() {
+    let (a, b) = (TestEngine::start(), TestEngine::start());
+    let (peer, info) = (a.as_peer(), b.engine.info());
+    let dial = || {
+        b.engine
+            .inner
+            .transport
+            .connect(&peer, &info, Purpose::Diag)
+    };
+    let mut answered = Vec::new();
+    for _ in 0..MEASUREMENTS {
+        let mut link = dial().await.unwrap();
+        diag::ping_stream(&mut link, 1).await.unwrap();
+        answered.push(link);
+    }
+    let mut more = dial().await.unwrap();
+    assert!(diag::ping_stream(&mut more, 1).await.is_err());
+    let reason = closed_because(more.connection()).await;
+    assert_eq!(reason.as_deref(), Some(reason_code::BUSY));
+}
+
+/// A controller linking up again while its old link still stands (it
+/// restarted) gets what it held released: the session ends with the link
+/// the new one replaces
+#[tokio::test]
+async fn a_replaced_link_releases_its_controller() {
+    let (a, mut b, _c) = row_of_three().await;
+    let a_name = a.name();
+    a.input.push((999, 500), 5.0, 0.0);
+    a.input.key(0x04, true);
+    b.injected(&Injected::Key(0x04, true)).await;
+    // Past the race window, a new link replaces the old one whoever dialed
+    tokio::time::sleep(mesh::RACE_WINDOW).await;
+    let _again = a
+        .engine
+        .inner
+        .transport
+        .connect(&b.as_peer(), &a.engine.info(), Purpose::Member)
+        .await
+        .unwrap();
+    b.injected(&Injected::Key(0x04, false)).await;
+    b.expect_control(ControlEvent::Freed {
+        name: a_name,
+        fingerprint: a.fp(),
+    })
+    .await;
+}
+
 /// Hotkeys act on the whole group: number 3 jumps straight to c (mid
 /// display), and pausing is reported
 #[tokio::test]
@@ -882,6 +965,37 @@ async fn rejected_join() {
         .await;
     assert!(!admitted);
     assert!(b.engine.group().is_none());
+}
+
+/// A device joining a group lets no other device in meanwhile, and one
+/// letting another in joins no group meanwhile: whichever ended second
+/// would put it in a second group, a member there no one ever reaches
+#[tokio::test]
+async fn joining_and_letting_in_exclude_each_other() {
+    let (mut a, mut b, c) = (
+        TestEngine::start(),
+        TestEngine::start(),
+        TestEngine::start(),
+    );
+    let pin_shown =
+        |event: &EngineEvent| matches!(event, EngineEvent::JoinPin { .. }).then_some(());
+
+    let joining = a.engine.join(&b.as_peer()).await.unwrap();
+    b.expect("PIN", pin_shown).await;
+    let refused = c.engine.join(&a.as_peer()).await.map(drop);
+    assert!(
+        matches!(&refused, Err(EngineError::Join(JoinError::Denied(code))) if code == join_denied::BUSY),
+        "{refused:?}"
+    );
+    drop(joining);
+
+    let _letting_in = c.engine.join(&a.as_peer()).await.unwrap();
+    a.expect("PIN", pin_shown).await;
+    let refused = a.engine.join(&b.as_peer()).await.map(drop);
+    assert!(
+        matches!(refused, Err(EngineError::JoinInProgress)),
+        "{refused:?}"
+    );
 }
 
 /// Every attempt shows the PIN again with the attempts left, so the
@@ -1147,6 +1261,25 @@ async fn input_settings_take_effect() {
         Err(EngineError::InvalidSettings)
     ));
     assert_eq!(a.engine.input_settings(), settings);
+}
+
+/// Input settings changed many times at once end up the same in the file
+/// and in use
+#[tokio::test(flavor = "multi_thread")]
+async fn input_settings_saved_at_once_agree() {
+    let a = TestEngine::start();
+    let saves: Vec<_> = (0..32)
+        .map(|corner_px| {
+            let engine = a.engine.clone();
+            let mut settings = InputSettings::default();
+            settings.switching.corner_px = corner_px;
+            tokio::spawn(async move { engine.set_input_settings(settings).await })
+        })
+        .collect();
+    for save in saves {
+        save.await.unwrap().unwrap();
+    }
+    assert_eq!(InputSettings::load(&a.dir.0), a.engine.input_settings());
 }
 
 /// A closed edge reaches the whole group, and the pointer no longer
@@ -1503,6 +1636,37 @@ async fn copied_files_beyond_the_limit_stay() {
         .await;
     assert_eq!(told, ("big.bin".to_string(), size, 32 << 20));
     assert_eq!(b.clipboard.content(), None);
+}
+
+/// Files grown past the limit since they were described are cut off as
+/// they come, and the device says they are too large
+#[tokio::test]
+async fn copied_files_grown_past_the_limit_stay() {
+    let (a, b, mut c) = row_of_three().await;
+    let logs = a.dir.0.join("logs");
+    std::fs::create_dir_all(&logs).unwrap();
+    let log = logs.join("app.log");
+    std::fs::write(&log, b"12345").unwrap();
+    a.clipboard.copy(Content::Files(vec![logs]));
+    enter_b(&a, &b).await;
+    b.until_files(&["logs"]).await;
+
+    // The folder grows, but not what was said of it: the copy is the same
+    let size = (32 << 20) + 1;
+    let file = std::fs::File::options().write(true).open(&log).unwrap();
+    file.set_len(size).unwrap();
+    // On to c, which is offered the files as described
+    a.input.push((0, 0), 1000.0, 0.0);
+    let told = c
+        .expect("files too large", |event| match event {
+            EngineEvent::CopiedFiles(CopiedFiles::TooLarge { name, bytes, .. }) => {
+                Some((name.clone(), *bytes))
+            }
+            _ => None,
+        })
+        .await;
+    assert_eq!(told, ("logs".to_string(), size));
+    assert_eq!(c.clipboard.content(), None);
 }
 
 /// A device taking no files gets none

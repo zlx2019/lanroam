@@ -31,6 +31,11 @@ pub(super) fn scale() -> Result<u32, InputError> {
 }
 
 /// Not available
+pub(super) fn screens() -> Result<(Vec<Rect>, Vec<u32>), InputError> {
+    Err(InputError::Unsupported("reading the display layout"))
+}
+
+/// Not available
 pub(super) fn start_capture(
     _switch: Arc<Mutex<Switch>>,
     _sink: EmitSink,
