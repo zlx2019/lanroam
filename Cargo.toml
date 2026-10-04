@@ -142,7 +142,7 @@ windows = { version = "0.62", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 # Its `implement` macro expects the crate by this name
-windows-core = "0.62"
+windows-core = "0.100"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
